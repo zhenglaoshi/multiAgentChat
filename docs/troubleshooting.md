@@ -209,6 +209,45 @@ find data/stage-memories -type f -mtime +90 -delete
 
 ---
 
+## 睡眠 / 网络断
+
+### MacBook 合盖后 daemon 死了
+
+**原因**：macOS 合盖强制断电+挂起。**软件无法阻止**。
+
+**解**：
+- 硬件路径：外接电源 + 外接显示器 + 外接键鼠 → macOS clamshell mode 自动开启（合盖不睡）
+- 或用桌面 Mac（iMac / Mac mini）
+- 装第三方 kext（InsomniaX 类）风险高、需要关 SIP，不推荐
+
+### Mac idle 一段时间后 daemon 断连
+
+**原因**：idle sleep。
+
+**解**：daemon 启动时已自动 spawn `caffeinate` 防止。用 `agent doctor` 确认那行 pass。
+
+如果没跑：
+- `pkill -f 'tsx watch' && pnpm dev` 重启
+- 或 `env | grep AGENT_NO_CAFFEINATE` 看是否手动关了
+
+### AC 电源下也想阻止 system sleep
+
+```bash
+AGENT_CAFFEINATE_SYSTEM_SLEEP=1 pnpm dev
+```
+
+`caffeinate -s` 只在 AC 下有效，battery 下 macOS 忽略。
+
+### Wake for network access
+
+即使 Mac 睡了，网络接入唤醒有时能救。系统设置：
+
+`System Settings → Battery → Options → Wake for network access`
+
+选 "Always" 或 "Only on Power Adapter"。飞书 WS 长连接触发 wake（不保证 100%）。
+
+---
+
 ## 一般排查步骤
 
 按顺序：

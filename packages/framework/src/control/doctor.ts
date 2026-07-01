@@ -361,6 +361,38 @@ async function runClaudeBin(): Promise<DoctorResult> {
   };
 }
 
+async function runCaffeinate(): Promise<DoctorResult> {
+  if (platform() !== 'darwin') {
+    return { name: 'caffeinate (防休眠)', severity: 'optional', status: 'skip', message: '非 macOS' };
+  }
+  if (process.env['AGENT_NO_CAFFEINATE']) {
+    return {
+      name: 'caffeinate (防休眠)',
+      severity: 'optional',
+      status: 'skip',
+      message: 'AGENT_NO_CAFFEINATE=1 已关闭',
+    };
+  }
+  // 检查 daemon 是否 spawn 了跟随自己 pid 的 caffeinate
+  const r = await runCommand('pgrep', ['-fa', 'caffeinate.*-w'], 2000);
+  if (r.ok && r.stdout) {
+    return {
+      name: 'caffeinate (防休眠)',
+      severity: 'optional',
+      status: 'pass',
+      message: '在跑（daemon 期间 Mac 不 idle sleep）',
+      detail: r.stdout.split('\n')[0],
+    };
+  }
+  return {
+    name: 'caffeinate (防休眠)',
+    severity: 'optional',
+    status: 'warn',
+    message: '未找到跟随 daemon 的 caffeinate 进程',
+    hint: 'daemon 应该自动 spawn；如没有，先 pkill tsx + 重启 pnpm dev。合盖睡眠 macOS 强制，任何软件方案无解',
+  };
+}
+
 export interface DoctorReport {
   results: DoctorResult[];
   summary: { pass: number; warn: number; fail: number; skip: number };
@@ -382,6 +414,7 @@ export async function runDoctor(opts: { repoRoot?: string } = {}): Promise<Docto
   results.push(await runAppleScript());
   results.push(await runTerminalTabs());
   results.push(await runSocketAndLark());
+  results.push(await runCaffeinate());
   results.push(await runSubagents());
   results.push(await runPresets());
   results.push(await runData(repoRoot));

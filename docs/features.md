@@ -206,7 +206,35 @@ EOF
 
 ---
 
-## 10. WS 长连接健壮性
+## 10. 防休眠（Sleep prevention）
+
+### 能力
+- daemon 启动时**自动** spawn `caffeinate -i -m -w <daemon-pid>`
+- 阻止 macOS idle sleep + disk sleep，daemon 死 caffeinate 自动退
+- Env var `AGENT_NO_CAFFEINATE=1` 关闭
+- Env var `AGENT_CAFFEINATE_SYSTEM_SLEEP=1` 加 `-s`（AC 电源下真阻 system sleep）
+
+### 什么时候用
+- 你希望 remote 时 Mac idle 不睡（默认开）
+- Mac 在跑长 SOP，出门后你不希望它睡了断 WS
+
+### ⚠️ 硬性限制：合盖 macOS 强制睡
+- **MacBook 合盖** 时 macOS 主动断电+挂起 CPU，任何用户态程序（包括 caffeinate）**都无能为力**
+- 唯一软件绕过：SIP 关闭 + 装第三方 kext（如已停维护的 InsomniaX，有风险）
+- **推荐硬件方案**：
+  - **Clamshell mode**：MacBook + AC 电源 + 外接显示器 + 外接键盘/鼠标 → 合盖也不睡（macOS 自动进 clamshell mode）
+  - 或用**桌面 Mac**（iMac / Mac mini）
+- 就 idle 睡眠：`caffeinate` 完全够用（默认已开）
+
+### 验证
+```
+agent doctor
+```
+`caffeinate (防休眠)` 那行应显示 `pass` + PID。
+
+---
+
+## 11. WS 长连接健壮性
 
 ### 能力
 - **WS watchdog**：monkey-patch console.log 截 lark SDK 的 `[ws] reconnect` / `[ws] ws client ready`；判断 WS "假活"（reconnect ≥3 且 90s 无 ready）触发自杀 + tsx watch reload
@@ -219,7 +247,7 @@ EOF
 
 ---
 
-## 11. 诊断（Doctor）
+## 12. 诊断（Doctor）
 
 ### 能力
 - 一句 `agent doctor` 跑 12 项健康检查
@@ -235,7 +263,7 @@ EOF
 
 ---
 
-## 12. Modular / 可扩展
+## 13. Modular / 可扩展
 
 ### 能力
 - Monorepo：orchestrator / host-mac / im-lark / framework / daemon 5 层单向依赖

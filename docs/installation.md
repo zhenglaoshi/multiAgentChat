@@ -179,6 +179,19 @@ pnpm dev
 
 ---
 
+## 防休眠说明
+
+daemon 启动时**自动**跑 `caffeinate` 阻止 Mac idle sleep。你不用配。
+
+**但**：MacBook 合盖 macOS 强制断电，任何软件无解。如果你 remote 用得多：
+- 外接电源 + 外显 + 外键鼠 → macOS clamshell mode，合盖不睡
+- 或用 iMac / Mac mini
+
+关闭防休眠：`AGENT_NO_CAFFEINATE=1 pnpm dev`  
+AC 下也阻 system sleep：`AGENT_CAFFEINATE_SYSTEM_SLEEP=1 pnpm dev`
+
+---
+
 ## 常见踩坑
 
 | 坑 | 症状 | 解 |
