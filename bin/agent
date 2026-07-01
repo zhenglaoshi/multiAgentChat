@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # multiAgentChat CLI shim
-# Always resolves to the package root so `agent` works from any cwd.
+# Always resolves to the monorepo root so `agent` works from any cwd.
 set -e
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
-exec npx --prefix "$ROOT" tsx "$ROOT/src/control/cli.ts" "$@"
+exec npx --prefix "$ROOT" tsx "$ROOT/apps/daemon/src/control/cli.ts" "$@"

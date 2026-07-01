@@ -1,8 +1,8 @@
 {
-  "name": "multi-agent-chat",
+  "name": "multiagent-chat",
   "version": "0.0.1",
   "private": true,
-  "description": "Local multi-agent orchestrator with mobile IM bridge",
+  "description": "Local multi-agent orchestrator with mobile IM bridge (monorepo root)",
   "type": "module",
   "engines": {
     "node": ">=20"
@@ -11,15 +11,11 @@
     "agent": "./bin/agent"
   },
   "scripts": {
-    "dev": "tsx watch src/index.ts",
-    "start": "tsx src/index.ts",
-    "agent": "tsx src/control/cli.ts",
-    "build": "tsc",
-    "typecheck": "tsc --noEmit"
-  },
-  "dependencies": {
-    "@larksuiteoapi/node-sdk": "^1.40.0",
-    "dotenv": "^16.4.5"
+    "dev": "tsx watch apps/daemon/src/index.ts",
+    "start": "tsx apps/daemon/src/index.ts",
+    "agent": "tsx apps/daemon/src/control/cli.ts",
+    "build": "tsc -b",
+    "typecheck": "tsc -b --pretty"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

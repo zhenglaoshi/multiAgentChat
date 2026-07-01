@@ -1,0 +1,19 @@
+{
+  "name": "multiagent-daemon",
+  "version": "0.0.1",
+  "private": true,
+  "description": "multiAgentChat daemon — 飞书 IM ⇄ Mac Terminal 桥 + SOP 编排",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "dev": "tsx watch src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.40.0",
+    "dotenv": "^16.4.5"
+  }
+}
