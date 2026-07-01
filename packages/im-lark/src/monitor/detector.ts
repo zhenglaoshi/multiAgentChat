@@ -14,20 +14,23 @@
  * 注意：busy 必须 = true 才认为 waiting（idle tab 不算）。
  */
 
+// 只保留**明确指令性**的等待模式；删掉：
+//   - `^[❯>►▶]\s+\S` — claude TUI idle 时 `❯ ` prompt 永远匹配（大误报源）
+//   - `[？?]\s*$` — claude 输出结尾常带问号（大误报源）
+//   - shell prompt `>` — 太宽
+// 保留：y/n / [Y/n] / Press Enter / checkbox picker / 明确"选择/确认/输入"中文
 const WAITING_PATTERNS: RegExp[] = [
-  /^\s*[☐☒○●⊙◯◉]/m,                       // multi-select 项
-  /^[❯>►▶]\s+\S/m,                           // 光标 + 选项
-  /\(\s*[Yy]\s*\/\s*[Nn]\s*\)/,             // (y/n) / (Y/N)
-  /\(\s*[Nn]\s*\/\s*[Yy]\s*\)/,             // (n/y)
-  /\(\s*yes\s*\/\s*no\s*\)/i,                // (yes/no)
+  /^\s*[☐☒◯◉]\s+\S/m,                         // multi-select 项（要有内容，不是 ○● 等 unicode 装饰）
+  /\(\s*[Yy]\s*\/\s*[Nn]\s*\)/,               // (y/n) / (Y/N)
+  /\(\s*[Nn]\s*\/\s*[Yy]\s*\)/,               // (n/y)
+  /\(\s*yes\s*\/\s*no\s*\)/i,                  // (yes/no)
   /[Pp]ress\s+(Enter|Return|[Yy]|[Nn]|any\s+key|space)/,
   /(Choose|Select|Pick|Confirm)\b[^\n]*[:?]\s*$/m,
   /\[Y\/n\]/,
   /\[y\/N\]/,
-  // 中文等待模式（claude 中文回复时常用）
-  /(选哪[条个种]|告诉我就行|选\s*\d+|请[选告确])/,
-  /[请要]?(选择|确认|输入|告诉|选一[条个个种])/,
-  /[？?]\s*$/m,                              // 行尾问号
+  // 中文明确等待（不含泛问号）
+  /(告诉我就行|请[选告确认]\s*\d|按\s*(回车|Enter))/,
+  /[请要](选择|确认|输入|告诉|选一[条个种])[^？?\n]{0,20}[?？]/,
 ];
 
 export interface DetectResult {

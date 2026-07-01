@@ -65,7 +65,7 @@ export class TabWatcher {
 
   constructor(opts: { pollMs?: number; renotifyMs?: number } = {}) {
     this.pollMs = opts.pollMs ?? 3000;
-    this.renotifyMs = opts.renotifyMs ?? 10 * 60 * 1000; // 10 分钟再通知一次
+    this.renotifyMs = opts.renotifyMs ?? 60 * 60 * 1000; // 60 分钟再通知一次（避免同 tab 反复骚扰）
   }
 
   start(): void {
