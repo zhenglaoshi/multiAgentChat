@@ -143,6 +143,12 @@ npm run dev
 | `/run --sop [--stages a,b] [@target] <prompt>` | 临时 SOP（无模板） |
 | `/run plan topic=...` | 跑内置 /plan 模板（轻量 explore + architect） |
 | `/task` 或 `/task <id>` | 看 SOP 任务列表 / 详情 |
+| `/task abort [<id>] [hard]` | 中止 SOP（不带 id 自动找当前 chat 进行中） |
+| `/task here` | 列本会话进行中的 SOP |
+| `/subagent` 或 `/sa` | 列所有可用 subagent（用户 + 项目本地） |
+| `/subagent <name>` | 详情 + system prompt 前 800 字 |
+| `/subagent delete <name>` | 删掉某个 subagent |
+| `/subagent gen <描述>` | LLM 为该域自动生成 3-5 subagent + 组合 template |
 | `/approvals` | 待审批 + 历史 |
 | `/recall <keyword>` | 查 task memory |
 | `/history` | 看最近完成的任务 |
@@ -162,12 +168,18 @@ agent lark send-file <path>      # 推文件
 agent lark send-image <path>     # 推图片
 agent request-approval --title T --body B  # 等飞书审批（阻塞）
 agent task list                   # 看 SOP 任务
+agent task here                   # 本 tty 上进行中的 SOP
 agent task show <task-id>
-agent task stage --task-id X --name <stage> --start/--end/--fail
+agent task stage --task-id X --name <stage> --start/--end/--fail/--skip
+agent task abort <task-id> [--hard] [--reason "..."]
 agent stage-recall [--name X] [--cwd Y] [kw1 kw2 ...]
+agent subagent list / show <name> / delete <name>   # 管理自定义 subagent
+agent subagent add <name> --body "..."               # 手工创建（body 也可 stdin）
 agent install-skill / uninstall-skill
 agent help                        # 完整命令清单
 ```
+
+**Subagent 生成用飞书**：`/subagent gen 视频剪辑：ffmpeg + 字幕 + 缩略图` 会自动派任务给 active tab 的 claude 生成 3-5 个 subagent + 组合 template。
 
 ---
 

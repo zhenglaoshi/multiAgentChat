@@ -224,6 +224,7 @@ export interface SubagentDeleteOp {
  * 主 claude 生成完 subagent JSON 后调这个 op 落盘。
  * framework 会：解析 → 校验 → writeSubagent 每个（skip 冲突）→ savePreset（如有 template）→ agent lark send-text 回 chat。
  */
+
 export interface SubagentGenSubmitOp {
   op: 'subagent.gen-submit';
   sessionId: string;
@@ -264,7 +265,7 @@ export type Request =
   | SubagentShowOp
   | SubagentAddOp
   | SubagentDeleteOp
-  | SubagentGenSubmitOp;
+  | SubagentGenSubmitOp
 
 export type Response<T = unknown> =
   | { ok: true; data: T }
@@ -407,3 +408,4 @@ export interface SubagentGenSubmitData {
   skipped: Array<{ name: string; reason: string }>;  // 因冲突或校验失败被跳
   templateSaved?: { name: string; stages?: string[]; gates?: string[] };
 }
+

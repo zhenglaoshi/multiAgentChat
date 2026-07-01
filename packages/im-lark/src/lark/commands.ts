@@ -136,10 +136,20 @@ const HELP_TEXT = [
   '  **/w**  /where                当前 active tab 信息',
   '  **/h**  /history [-n N]       active tab 的屏幕历史 tail',
   '  **/t**  /template             列任务模板（卡片）',
-  '       /template save <name> [@target] <prompt with {key}>',
+  '       /template save <name> [--stages a,b,c] [--gates after-x] [--loops a→b*N] [@target] <prompt>',
   '       /template show/delete <name>',
   '       /run <name> [k=v ...] | [pos1 pos2 ...]',
+  '       /run --sop [--stages ...] [@target] <prompt>   临时 SOP，不需要先存模板',
   '       /p /presets              旧名：列模板（文本）',
+  '  **/task** 或 /tk              SOP 任务列表 / 详情',
+  '       /task <task-id>          单个 task 详情卡（stage 时间线）',
+  '       /task abort [<task-id>] [hard]  中止（无 id 时自动找本会话进行中的 task）',
+  '       /task here               列本会话进行中的 SOP',
+  '  **/subagent** 或 /sa          Claude Code 自定义 subagent 管理',
+  '       /subagent list           列所有可用 subagent',
+  '       /subagent <name>         看单个详情（含 system prompt 前 800 字）',
+  '       /subagent delete <name>',
+  '       /subagent gen <域描述>   LLM 自动为该域生成 3-5 个 subagent + 组合 template',
   '  **/c**  /chain                列运行中链路 + 最近完成',
   '       /chain cancel <id>       终止指定链路',
   '       消息体语法：`@a X >> @b Y >> @c Z`（一行内串联）',
@@ -548,6 +558,22 @@ async function handleTemplateCmd(rest: string): Promise<ReplyAction> {
       }
       if (saved.artifactDir) {
         lines.push(`📂 artifactDir：${saved.artifactDir}`);
+      }
+      // stage 名不在 subagent registry 里 → 警告（不阻止保存）
+      // Claude Code 内置 subagent 也允许（Explore / Plan / general-purpose / ...）
+      const CLAUDE_BUILTINS = new Set([
+        'Explore', 'Plan', 'general-purpose', 'claude', 'claude-code-guide', 'statusline-setup',
+      ]);
+      const available = await listSubagents({ projectRoot: process.cwd() });
+      const availableNames = new Set(available.map((s) => s.name));
+      const unknownStages = saved.stages.filter(
+        (s) => !availableNames.has(s) && !CLAUDE_BUILTINS.has(s),
+      );
+      if (unknownStages.length > 0) {
+        lines.push('');
+        lines.push(`⚠️ stage 未找到对应 subagent（保存成功但跑时可能报 unknown）：`);
+        for (const s of unknownStages) lines.push(`  - ${s}`);
+        lines.push(`可用：\`/subagent list\` 查所有；\`/subagent gen <desc>\` 让主 agent 生成`);
       }
     }
     lines.push(`触发：\`/run ${tplName}${placeholders.length ? ' ...' : ''}\``);

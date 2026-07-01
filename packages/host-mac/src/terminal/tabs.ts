@@ -269,9 +269,46 @@ on run argv
 end run
 `;
 
+/**
+ * 后台开新 tab：activate Terminal（`do script` 必需）→ 立刻切回原 app。
+ * 200-300ms 闪 Terminal 一下，然后 Terminal 回后台。
+ * 用于 SOP 派发这类"不想抢焦点"的场景。
+ */
+const NEW_TAB_BACKGROUND_SCRIPT = `
+on run argv
+  set initCmd to item 1 of argv
+  set prevAppName to ""
+  try
+    tell application "System Events"
+      set prevAppName to name of (first application process whose frontmost is true)
+    end tell
+  end try
+  set newTty to ""
+  tell application "Terminal"
+    activate
+    try
+      set frontWin to front window
+      set newT to do script initCmd in frontWin
+    on error
+      set newT to do script initCmd
+    end try
+    set newTty to tty of newT
+  end tell
+  -- 立刻切回原 app（如果不是 Terminal）
+  if prevAppName is not "" and prevAppName is not "Terminal" then
+    try
+      tell application "System Events"
+        set frontmost of (first application process whose name is prevAppName) to true
+      end tell
+    end try
+  end if
+  return newTty
+end run
+`;
+
 export interface NewTabOptions {
   cwd?: string;
-  mode?: 'new-tab' | 'new-window';
+  mode?: 'new-tab' | 'new-window' | 'new-tab-background';
 }
 
 /**
@@ -281,12 +318,15 @@ export interface NewTabOptions {
  */
 export async function newTab(opts: NewTabOptions = {}): Promise<string> {
   const initCmd = ':';
-  const script =
-    opts.mode === 'new-window' ? NEW_WINDOW_SCRIPT : NEW_TAB_IN_FRONT_SCRIPT;
+  let script: string;
+  if (opts.mode === 'new-window') script = NEW_WINDOW_SCRIPT;
+  else if (opts.mode === 'new-tab-background') script = NEW_TAB_BACKGROUND_SCRIPT;
+  else script = NEW_TAB_IN_FRONT_SCRIPT;
   let tty: string;
   try {
     tty = (await runScriptOrThrow(script, [initCmd])).trim();
   } catch (e) {
+    // fallback 到 new-window（无 front window 时 in front window 会失败）
     if (opts.mode !== 'new-window') {
       tty = (await runScriptOrThrow(NEW_WINDOW_SCRIPT, [initCmd])).trim();
     } else {
@@ -364,6 +404,47 @@ on run argv
   end if
 end run
 `;
+
+/**
+ * 检测当前"用户焦点"：Terminal 是不是 frontmost app + front window 的 selected tab 是哪个 tty。
+ * 返回：
+ *  - { terminalFrontmost: true, tty: '/dev/ttysXXX' } — 用户正在盯着 Terminal 的这个 tab
+ *  - { terminalFrontmost: true, tty: null } — 在 Terminal 但拿不到 tty（异常）
+ *  - { terminalFrontmost: false } — 用户在别的 app
+ */
+const FRONT_FOCUS_SCRIPT = `
+tell application "System Events"
+  set frontApp to name of (first application process whose frontmost is true)
+end tell
+if frontApp is "Terminal" then
+  try
+    tell application "Terminal"
+      set selTty to tty of selected tab of front window
+      return "yes|" & selTty
+    end tell
+  on error
+    return "yes|"
+  end try
+else
+  return "no|"
+end if
+`;
+
+export async function getUserFocus(): Promise<{
+  terminalFrontmost: boolean;
+  tty: string | null;
+}> {
+  try {
+    const raw = (await runScriptOrThrow(FRONT_FOCUS_SCRIPT, [])).trim();
+    const [flag, tty] = raw.split('|');
+    return {
+      terminalFrontmost: flag === 'yes',
+      tty: tty && tty.length > 0 ? tty : null,
+    };
+  } catch {
+    return { terminalFrontmost: false, tty: null };
+  }
+}
 
 /**
  * 在目标 tab 显式发一次 Return 键。

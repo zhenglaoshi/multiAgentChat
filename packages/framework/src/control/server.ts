@@ -707,6 +707,7 @@ async function handleSubagentAdd(
     if (req.location !== undefined) input.location = req.location;
     const opts = req.projectRoot ? { projectRoot: req.projectRoot } : {};
     const def = await writeSubagent(input, opts);
+    // fire-and-forget refresh
     sendOk<SubagentAddData>(sock, { subagent: toSubagentSummary(def) });
   } catch (e) {
     sendErr(sock, (e as Error).message);
@@ -916,6 +917,7 @@ async function handleSubagentGenSubmit(
       skipped,
     };
     if (templateSaved) data.templateSaved = templateSaved;
+    // 若有真新增，刷新一次 claude tab 的 subagent 缓存
     sendOk<SubagentGenSubmitData>(sock, data);
   } catch (e) {
     sendErr(sock, (e as Error).message);
@@ -926,6 +928,7 @@ async function handleSubagentGenSubmit(
 function templateSaged(arr: string[]): string {
   return arr.join(' → ');
 }
+
 
 // ---- dispatch ----
 

@@ -737,7 +737,10 @@ async function cmdTask(flags: Flags): Promise<void> {
     t.stageHistory.forEach((s, i) => {
       const cur = i === t.currentStageIdx ? '►' : ' ';
       const icon =
-        s.status === 'done' ? '✓' : s.status === 'failed' ? '✗' : s.status === 'running' ? '⠂' : '·';
+        s.status === 'done' ? '✓' :
+        s.status === 'failed' ? '✗' :
+        s.status === 'running' ? '⠂' :
+        s.status === 'skipped' ? '⤼' : '·';
       stdout.write(`    ${cur} ${icon} ${s.name}`);
       if (s.summary) stdout.write(`  — ${truncate(s.summary, 80)}`);
       if (s.artifactPath) stdout.write(`  [${s.artifactPath}]`);
@@ -889,6 +892,7 @@ async function cmdSubagent(flags: Flags): Promise<void> {
     stdout.write(`✗ 已删除 ${name}\n`);
     return;
   }
+
 
   if (sub === 'gen-submit') {
     // agent subagent gen-submit --task-id <session> --chat X --body '<json>'
@@ -1060,6 +1064,17 @@ function printHelp() {
       '       ↑ soft（默认）：保留已完成 stage artifact；hard：claude 立刻停手不写收尾',
       '  agent stage-recall [--name <stage>] [--cwd <dir>] [-n N] [kw1 kw2 ...]',
       '       查跨任务的 stage memory（"上次 architect 在这个 cwd 做了啥"）',
+      '',
+      'Subagent 管理（Claude Code 自定义 subagent）：',
+      '  agent subagent list                    列所有可用 subagent（用户全局 + 项目本地）',
+      '  agent subagent show <name>             看某个 subagent 详情 + system prompt',
+      '  agent subagent add <name> --body "..." 手工加（body 从 stdin 也行）',
+      '       可选：--title/--reason=description  --artifact "A,B,C"=tools',
+      '             --summary=model  --note=color  --skip=写到项目本地',
+      '  agent subagent delete <name>',
+      '  agent subagent gen-submit --task-id X --chat Y --body <json>',
+      '       主 claude 生成 subagent JSON 后走这条落盘（一般不用手调）',
+      '       飞书里发 `/subagent gen <desc>` 主 claude 会自动调',
       '',
       '  agent help',
     ].join('\n') + '\n',

@@ -6,7 +6,7 @@ import { recordCwd } from 'multiagent-host-mac';
 import { formatRecallPrefix, recall, tokenize } from 'multiagent-orchestrator';
 import { pendingTracker } from '../monitor/pending.js';
 import { recordInbound } from '../monitor/ws-watchdog.js';
-import { forceEnter, getHistory, listTabs, newTab, send, sendKeysRaw } from 'multiagent-host-mac';
+import { forceEnter, getHistory, getUserFocus, listTabs, newTab, send, sendKeysRaw } from 'multiagent-host-mac';
 
 // SYSTEM_GUIDANCE 的去重 — per-tab，每 tty 6h 内最多注入一次
 // 这是 module-level 内存状态，dev 重启会清空（重启后第一次注入是合理的）
@@ -276,6 +276,7 @@ async function dispatchSopExecute(
   let promptForTab: string;
 
   if (parsed.targeted.length === 1) {
+    // 显式 @target → 尊重用户意愿，attach 到已有 tab
     const t0 = parsed.targeted[0]!;
     const tabs = await listTabs();
     const resolved = resolveTarget(tabs, t0.target);
@@ -287,22 +288,92 @@ async function dispatchSopExecute(
     targetLabel = t0.target;
     promptForTab = t0.text;
   } else {
+    // 无 @target → 智能决定 attach 还是 spawn
     const chat = await loadChat(ctx.chatId);
-    if (!chat.activeTty) {
+    const tabsPre = await listTabs();
+    const focus = await getUserFocus();
+
+    // Attach 条件：activeTty 存在 + 就是 frontmost tab + 有 claude TUI
+    let shouldAttach = false;
+    if (chat.activeTty) {
+      const activeTab = tabsPre.find((t) => t.tty === chat.activeTty);
+      if (
+        activeTab &&
+        activeTab.hasTUI &&
+        focus.terminalFrontmost &&
+        focus.tty === chat.activeTty
+      ) {
+        shouldAttach = true;
+      }
+    }
+
+    if (shouldAttach) {
+      const activeTab = tabsPre.find((t) => t.tty === chat.activeTty)!;
+      tab = activeTab;
+      targetLabel = 'attached';
+      promptForTab = parsed.fallback ?? text;
       await replyText(
         client,
         ctx,
-        '本会话还没有 active tab，SOP 任务无法派发。\n用 `/shells` 选一个或 `@<target>` 指定。',
+        `🔗 检测到你正在盯着 ${activeTab.tty}（Terminal frontmost + claude TUI），attach 派发（跳过 spawn）\n如新加的 subagent 不认，退出这个 claude session 重开再跑`,
       );
-      return;
+    } else {
+      // spawn 新 tab（背景，不抢焦点）
+      let baseCwd: string | undefined;
+      if (chat.activeTty) {
+        const activeTab = tabsPre.find((t) => t.tty === chat.activeTty);
+        if (activeTab?.cwd) baseCwd = activeTab.cwd;
+      }
+
+      const reason = !focus.terminalFrontmost
+        ? '你不在 Terminal（在别的 app）'
+        : !chat.activeTty
+          ? '本 chat 无 active tab'
+          : focus.tty !== chat.activeTty
+            ? `Terminal frontmost tab 是 ${focus.tty ?? '?'}，不是 active ${chat.activeTty}`
+            : 'active tab 没在跑 claude TUI';
+      await replyText(
+        client,
+        ctx,
+        `🎬 spawn 新 tab（原因：${reason}）\ncwd: ${baseCwd ?? 'default'}，Terminal 会闪 200ms 就切回`,
+      );
+
+      let newTty: string;
+      try {
+        const opts: Parameters<typeof newTab>[0] = { mode: 'new-tab-background' };
+        if (baseCwd) opts.cwd = baseCwd;
+        newTty = await newTab(opts);
+      } catch (e) {
+        await replyText(client, ctx, `❌ 新 tab 创建失败：${(e as Error).message}`);
+        return;
+      }
+
+      await new Promise((r) => setTimeout(r, 1200));
+      try {
+        const r = await send(newTty, 'claude');
+        if (!r.ok) throw new Error(r.reason ?? 'send failed');
+      } catch (e) {
+        await replyText(client, ctx, `❌ 新 tab ${newTty} 起 claude 失败：${(e as Error).message}`);
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 8000));
+
+      const tabsAfter = await listTabs();
+      const found = tabsAfter.find((t) => t.tty === newTty);
+      if (!found) {
+        await replyText(client, ctx, `❌ 新 tab ${newTty} spawn 后 listTabs 找不到`);
+        return;
+      }
+      tab = found;
+      targetLabel = 'fresh';
+      promptForTab = parsed.fallback ?? text;
+
+      await replyText(
+        client,
+        ctx,
+        `✅ 新 tab ${newTty} claude 就绪，派发 SOP`,
+      );
     }
-    const tabs = await listTabs();
-    tab = tabs.find((t) => t.tty === chat.activeTty);
-    if (!tab) {
-      await replyText(client, ctx, `★ ${chat.activeTty} 在 Terminal 已不存在`);
-      return;
-    }
-    promptForTab = parsed.fallback ?? text;
   }
 
   // precheck：目标 tab 已有未结束 SOP → 拒绝派发
