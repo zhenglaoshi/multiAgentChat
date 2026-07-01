@@ -215,10 +215,27 @@ find data/stage-memories -type f -mtime +90 -delete
 
 **原因**：macOS 合盖强制断电+挂起。**软件无法阻止**。
 
-**解**：
-- 硬件路径：外接电源 + 外接显示器 + 外接键鼠 → macOS clamshell mode 自动开启（合盖不睡）
-- 或用桌面 Mac（iMac / Mac mini）
-- 装第三方 kext（InsomniaX 类）风险高、需要关 SIP，不推荐
+不管是 `caffeinate` / IOKit assertion / **Amphetamine "Closed-Display Mode"** / `pmset` 都**不真的**阻止合盖睡眠——它们的机制只影响 idle sleep 断言，合盖是 kernel + 固件层的独立行为。
+
+**能真解决合盖不睡 3 条路**：
+
+1. **HDMI ghost plug 假显示器（推荐远程场景）**
+   - 5-15 元的小 dongle 插 HDMI / USB-C
+   - macOS 认为外接了显示器 → 满足 clamshell mode 前置
+   - 加 AC 电源 + BT 键鼠 → 合盖也不睡
+   - 可以放包里带走
+
+2. **真 clamshell mode**（桌面）
+   - AC + 外接真显示器 + 外接键鼠
+   - macOS 自动开 clamshell mode
+
+3. **桌面 Mac**（Mac mini / iMac / Studio）
+   - 没有合盖问题
+
+**❌ 不 work 的老方案**（避坑）：
+- InsomniaX / NoSleep 等 kext：现代 SIP 挡；用户量少已停维护
+- `pmset -a lidwake 0` 或类似：这些只影响"从睡眠中如何唤醒"，不阻止合盖睡眠
+- DisplayLink 类第三方 USB 显卡驱动：Apple Silicon 支持差、不稳
 
 ### Mac idle 一段时间后 daemon 断连
 

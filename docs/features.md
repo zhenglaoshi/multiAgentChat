@@ -219,12 +219,31 @@ EOF
 - Mac 在跑长 SOP，出门后你不希望它睡了断 WS
 
 ### ⚠️ 硬性限制：合盖 macOS 强制睡
-- **MacBook 合盖** 时 macOS 主动断电+挂起 CPU，任何用户态程序（包括 caffeinate）**都无能为力**
-- 唯一软件绕过：SIP 关闭 + 装第三方 kext（如已停维护的 InsomniaX，有风险）
-- **推荐硬件方案**：
-  - **Clamshell mode**：MacBook + AC 电源 + 外接显示器 + 外接键盘/鼠标 → 合盖也不睡（macOS 自动进 clamshell mode）
-  - 或用**桌面 Mac**（iMac / Mac mini）
-- 就 idle 睡眠：`caffeinate` 完全够用（默认已开）
+
+**软件层无解**：
+- `caffeinate` / `IOPMAssertionCreateWithName` / **Amphetamine 的 "Closed-Display Mode"** 全都**不能**真的阻止合盖睡眠
+- Amphetamine 的机制跟 caffeinate 一样，只影响 idle sleep 断言；合盖是 kernel + 固件层的独立行为
+- InsomniaX 类 kext 在现代 macOS SIP 下装不上
+- `pmset` 里各种参数（`lidwake` / `standby`）只调整**从睡眠恢复**行为，不阻止睡眠本身
+
+**真能合盖不睡的 3 条路**：
+
+1. **HDMI ghost plug 假显示器**（推荐给远程场景，5-15 元）
+   - 小 dongle 插 HDMI / USB-C 口，macOS 认为外接了显示器
+   - 加 AC 电源 + BT 键鼠（或额外 HID）→ 满足 macOS clamshell mode 条件
+   - 合盖后 Mac 依然认为"有外接屏"，不睡
+   - 缺点：占一个口 + 需带 BT 键鼠
+
+2. **真 clamshell mode**（桌面场景）
+   - AC 电源 + 外接真显示器 + 外接键鼠
+   - macOS 自动开 clamshell mode
+   - 缺点：不便携
+
+3. **桌面 Mac**（Mac mini / iMac / Studio）
+   - 没有"合盖"问题
+   - 缺点：需买硬件
+
+**就 idle sleep（不合盖但闲置）**：`caffeinate` 默认已跑，完全够。
 
 ### 验证
 ```
