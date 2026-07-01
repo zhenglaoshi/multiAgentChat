@@ -6,6 +6,20 @@
 [![Status](https://img.shields.io/badge/status-beta-yellow.svg)](#当前状态)
 [![Platform](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](#平台)
 
+## 📖 文档索引
+
+看你的角色：
+- **首次访问** → 本 README（一句话 + 5 min 上手）
+- **完整安装** → [docs/installation.md](docs/installation.md)
+- **命令速查** → [docs/commands.md](docs/commands.md)
+- **能干啥** → [docs/features.md](docs/features.md)
+- **SOP 编排** → [docs/sop.md](docs/sop.md)
+- **出问题** → [docs/troubleshooting.md](docs/troubleshooting.md)
+- **改代码** → [docs/architecture.md](docs/architecture.md) + [CONTRIBUTING.md](CONTRIBUTING.md)
+- **全部文档** → [docs/README.md](docs/README.md)
+
+---
+
 ## 这是什么
 
 multiAgentChat 是一个**本地运行、单用户使用**的桥：
