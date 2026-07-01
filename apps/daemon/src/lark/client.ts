@@ -1,6 +1,6 @@
 import * as Lark from '@larksuiteoapi/node-sdk';
 import { config } from '../config.js';
-import { logger } from '../logger.js';
+import { logger } from 'multiagent-orchestrator';
 import { buildEventDispatcher } from './handlers.js';
 
 export interface LarkRuntime {

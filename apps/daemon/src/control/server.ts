@@ -3,10 +3,10 @@ import { mkdir, unlink } from 'node:fs/promises';
 import { existsSync, unlinkSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import * as Lark from '@larksuiteoapi/node-sdk';
-import { approvals } from '../approval/manager.js';
+import { approvals } from 'multiagent-orchestrator';
 import { listAllChats, loadChat, saveChat } from '../chats/store.js';
 import { sendCardMessage, sendFile, sendImage, sendTextMessage } from '../lark/api.js';
-import { logger } from '../logger.js';
+import { logger } from 'multiagent-orchestrator';
 import { pendingTracker } from '../monitor/pending.js';
 import { listRecentCwds, recordCwd } from '../recent-cwds.js';
 import {
@@ -20,9 +20,9 @@ import {
   markStageSkipped,
   markStageStart,
   markTaskAborted,
-} from '../tasks/store.js';
+} from 'multiagent-orchestrator';
 import { send as terminalSend } from '../terminal/tabs.js';
-import { recallStageMemories } from '../memory/stage-store.js';
+import { recallStageMemories } from 'multiagent-orchestrator';
 import {
   closeTab,
   getHistory,
@@ -506,7 +506,7 @@ async function handleTaskStage(
       }
     }
 
-    const gateContext: import('../approval/types.js').ApprovalGateContext = {
+    const gateContext: import('multiagent-orchestrator').ApprovalGateContext = {
       taskId: taskAfter.taskId,
       stageName: req.name,
       gateName,
@@ -592,7 +592,7 @@ async function handleStageRecall(
   const noQuery = !req.cwd && (!req.keywords || req.keywords.length === 0);
   let results: Awaited<ReturnType<typeof recallStageMemories>>;
   if (noQuery) {
-    const { listStageMemories } = await import('../memory/stage-store.js');
+    const { listStageMemories } = await import('multiagent-orchestrator');
     const filter: Parameters<typeof listStageMemories>[0] = {};
     if (req.stage) filter.stage = req.stage;
     filter.limit = req.limit ?? 5;

@@ -1,4 +1,4 @@
-import type { ApprovalRequest } from '../approval/types.js';
+import type { ApprovalRequest } from 'multiagent-orchestrator';
 import { inferTabStatus, type TabStatusInfo } from '../terminal/status.js';
 import type { TerminalTab } from '../terminal/types.js';
 

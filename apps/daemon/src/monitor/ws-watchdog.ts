@@ -10,7 +10,7 @@
  * 这弥补了 HTTP-only health-check 的盲点（HTTP 通但 WS 死的场景）。
  */
 
-import { logger } from '../logger.js';
+import { logger } from 'multiagent-orchestrator';
 
 export const wsState = {
   installed: false,

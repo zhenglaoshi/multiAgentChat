@@ -6,8 +6,8 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve as resolvePath } from 'node:path';
 import { argv, cwd as procCwd, exit, stderr, stdin, stdout } from 'node:process';
 import { fileURLToPath } from 'node:url';
-import type { ApprovalRequest } from '../approval/types.js';
-import type { TaskState, TaskStatus } from '../tasks/types.js';
+import type { ApprovalRequest } from 'multiagent-orchestrator';
+import type { TaskState, TaskStatus } from 'multiagent-orchestrator';
 import type { TerminalTab } from '../terminal/types.js';
 import { SOCKET_PATH } from './protocol.js';
 import type {

@@ -2,8 +2,8 @@ import {
   stageProgressCard,
   type StageProgressCardData,
   type StageProgressRow,
-} from '../lark/cards.js';
-import type { TaskState } from './types.js';
+} from './cards.js';
+import type { TaskState } from 'multiagent-orchestrator';
 
 /**
  * 把 TaskState 渲染成 stageProgressCard 的飞书卡片 JSON。

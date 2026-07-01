@@ -2,10 +2,10 @@ import { existsSync } from 'node:fs';
 import { readdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { approvals } from '../approval/manager.js';
+import { approvals } from 'multiagent-orchestrator';
 import { loadChat, saveChat } from '../chats/store.js';
-import { recall, tokenize } from '../memory/recall.js';
-import { memoryStore } from '../memory/store.js';
+import { recall, tokenize } from 'multiagent-orchestrator';
+import { memoryStore } from 'multiagent-orchestrator';
 import { chainManager } from '../monitor/chains.js';
 import { pendingTracker } from '../monitor/pending.js';
 import { watcher } from '../monitor/watcher.js';
@@ -20,7 +20,7 @@ import {
   parseRunArgs,
   savePreset,
   type Preset,
-} from '../presets/store.js';
+} from 'multiagent-orchestrator';
 import { listRecentCwds } from '../recent-cwds.js';
 import { getHistory, listTabs, newTab } from '../terminal/tabs.js';
 import { inferTabStatus, type TabStatusInfo } from '../terminal/status.js';
@@ -36,9 +36,9 @@ import {
   type DashboardSopTaskRow,
   type TemplateListItem,
 } from './cards.js';
-import { getTask, listTasks, markTaskAborted } from '../tasks/store.js';
+import { getTask, listTasks, markTaskAborted } from 'multiagent-orchestrator';
 import { send as terminalSend } from '../terminal/tabs.js';
-import { buildStageProgressCardFromTask } from '../tasks/render.js';
+import { buildStageProgressCardFromTask } from './task-render.js';
 
 export type ReplyAction =
   | { kind: 'text'; text: string }
@@ -53,7 +53,7 @@ export interface SopActionData {
   presetName: string;
   stages: string[];
   gates: string[];
-  loops: import('../presets/store.js').LoopRule[];
+  loops: import('multiagent-orchestrator').LoopRule[];
   artifactDir?: string;          // 用户没给则 framework 默认 ./docs/tasks/<task-id>
   userPrompt: string;            // 原始用户 prompt（不含 @target 前缀），写入 task.userPrompt
 }
@@ -495,7 +495,7 @@ async function handleTemplateCmd(rest: string): Promise<ReplyAction> {
     }
     if (loopsExtract.value) {
       // 语法：tester→coder*2,regression-checker→coder*1
-      const rules: import('../presets/store.js').LoopRule[] = [];
+      const rules: import('multiagent-orchestrator').LoopRule[] = [];
       for (const segRaw of loopsExtract.value.split(',')) {
         const seg = segRaw.trim();
         if (!seg) continue;
@@ -506,7 +506,7 @@ async function handleTemplateCmd(rest: string): Promise<ReplyAction> {
             text: `❌ --loops 段 "${seg}" 解析失败。语法：on→retryFrom[*maxRetries]，多条逗号分隔。例：tester→coder*2,regression-checker→coder*1`,
           };
         }
-        const rule: import('../presets/store.js').LoopRule = {
+        const rule: import('multiagent-orchestrator').LoopRule = {
           on: m[1]!,
           retryFrom: m[2]!,
         };
@@ -581,7 +581,7 @@ async function handleAdHocSopRun(line: string): Promise<ReplyAction> {
   body = artifactExtract.rest;
 
   // 模拟一个"空 preset" 让 resolveSopConfig 决策
-  const pseudoPreset: import('../presets/store.js').Preset = {
+  const pseudoPreset: import('multiagent-orchestrator').Preset = {
     name: '__adhoc__',
     prompt: '',
   };
@@ -598,7 +598,7 @@ async function handleAdHocSopRun(line: string): Promise<ReplyAction> {
       .filter((s) => s.length > 0);
   }
   if (loopsExtract.value) {
-    const rules: import('../presets/store.js').LoopRule[] = [];
+    const rules: import('multiagent-orchestrator').LoopRule[] = [];
     for (const segRaw of loopsExtract.value.split(',')) {
       const seg = segRaw.trim();
       if (!seg) continue;
@@ -609,7 +609,7 @@ async function handleAdHocSopRun(line: string): Promise<ReplyAction> {
           text: `❌ --loops 段 "${seg}" 解析失败。语法：on→retryFrom[*maxRetries]，多条逗号分隔`,
         };
       }
-      const rule: import('../presets/store.js').LoopRule = { on: m[1]!, retryFrom: m[2]! };
+      const rule: import('multiagent-orchestrator').LoopRule = { on: m[1]!, retryFrom: m[2]! };
       if (m[3]) rule.maxRetries = parseInt(m[3], 10);
       rules.push(rule);
     }

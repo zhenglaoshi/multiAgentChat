@@ -1,7 +1,7 @@
 import { createReadStream, existsSync, statSync } from 'node:fs';
 import { basename, extname, resolve as resolvePath } from 'node:path';
 import * as Lark from '@larksuiteoapi/node-sdk';
-import { logger } from '../logger.js';
+import { logger } from 'multiagent-orchestrator';
 
 /**
  * 网络/瞬时错误自动重试：ENOTFOUND / ETIMEDOUT / ECONNRESET / 5xx / 429

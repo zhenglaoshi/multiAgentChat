@@ -2,7 +2,7 @@ import { utimesSync } from 'node:fs';
 import { resolve } from 'node:path';
 import * as Lark from '@larksuiteoapi/node-sdk';
 import { config } from '../config.js';
-import { logger } from '../logger.js';
+import { logger } from 'multiagent-orchestrator';
 import { isWsLikelyDead, wsState } from './ws-watchdog.js';
 
 const HEALTH_INTERVAL_MS = 30_000;

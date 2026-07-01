@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import { mkdir, readdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { logger } from '../logger.js';
+import { logger } from 'multiagent-orchestrator';
 import type { ChatState } from './types.js';
 
 const DATA_DIR = resolve('./data/chats');

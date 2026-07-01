@@ -26,6 +26,11 @@ importers:
       dotenv:
         specifier: ^16.4.5
         version: 16.6.1
+      multiagent-orchestrator:
+        specifier: workspace:*
+        version: link:../../packages/orchestrator
+
+  packages/orchestrator: {}
 
 packages:
 

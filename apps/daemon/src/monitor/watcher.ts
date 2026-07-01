@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { logger } from '../logger.js';
+import { logger } from 'multiagent-orchestrator';
 import { enrichTabsWithCwd, getHistory, listTabsRaw } from '../terminal/tabs.js';
 import type { TerminalTab } from '../terminal/types.js';
 import { detectWaitingForInput } from './detector.js';

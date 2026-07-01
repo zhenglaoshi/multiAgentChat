@@ -1,9 +1,9 @@
 import * as Lark from '@larksuiteoapi/node-sdk';
-import { approvals } from '../approval/manager.js';
+import { approvals } from 'multiagent-orchestrator';
 import { loadChat, saveChat } from '../chats/store.js';
-import { logger } from '../logger.js';
+import { logger } from 'multiagent-orchestrator';
 import { recordCwd } from '../recent-cwds.js';
-import { formatRecallPrefix, recall, tokenize } from '../memory/recall.js';
+import { formatRecallPrefix, recall, tokenize } from 'multiagent-orchestrator';
 import { pendingTracker } from '../monitor/pending.js';
 import { recordInbound } from '../monitor/ws-watchdog.js';
 import { forceEnter, getHistory, listTabs, newTab, send, sendKeysRaw } from '../terminal/tabs.js';
@@ -48,9 +48,9 @@ interface ChainInfo {
 }
 import { handleCommand, isCommand, type ReplyAction, type SopActionData } from './commands.js';
 import { replyText, sendText } from './reply.js';
-import { createTask, generateTaskId, listTasks, markTaskAborted, setTaskProgressMessageId } from '../tasks/store.js';
-import { buildSopWrapperPrompt } from '../tasks/sop-prompt.js';
-import { buildStageProgressCardFromTask } from '../tasks/render.js';
+import { createTask, generateTaskId, listTasks, markTaskAborted, setTaskProgressMessageId } from 'multiagent-orchestrator';
+import { buildSopWrapperPrompt } from 'multiagent-orchestrator';
+import { buildStageProgressCardFromTask } from './task-render.js';
 import { homedir } from 'node:os';
 
 interface MessageReceiveEvent {
@@ -963,7 +963,7 @@ end run
     const tplName = value['name'] as string | undefined;
     if (!tplName) return { toast: { type: 'error', content: '缺模板名' } };
     const { getPreset, extractPlaceholders, expandPrompt } = await import(
-      '../presets/store.js'
+      'multiagent-orchestrator'
     );
     const preset = await getPreset(tplName);
     if (!preset) {
@@ -1046,7 +1046,7 @@ end run
   if (action === 'delete-template') {
     const tplName = value['name'] as string | undefined;
     if (!tplName) return { toast: { type: 'error', content: '缺模板名' } };
-    const { deletePreset } = await import('../presets/store.js');
+    const { deletePreset } = await import('multiagent-orchestrator');
     const ok = await deletePreset(tplName);
     if (!ok) {
       return { toast: { type: 'error', content: `模板 "${tplName}" 不存在` } };

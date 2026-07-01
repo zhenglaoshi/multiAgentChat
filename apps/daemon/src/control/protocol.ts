@@ -1,9 +1,9 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import type { ApprovalRequest, ApprovalStatus } from '../approval/types.js';
+import type { ApprovalRequest, ApprovalStatus } from 'multiagent-orchestrator';
 import type { ChatState } from '../chats/types.js';
-import type { LoopRule } from '../presets/store.js';
-import type { TaskState, TaskStatus } from '../tasks/types.js';
+import type { LoopRule } from 'multiagent-orchestrator';
+import type { TaskState, TaskStatus } from 'multiagent-orchestrator';
 import type { SendResult, TerminalTab } from '../terminal/types.js';
 
 export const SOCKET_PATH =

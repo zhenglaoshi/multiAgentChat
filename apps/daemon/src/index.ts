@@ -3,11 +3,11 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { startControlServer } from './control/server.js';
 import { startLarkBot } from './lark/client.js';
-import { logger } from './logger.js';
+import { logger } from 'multiagent-orchestrator';
 import { startHealthCheck } from './monitor/health-check.js';
 import { attachWatcherToLark } from './monitor/notifier.js';
 import { installWsWatchdog } from './monitor/ws-watchdog.js';
-import { attachStageMemoryListener } from './memory/stage-store.js';
+import { attachStageMemoryListener } from 'multiagent-orchestrator';
 
 function checkSkillInstalled(): void {
   const skillFile = join(homedir(), '.claude', 'skills', 'multiagent-lark', 'SKILL.md');

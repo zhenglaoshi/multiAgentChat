@@ -1,8 +1,8 @@
 import { basename } from 'node:path';
 import { homedir } from 'node:os';
 import * as Lark from '@larksuiteoapi/node-sdk';
-import { approvals } from '../approval/manager.js';
-import type { ApprovalRequest } from '../approval/types.js';
+import { approvals } from 'multiagent-orchestrator';
+import type { ApprovalRequest } from 'multiagent-orchestrator';
 import { listAllChats, loadChat } from '../chats/store.js';
 import { patchCard, sendCardMessage, sendCardReturnId } from '../lark/api.js';
 import {
@@ -17,17 +17,17 @@ import {
   type StageGateCardData,
 } from '../lark/cards.js';
 import { dispatchChainStep } from '../lark/handlers.js';
-import { logger } from '../logger.js';
-import { memoryStore } from '../memory/store.js';
-import { tokenize } from '../memory/recall.js';
-import type { TaskMemory } from '../memory/types.js';
+import { logger } from 'multiagent-orchestrator';
+import { memoryStore } from 'multiagent-orchestrator';
+import { tokenize } from 'multiagent-orchestrator';
+import type { TaskMemory } from 'multiagent-orchestrator';
 import type { TerminalTab } from '../terminal/types.js';
 import { chainManager, type ChainState } from './chains.js';
 import { pendingTracker, type PendingOutput } from './pending.js';
 import { watcher } from './watcher.js';
-import { taskEvents } from '../tasks/store.js';
-import type { StageRecord, TaskState } from '../tasks/types.js';
-import { buildStageProgressCardFromTask } from '../tasks/render.js';
+import { taskEvents } from 'multiagent-orchestrator';
+import type { StageRecord, TaskState } from 'multiagent-orchestrator';
+import { buildStageProgressCardFromTask } from '../lark/task-render.js';
 
 // 单卡输出预览的"行/字符"上限——避免卡片占满半屏
 const CARD_TAIL_MAX_LINES = 20;
