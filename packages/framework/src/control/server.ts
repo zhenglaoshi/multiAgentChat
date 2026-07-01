@@ -24,6 +24,13 @@ import {
 import { send as terminalSend } from 'multiagent-host-mac';
 import { recallStageMemories } from 'multiagent-orchestrator';
 import {
+  listSubagents,
+  getSubagent,
+  writeSubagent,
+  deleteSubagent,
+  type SubagentDef,
+} from 'multiagent-orchestrator';
+import {
   closeTab,
   getHistory,
   listTabs,
@@ -54,6 +61,12 @@ import type {
   TaskGetData,
   TaskListData,
   TaskStageData,
+  SubagentAddData,
+  SubagentDeleteData,
+  SubagentListData,
+  SubagentShowData,
+  SubagentGenSubmitData,
+  SubagentSummary,
 } from './protocol.js';
 import { SOCKET_PATH } from './protocol.js';
 
@@ -628,6 +641,292 @@ async function handleStageRecall(
   sock.end();
 }
 
+// ---- Subagent ops ----
+
+function toSubagentSummary(d: SubagentDef) {
+  const s: SubagentAddData['subagent'] = {
+    name: d.name,
+    location: d.location,
+    filePath: d.filePath,
+  };
+  if (d.description !== undefined) s.description = d.description;
+  if (d.tools !== undefined) s.tools = d.tools;
+  if (d.model !== undefined) s.model = d.model;
+  if (d.color !== undefined) s.color = d.color;
+  return s;
+}
+
+async function handleSubagentList(
+  sock: Socket,
+  req: Extract<Request, { op: 'subagent.list' }>,
+) {
+  const opts = req.projectRoot ? { projectRoot: req.projectRoot } : {};
+  const defs = await listSubagents(opts);
+  sendOk<SubagentListData>(sock, { subagents: defs.map(toSubagentSummary) });
+  sock.end();
+}
+
+async function handleSubagentShow(
+  sock: Socket,
+  req: Extract<Request, { op: 'subagent.show' }>,
+) {
+  const opts = req.projectRoot ? { projectRoot: req.projectRoot } : {};
+  const def = await getSubagent(req.name, opts);
+  if (!def) {
+    sendOk<SubagentShowData>(sock, { subagent: null });
+  } else {
+    sendOk<SubagentShowData>(sock, {
+      subagent: { ...toSubagentSummary(def), body: def.body },
+    });
+  }
+  sock.end();
+}
+
+async function handleSubagentAdd(
+  sock: Socket,
+  req: Extract<Request, { op: 'subagent.add' }>,
+) {
+  try {
+    if (!req.overwrite) {
+      const opts = req.projectRoot ? { projectRoot: req.projectRoot } : {};
+      const existing = await getSubagent(req.name, opts);
+      if (existing) {
+        sendErr(sock, `subagent "${req.name}" 已存在（${existing.location}），用 --overwrite 覆盖`);
+        sock.end();
+        return;
+      }
+    }
+    const input: Parameters<typeof writeSubagent>[0] = {
+      name: req.name,
+      body: req.body,
+    };
+    if (req.description !== undefined) input.description = req.description;
+    if (req.tools !== undefined) input.tools = req.tools;
+    if (req.model !== undefined) input.model = req.model;
+    if (req.color !== undefined) input.color = req.color;
+    if (req.location !== undefined) input.location = req.location;
+    const opts = req.projectRoot ? { projectRoot: req.projectRoot } : {};
+    const def = await writeSubagent(input, opts);
+    sendOk<SubagentAddData>(sock, { subagent: toSubagentSummary(def) });
+  } catch (e) {
+    sendErr(sock, (e as Error).message);
+  }
+  sock.end();
+}
+
+async function handleSubagentDelete(
+  sock: Socket,
+  req: Extract<Request, { op: 'subagent.delete' }>,
+) {
+  try {
+    const opts = req.projectRoot ? { projectRoot: req.projectRoot } : {};
+    const deleted = await deleteSubagent(req.name, opts);
+    sendOk<SubagentDeleteData>(sock, { deleted });
+  } catch (e) {
+    sendErr(sock, (e as Error).message);
+  }
+  sock.end();
+}
+
+// ---- Subagent gen submit ----
+
+const VALID_TOOLS = new Set([
+  'Read', 'Edit', 'Write', 'NotebookEdit', 'NotebookRead',
+  'Bash', 'Glob', 'Grep', 'LS',
+  'WebFetch', 'WebSearch', 'Task', 'TodoWrite',
+]);
+const VALID_MODELS = new Set(['sonnet', 'haiku', 'opus', 'inherit']);
+const VALID_COLORS = new Set([
+  'red', 'orange', 'yellow', 'green', 'blue', 'purple', 'pink', 'cyan', 'grey',
+]);
+const SUBAGENT_NAME_RE = /^[a-z][a-z0-9-]{1,62}$/;
+
+interface ParsedGenPayload {
+  subagents: Array<{
+    name: string;
+    description?: string;
+    tools?: string[];
+    model?: string;
+    color?: string;
+    body: string;
+  }>;
+  template?: {
+    name: string;
+    prompt: string;
+    stages?: string[];
+    gates?: string[];
+    artifactDir?: string;
+  };
+}
+
+function validateAndParseGenJson(raw: string): ParsedGenPayload {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    throw new Error(`JSON 解析失败：${(e as Error).message}`);
+  }
+  if (!parsed || typeof parsed !== 'object') throw new Error('JSON 顶层必须是对象');
+  const p = parsed as Record<string, unknown>;
+  if (!Array.isArray(p['subagents'])) throw new Error('缺 subagents 数组');
+  const subagents: ParsedGenPayload['subagents'] = [];
+  for (const item of p['subagents']) {
+    if (!item || typeof item !== 'object') throw new Error('每个 subagent 必须是对象');
+    const s = item as Record<string, unknown>;
+    if (typeof s['name'] !== 'string' || !SUBAGENT_NAME_RE.test(s['name'])) {
+      throw new Error(`subagent name 非法："${s['name']}"（要 [a-z][a-z0-9-]{1,62}）`);
+    }
+    if (typeof s['body'] !== 'string' || s['body'].trim().length < 10) {
+      throw new Error(`subagent "${s['name']}" body 太短或缺失`);
+    }
+    const clean: ParsedGenPayload['subagents'][number] = {
+      name: s['name'] as string,
+      body: (s['body'] as string).trim(),
+    };
+    if (typeof s['description'] === 'string') clean.description = s['description'];
+    if (Array.isArray(s['tools'])) {
+      const tools = (s['tools'] as unknown[]).filter((t) => typeof t === 'string') as string[];
+      const invalid = tools.filter((t) => !VALID_TOOLS.has(t));
+      if (invalid.length > 0) {
+        logger.warn('subagent gen: unknown tools, dropping', { invalid, name: clean.name });
+      }
+      clean.tools = tools.filter((t) => VALID_TOOLS.has(t));
+    }
+    if (typeof s['model'] === 'string' && VALID_MODELS.has(s['model'])) clean.model = s['model'];
+    if (typeof s['color'] === 'string' && VALID_COLORS.has(s['color'])) clean.color = s['color'];
+    subagents.push(clean);
+  }
+  if (subagents.length === 0) throw new Error('subagents 空');
+  if (subagents.length > 10) throw new Error('subagents 数量 > 10，太多');
+
+  const out: ParsedGenPayload = { subagents };
+  if (p['template'] && typeof p['template'] === 'object') {
+    const t = p['template'] as Record<string, unknown>;
+    if (typeof t['name'] === 'string' && typeof t['prompt'] === 'string') {
+      const tpl: NonNullable<ParsedGenPayload['template']> = {
+        name: t['name'] as string,
+        prompt: t['prompt'] as string,
+      };
+      if (Array.isArray(t['stages'])) {
+        tpl.stages = (t['stages'] as unknown[]).filter((s) => typeof s === 'string') as string[];
+      }
+      if (Array.isArray(t['gates'])) {
+        tpl.gates = (t['gates'] as unknown[]).filter((s) => typeof s === 'string') as string[];
+      }
+      if (typeof t['artifactDir'] === 'string') tpl.artifactDir = t['artifactDir'];
+      out.template = tpl;
+    }
+  }
+  return out;
+}
+
+async function handleSubagentGenSubmit(
+  sock: Socket,
+  req: Extract<Request, { op: 'subagent.gen-submit' }>,
+) {
+  try {
+    const parsed = validateAndParseGenJson(req.json);
+    const opts = req.projectRoot ? { projectRoot: req.projectRoot } : {};
+
+    const added: SubagentSummary[] = [];
+    const skipped: Array<{ name: string; reason: string }> = [];
+
+    for (const s of parsed.subagents) {
+      // 检查冲突
+      const existing = await getSubagent(s.name, opts);
+      if (existing) {
+        skipped.push({ name: s.name, reason: `已存在于 ${existing.location}: ${existing.filePath}` });
+        continue;
+      }
+      try {
+        const input: Parameters<typeof writeSubagent>[0] = {
+          name: s.name,
+          body: s.body,
+        };
+        if (s.description) input.description = s.description;
+        if (s.tools) input.tools = s.tools;
+        if (s.model) input.model = s.model;
+        if (s.color) input.color = s.color;
+        if (req.location) input.location = req.location;
+        const def = await writeSubagent(input, opts);
+        added.push(toSubagentSummary(def));
+      } catch (e) {
+        skipped.push({ name: s.name, reason: (e as Error).message });
+      }
+    }
+
+    // template 落盘（复用 orchestrator/presets）
+    let templateSaved: SubagentGenSubmitData['templateSaved'] | undefined;
+    if (parsed.template) {
+      try {
+        const { savePreset } = await import('multiagent-orchestrator');
+        const preset: Parameters<typeof savePreset>[0] = {
+          name: parsed.template.name,
+          prompt: parsed.template.prompt,
+        };
+        if (parsed.template.stages) preset.stages = parsed.template.stages;
+        if (parsed.template.gates) preset.gates = parsed.template.gates;
+        if (parsed.template.artifactDir) preset.artifactDir = parsed.template.artifactDir;
+        const saved = await savePreset(preset);
+        templateSaved = { name: saved.name };
+        if (saved.stages) templateSaved.stages = saved.stages;
+        if (saved.gates) templateSaved.gates = saved.gates;
+      } catch (e) {
+        logger.warn('subagent gen: template save failed', { err: (e as Error).message });
+      }
+    }
+
+    // 推结果到 chat
+    try {
+      if (larkClient && req.chatId) {
+        const lines = [`🎨 Subagent 生成完成（session ${req.sessionId}）`, ''];
+        if (added.length > 0) {
+          lines.push(`✅ 新增 ${added.length} 个：`);
+          for (const s of added) {
+            lines.push(`  • **${s.name}**${s.description ? ` — ${s.description.slice(0, 60)}` : ''}`);
+            if (s.tools?.length) lines.push(`    tools: \`${s.tools.join(', ')}\``);
+          }
+          lines.push('');
+        }
+        if (skipped.length > 0) {
+          lines.push(`⊘ 跳过 ${skipped.length} 个：`);
+          for (const s of skipped) lines.push(`  • ${s.name} — ${s.reason}`);
+          lines.push('');
+        }
+        if (templateSaved) {
+          lines.push(`📦 模板：**${templateSaved.name}**`);
+          if (templateSaved.stages?.length) lines.push(`   stages: ${templateSaged(templateSaved.stages)}`);
+          if (templateSaved.gates?.length) lines.push(`   gates: ${templateSaved.gates.join(', ')}`);
+          lines.push(`   触发：\`/run ${templateSaved.name}\``);
+          lines.push('');
+        }
+        lines.push('后续：');
+        lines.push(`  \`/subagent <name>\` 看详情`);
+        lines.push(`  \`/subagent delete <name>\` 删掉不满意的`);
+        if (templateSaved) lines.push(`  \`/run ${templateSaved.name}\` 试跑`);
+        await sendTextMessage(larkClient, req.chatId, lines.join('\n'));
+      }
+    } catch (e) {
+      logger.warn('subagent gen: lark reply failed', { err: (e as Error).message });
+    }
+
+    const data: SubagentGenSubmitData = {
+      sessionId: req.sessionId,
+      added,
+      skipped,
+    };
+    if (templateSaved) data.templateSaved = templateSaved;
+    sendOk<SubagentGenSubmitData>(sock, data);
+  } catch (e) {
+    sendErr(sock, (e as Error).message);
+  }
+  sock.end();
+}
+
+function templateSaged(arr: string[]): string {
+  return arr.join(' → ');
+}
+
 // ---- dispatch ----
 
 async function dispatch(sock: Socket, req: Request): Promise<void> {
@@ -678,6 +977,16 @@ async function dispatch(sock: Socket, req: Request): Promise<void> {
       return handleTaskAbort(sock, req);
     case 'stage.recall':
       return handleStageRecall(sock, req);
+    case 'subagent.list':
+      return handleSubagentList(sock, req);
+    case 'subagent.show':
+      return handleSubagentShow(sock, req);
+    case 'subagent.add':
+      return handleSubagentAdd(sock, req);
+    case 'subagent.delete':
+      return handleSubagentDelete(sock, req);
+    case 'subagent.gen-submit':
+      return handleSubagentGenSubmit(sock, req);
     default: {
       const exhaustive: never = req;
       sendErr(sock, `unknown op: ${JSON.stringify(exhaustive)}`);

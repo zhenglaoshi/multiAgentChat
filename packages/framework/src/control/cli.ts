@@ -31,6 +31,10 @@ import type {
   TaskGetData,
   TaskListData,
   TaskStageData,
+  SubagentAddData,
+  SubagentDeleteData,
+  SubagentListData,
+  SubagentShowData,
 } from './protocol.js';
 
 const STATE_FILE = join(homedir(), '.multiagent-chat', 'cli-state.json');
@@ -792,6 +796,134 @@ async function cmdTask(flags: Flags): Promise<void> {
   die(`未知 task 子命令：${sub}`);
 }
 
+// ---- subagent commands ----
+
+async function cmdSubagent(flags: Flags): Promise<void> {
+  const sub = flags.positional[0];
+  if (!sub) die('agent subagent <list|show|add|delete> ...');
+  const cwd = procCwd();
+
+  if (sub === 'list' || sub === 'ls') {
+    const data = await sendOnce<SubagentListData>({ op: 'subagent.list', projectRoot: cwd });
+    if (data.subagents.length === 0) {
+      stdout.write('(没有 subagent。用 `agent subagent add <name> ...` 创建，或 /subagent gen)\n');
+      return;
+    }
+    stdout.write(`共 ${data.subagents.length} 个 subagent:\n`);
+    for (const s of data.subagents) {
+      const loc = s.location === 'project' ? '📁' : '🏠';
+      stdout.write(`  ${loc} ${s.name}`);
+      if (s.description) stdout.write(`  — ${truncate(s.description, 60)}`);
+      stdout.write('\n');
+      if (s.tools?.length) stdout.write(`      tools: ${s.tools.join(', ')}\n`);
+    }
+    return;
+  }
+
+  if (sub === 'show') {
+    const name = flags.positional[1] ?? flags.name;
+    if (!name) die('agent subagent show <name>');
+    const data = await sendOnce<SubagentShowData>({
+      op: 'subagent.show',
+      name,
+      projectRoot: cwd,
+    });
+    if (!data.subagent) die(`subagent 不存在：${name}`);
+    const s = data.subagent;
+    stdout.write(`=== ${s.name} (${s.location}) ===\n`);
+    stdout.write(`file: ${s.filePath}\n`);
+    if (s.description) stdout.write(`description: ${s.description}\n`);
+    if (s.tools?.length) stdout.write(`tools: ${s.tools.join(', ')}\n`);
+    if (s.model) stdout.write(`model: ${s.model}\n`);
+    if (s.color) stdout.write(`color: ${s.color}\n`);
+    stdout.write('\n--- body ---\n');
+    stdout.write(s.body + '\n');
+    return;
+  }
+
+  if (sub === 'add') {
+    // agent subagent add <name> --description "..." --tools "A,B,C" --model sonnet --color blue --body "..."
+    // body 可以来自 stdin
+    const name = flags.positional[1] ?? flags.name;
+    if (!name) die('agent subagent add <name> [--description ...] [--tools A,B,C] [--body "..."] 或从 stdin');
+    let body = flags.body;
+    if (!body) {
+      const piped = await readStdinIfPiped();
+      if (piped) body = piped;
+    }
+    if (!body) die('缺 subagent body（--body 或 stdin）');
+    const req: Extract<Request, { op: 'subagent.add' }> = {
+      op: 'subagent.add',
+      name,
+      body,
+      projectRoot: cwd,
+      overwrite: flags.hard,
+    };
+    if (flags.reason !== undefined) req.description = flags.reason;
+    if (flags.title !== undefined && !req.description) req.description = flags.title;
+    if (flags.artifact !== undefined) req.tools = flags.artifact.split(',').map((s) => s.trim()).filter(Boolean);
+    if (flags.summary !== undefined) req.model = flags.summary;
+    // color: 复用 --note flag（reused）
+    if (flags.note !== undefined) req.color = flags.note;
+    if (flags.action === 'skip') req.location = 'project';
+    try {
+      const data = await sendOnce<SubagentAddData>(req);
+      const s = data.subagent;
+      stdout.write(`✅ subagent 已保存：${s.name}\n`);
+      stdout.write(`   ${s.filePath}\n`);
+    } catch (e) {
+      die((e as Error).message);
+    }
+    return;
+  }
+
+  if (sub === 'delete' || sub === 'rm') {
+    const name = flags.positional[1] ?? flags.name;
+    if (!name) die('agent subagent delete <name>');
+    const data = await sendOnce<SubagentDeleteData>({
+      op: 'subagent.delete',
+      name,
+      projectRoot: cwd,
+    });
+    if (!data.deleted) die(`subagent 不存在：${name}`);
+    stdout.write(`✗ 已删除 ${name}\n`);
+    return;
+  }
+
+  if (sub === 'gen-submit') {
+    // agent subagent gen-submit --task-id <session> --chat X --body '<json>'
+    // 或 body 从 stdin
+    const sessionId = flags.taskId;
+    const chatId = flags.chat;
+    if (!sessionId) die('agent subagent gen-submit --task-id <session-id> --chat <chatId> --body <json>');
+    if (!chatId) die('缺 --chat <chatId>');
+    let body = flags.body;
+    if (!body) {
+      const piped = await readStdinIfPiped();
+      if (piped) body = piped;
+    }
+    if (!body) die('缺 JSON（--body 或 stdin）');
+    const req: Extract<Request, { op: 'subagent.gen-submit' }> = {
+      op: 'subagent.gen-submit',
+      sessionId,
+      chatId,
+      json: body,
+      projectRoot: cwd,
+    };
+    if (flags.action === 'skip') req.location = 'project';
+    const data = await sendOnce<import('./protocol.js').SubagentGenSubmitData>(req);
+    stdout.write(`session=${data.sessionId}\n`);
+    stdout.write(`added=${data.added.length}: ${data.added.map((s) => s.name).join(', ')}\n`);
+    if (data.skipped.length) {
+      stdout.write(`skipped=${data.skipped.length}: ${data.skipped.map((s) => s.name + '(' + s.reason.slice(0, 40) + ')').join(', ')}\n`);
+    }
+    if (data.templateSaved) stdout.write(`template=${data.templateSaved.name}\n`);
+    return;
+  }
+
+  die(`未知 subagent 子命令：${sub}`);
+}
+
 async function cmdStageRecall(flags: Flags): Promise<void> {
   // --name 是 stage 名（复用现有 flag）
   const req: Extract<Request, { op: 'stage.recall' }> = { op: 'stage.recall' };
@@ -984,6 +1116,8 @@ async function main(): Promise<void> {
         return await cmdTask(flags);
       case 'stage-recall':
         return await cmdStageRecall(flags);
+      case 'subagent':
+        return await cmdSubagent(flags);
       case 'help':
       case '--help':
       case '-h':

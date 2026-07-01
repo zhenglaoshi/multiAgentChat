@@ -187,6 +187,55 @@ export interface StageRecallOp {
   minScore?: number;
 }
 
+// ---- Subagent registry ops ----
+
+export interface SubagentListOp {
+  op: 'subagent.list';
+  projectRoot?: string;
+}
+
+export interface SubagentShowOp {
+  op: 'subagent.show';
+  name: string;
+  projectRoot?: string;
+}
+
+export interface SubagentAddOp {
+  op: 'subagent.add';
+  name: string;
+  description?: string;
+  tools?: string[];
+  model?: string;
+  color?: string;
+  body: string;
+  location?: 'user' | 'project';
+  projectRoot?: string;
+  /** 已存在同名 subagent 时是否覆盖；默认 false，返回 error */
+  overwrite?: boolean;
+}
+
+export interface SubagentDeleteOp {
+  op: 'subagent.delete';
+  name: string;
+  projectRoot?: string;
+}
+
+/**
+ * 主 claude 生成完 subagent JSON 后调这个 op 落盘。
+ * framework 会：解析 → 校验 → writeSubagent 每个（skip 冲突）→ savePreset（如有 template）→ agent lark send-text 回 chat。
+ */
+export interface SubagentGenSubmitOp {
+  op: 'subagent.gen-submit';
+  sessionId: string;
+  chatId: string;
+  /** 由主 claude 产出的 JSON 字符串，schema：
+   *   { subagents: [{name, description?, tools?, model?, color?, body}], template?: {name, prompt, stages?, gates?} }
+   */
+  json: string;
+  location?: 'user' | 'project';
+  projectRoot?: string;
+}
+
 export type Request =
   | TabListRequest
   | TabGetRequest
@@ -210,7 +259,12 @@ export type Request =
   | TaskListOp
   | TaskStageOp
   | TaskAbortOp
-  | StageRecallOp;
+  | StageRecallOp
+  | SubagentListOp
+  | SubagentShowOp
+  | SubagentAddOp
+  | SubagentDeleteOp
+  | SubagentGenSubmitOp;
 
 export type Response<T = unknown> =
   | { ok: true; data: T }
@@ -317,4 +371,39 @@ export interface TaskStageData {
 
 export interface TaskAbortData {
   task: TaskState | null;
+}
+
+// ---- Subagent response shapes ----
+
+export interface SubagentSummary {
+  name: string;
+  description?: string;
+  tools?: string[];
+  model?: string;
+  color?: string;
+  location: 'user' | 'project';
+  filePath: string;
+}
+
+export interface SubagentListData {
+  subagents: SubagentSummary[];
+}
+
+export interface SubagentShowData {
+  subagent: (SubagentSummary & { body: string }) | null;
+}
+
+export interface SubagentAddData {
+  subagent: SubagentSummary;
+}
+
+export interface SubagentDeleteData {
+  deleted: boolean;
+}
+
+export interface SubagentGenSubmitData {
+  sessionId: string;
+  added: SubagentSummary[];      // 成功落盘的
+  skipped: Array<{ name: string; reason: string }>;  // 因冲突或校验失败被跳
+  templateSaved?: { name: string; stages?: string[]; gates?: string[] };
 }

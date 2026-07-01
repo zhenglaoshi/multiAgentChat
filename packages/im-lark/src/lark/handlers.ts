@@ -155,7 +155,97 @@ async function executeReply(
         void sendText(client, ctx.chatId, `❌ 失败：${(e as Error).message}`);
       });
     }
+  } else if (action.kind === 'gen-subagent') {
+    await dispatchGenSubagent(client, ctx, action.desc);
   }
+}
+
+/**
+ * /subagent gen <desc> 触发的分派：
+ * 派一段特殊 prompt 给 active tab 的主 claude，让它输出结构化 JSON 后调
+ * `agent subagent gen-submit` 交回框架落盘。
+ */
+async function dispatchGenSubagent(
+  client: Lark.Client,
+  ctx: { messageId: string; chatId: string },
+  desc: string,
+): Promise<void> {
+  const chat = await loadChat(ctx.chatId);
+  if (!chat.activeTty) {
+    await replyText(
+      client,
+      ctx,
+      '❌ 本会话没有 active tab 可派发。\n先 `/shells` 选一个或 `/use ttysXXX`。',
+    );
+    return;
+  }
+  const tabs = await listTabs();
+  const tab = tabs.find((t) => t.tty === chat.activeTty);
+  if (!tab) {
+    await replyText(client, ctx, `❌ ★ ${chat.activeTty} 在 Terminal 已不存在`);
+    return;
+  }
+  const sessionId = `sagen-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+
+  const prompt = [
+    `🛠 [Subagent 生成任务]`,
+    `session: ${sessionId}`,
+    `chat-id: ${ctx.chatId}`,
+    ``,
+    `用户想为下面这个域自动创建一套 subagent：`,
+    ``,
+    `**${desc}**`,
+    ``,
+    `请分析这个域，产出结构化 JSON（建议 2-5 个 subagent，可选一个组合 template）：`,
+    ``,
+    '```json',
+    `{`,
+    `  "subagents": [`,
+    `    {`,
+    `      "name": "kebab-case-name",           // [a-z][a-z0-9-]{1,62}`,
+    `      "description": "一句话职责（≤80字）",`,
+    `      "tools": ["Bash", "Read"],            // 见下面白名单`,
+    `      "model": "sonnet",                    // sonnet / haiku / opus`,
+    `      "color": "purple",                    // red/orange/yellow/green/blue/purple/pink/cyan/grey`,
+    `      "body": "You are ..."                 // 完整 system prompt，可多行`,
+    `    }`,
+    `  ],`,
+    `  "template": {                             // 可选`,
+    `    "name": "workflow-name",                // 同 subagent 命名规则`,
+    `    "prompt": "帮我处理 {task}",             // 支持 {var} 占位符`,
+    `    "stages": ["subagent1", "subagent2"],   // 必须指向刚定义的 subagent`,
+    `    "gates": ["after-subagent1"]             // 可选，after-<stage>`,
+    `  }`,
+    `}`,
+    '```',
+    ``,
+    `**工具白名单**：Read, Edit, Write, NotebookEdit, NotebookRead, Bash, Glob, Grep, LS, WebFetch, WebSearch, Task, TodoWrite`,
+    ``,
+    `**约束**：`,
+    `- 每个 subagent 的 body 必须 ≥ 10 字符（真实的 system prompt，不是占位）`,
+    `- 不要重复现有 subagent 名（先用 \`agent subagent list\` 看一眼）`,
+    `- tools 只放真需要的（写代码给 Edit+Write+Bash；只查询给 Read+Grep+Glob；等等）`,
+    `- template 是可选的；若域适合工作流才产`,
+    ``,
+    `**输出方式**（务必按这个走，别自己写 .md 文件）：`,
+    ``,
+    `\`\`\`bash`,
+    `agent subagent gen-submit \\`,
+    `  --task-id ${sessionId} \\`,
+    `  --chat ${ctx.chatId} \\`,
+    `  --body '<把上面 JSON 压成单行贴这里>'`,
+    `\`\`\``,
+    ``,
+    `framework 会解析、校验、逐个落盘到 \`~/.claude/agents/\`（冲突会跳过），并推消息到飞书告诉用户结果。你完成 gen-submit 后**不用**再发飞书消息，framework 会推送。`,
+  ].join('\n');
+
+  await replyText(
+    client,
+    ctx,
+    `🎨 派发 subagent 生成任务到 ${tab.tty}\nsession: \`${sessionId}\`\n等主 claude 完成 gen-submit...`,
+  );
+
+  await dispatchSendToTab(client, ctx, tab, prompt);
 }
 
 /**

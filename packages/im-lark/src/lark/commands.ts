@@ -6,6 +6,11 @@ import { approvals } from 'multiagent-orchestrator';
 import { loadChat, saveChat } from '../chats/store.js';
 import { recall, tokenize } from 'multiagent-orchestrator';
 import { memoryStore } from 'multiagent-orchestrator';
+import {
+  listSubagents,
+  getSubagent,
+  deleteSubagent,
+} from 'multiagent-orchestrator';
 import { chainManager } from '../monitor/chains.js';
 import { pendingTracker } from '../monitor/pending.js';
 import { watcher } from '../monitor/watcher.js';
@@ -47,6 +52,10 @@ export type ReplyAction =
       kind: 'execute';
       text: string;             // 展开后的 prompt（含 @target 前缀，若有）
       sop?: SopActionData;       // SOP 模式：framework 会建 task + 包 SOP wrapper 再发到 tab
+    }
+  | {
+      kind: 'gen-subagent';
+      desc: string;              // 用户描述的域
     };
 
 export interface SopActionData {
@@ -756,6 +765,99 @@ async function buildStageProgressCard(taskId: string): Promise<ReplyAction> {
   return { kind: 'card', card: buildStageProgressCardFromTask(task, homedir()) };
 }
 
+async function handleSubagentCmd(rest: string): Promise<ReplyAction> {
+  const trimmed = rest.trim();
+  const projectRoot = process.cwd();
+
+  // /subagent  或 /subagent list
+  if (!trimmed || trimmed === 'list' || trimmed === 'ls') {
+    const defs = await listSubagents({ projectRoot });
+    if (defs.length === 0) {
+      return {
+        kind: 'text',
+        text:
+          '（还没有 subagent）\n' +
+          '手工加：`agent subagent add <name> ...`\n' +
+          '或飞书里 `/subagent gen <描述>` （P0 待做）让主 agent 自动生成',
+      };
+    }
+    const lines = [`🤖 **${defs.length} 个 subagent**`, ''];
+    // 分组：project 先，user 后
+    const project = defs.filter((d) => d.location === 'project');
+    const user = defs.filter((d) => d.location === 'user');
+    if (project.length > 0) {
+      lines.push('📁 **项目本地：**');
+      for (const d of project) {
+        lines.push(`  • **${d.name}**${d.description ? ` — ${truncateSA(d.description, 60)}` : ''}`);
+        if (d.tools?.length) lines.push(`    tools: \`${d.tools.join(', ')}\``);
+      }
+      lines.push('');
+    }
+    if (user.length > 0) {
+      lines.push('🏠 **全局（~/.claude/agents/）：**');
+      for (const d of user) {
+        lines.push(`  • **${d.name}**${d.description ? ` — ${truncateSA(d.description, 60)}` : ''}`);
+        if (d.tools?.length) lines.push(`    tools: \`${d.tools.join(', ')}\``);
+      }
+    }
+    lines.push('');
+    lines.push('看详情：`/subagent <name>`');
+    lines.push('删除：`/subagent delete <name>`');
+    lines.push('（生成新的 `/subagent gen <描述>` — P0 待做）');
+    return { kind: 'text', text: lines.join('\n') };
+  }
+
+  // /subagent delete <name>
+  if (trimmed.startsWith('delete ') || trimmed.startsWith('rm ')) {
+    const name = trimmed.replace(/^(delete|rm)\s+/, '').trim();
+    if (!name) return { kind: 'text', text: '用法：`/subagent delete <name>`' };
+    const deleted = await deleteSubagent(name, { projectRoot });
+    return {
+      kind: 'text',
+      text: deleted ? `✗ 已删除 subagent \`${name}\`` : `❌ subagent 不存在：${name}`,
+    };
+  }
+
+  // /subagent gen <desc>
+  if (trimmed.startsWith('gen ') || trimmed === 'gen') {
+    const desc = trimmed.slice(3).trim();
+    if (!desc) {
+      return {
+        kind: 'text',
+        text:
+          '用法：`/subagent gen <域描述>`\n' +
+          '例：`/subagent gen 视频剪辑：ffmpeg 剪 mp4 + 加字幕 + 生成缩略图`',
+      };
+    }
+    return {
+      kind: 'gen-subagent',
+      desc,
+    };
+  }
+
+  // /subagent <name> — show detail
+  const name = trimmed.split(/\s+/)[0]!;
+  const def = await getSubagent(name, { projectRoot });
+  if (!def) {
+    return { kind: 'text', text: `❌ subagent 不存在：\`${name}\`\n看所有：\`/subagent\`` };
+  }
+  const lines: string[] = [];
+  lines.push(`🤖 **${def.name}** <font color='grey'>(${def.location})</font>`);
+  if (def.description) lines.push(`**描述**：${def.description}`);
+  if (def.tools?.length) lines.push(`**工具**：\`${def.tools.join(', ')}\``);
+  if (def.model) lines.push(`**模型**：\`${def.model}\``);
+  if (def.color) lines.push(`**颜色**：${def.color}`);
+  lines.push(`**文件**：\`${def.filePath}\``);
+  lines.push('');
+  lines.push('**System prompt**（前 800 字）：');
+  lines.push('```\n' + def.body.slice(0, 800) + (def.body.length > 800 ? '\n\n...(截断)' : '') + '\n```');
+  return { kind: 'text', text: lines.join('\n') };
+}
+
+function truncateSA(s: string, n: number): string {
+  return s.length <= n ? s : s.slice(0, n - 1) + '…';
+}
+
 async function handleTaskCmd(rest: string, chatId: string): Promise<ReplyAction> {
   const trimmed = rest.trim();
 
@@ -952,6 +1054,10 @@ export async function handleCommand(
 
   if (name === 'task' || name === 'tk') {
     return handleTaskCmd(rest, chatId);
+  }
+
+  if (name === 'subagent' || name === 'subagents' || name === 'sa') {
+    return handleSubagentCmd(rest);
   }
 
   if (name === 'chain' || name === 'chains') {
