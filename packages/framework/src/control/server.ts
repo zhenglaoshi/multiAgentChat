@@ -833,11 +833,13 @@ async function handleSubagentGenSubmit(
     const skipped: Array<{ name: string; reason: string }> = [];
 
     for (const s of parsed.subagents) {
-      // 检查冲突
-      const existing = await getSubagent(s.name, opts);
-      if (existing) {
-        skipped.push({ name: s.name, reason: `已存在于 ${existing.location}: ${existing.filePath}` });
-        continue;
+      // 检查冲突（overwrite=true 时跳过检查）
+      if (!req.overwrite) {
+        const existing = await getSubagent(s.name, opts);
+        if (existing) {
+          skipped.push({ name: s.name, reason: `已存在于 ${existing.location}: ${existing.filePath}` });
+          continue;
+        }
       }
       try {
         const input: Parameters<typeof writeSubagent>[0] = {

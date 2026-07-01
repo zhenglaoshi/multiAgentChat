@@ -157,7 +157,101 @@ async function executeReply(
     }
   } else if (action.kind === 'gen-subagent') {
     await dispatchGenSubagent(client, ctx, action.desc);
+  } else if (action.kind === 'tweak-subagent') {
+    await dispatchTweakSubagent(client, ctx, action.name, action.feedback, action.currentDef);
   }
+}
+
+/**
+ * /subagent tweak <name> <feedback> 触发的分派：
+ * 派一段特殊 prompt 给 active tab 的主 claude，让它按 feedback 修改现有 subagent
+ * 后调 `agent subagent gen-submit --hard`（overwrite）交回框架落盘。
+ */
+async function dispatchTweakSubagent(
+  client: Lark.Client,
+  ctx: { messageId: string; chatId: string },
+  name: string,
+  feedback: string,
+  currentDef: {
+    name: string;
+    description?: string;
+    tools?: string[];
+    model?: string;
+    color?: string;
+    body: string;
+  },
+): Promise<void> {
+  const chat = await loadChat(ctx.chatId);
+  if (!chat.activeTty) {
+    await replyText(
+      client,
+      ctx,
+      '❌ 本会话没有 active tab 可派发。\n先 `/shells` 选一个或 `/use ttysXXX`。',
+    );
+    return;
+  }
+  const tabs = await listTabs();
+  const tab = tabs.find((t) => t.tty === chat.activeTty);
+  if (!tab) {
+    await replyText(client, ctx, `❌ ★ ${chat.activeTty} 在 Terminal 已不存在`);
+    return;
+  }
+  const sessionId = `satweak-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+
+  const currentJson = JSON.stringify({ subagents: [currentDef] }, null, 2);
+  const prompt = [
+    `🛠 [Subagent Tweak 任务]`,
+    `session: ${sessionId}`,
+    `chat-id: ${ctx.chatId}`,
+    ``,
+    `用户想改现有 subagent **${name}**。`,
+    ``,
+    `当前定义（JSON）：`,
+    '```json',
+    currentJson,
+    '```',
+    ``,
+    `**改动指令**：`,
+    `${feedback}`,
+    ``,
+    `请：`,
+    `1. 理解 feedback 想改啥（改 body？改 tools？改 description？）`,
+    `2. 产出**修改后**的 subagent JSON（**保持 name 不变**）：`,
+    '```json',
+    `{`,
+    `  "subagents": [`,
+    `    {`,
+    `      "name": "${name}",`,
+    `      "description": "...",`,
+    `      "tools": [...],`,
+    `      "model": "...",`,
+    `      "color": "...",`,
+    `      "body": "改后的 system prompt"`,
+    `    }`,
+    `  ]`,
+    `}`,
+    '```',
+    ``,
+    `3. **务必用 --hard flag** 触发覆盖（否则 framework 会因为冲突跳过）：`,
+    '',
+    '```bash',
+    `agent subagent gen-submit \\`,
+    `  --task-id ${sessionId} \\`,
+    `  --chat ${ctx.chatId} \\`,
+    `  --hard \\`,
+    `  --body '<单行 JSON>'`,
+    '```',
+    ``,
+    `framework 会解析 → 校验 → 覆盖 ~/.claude/agents/${name}.md → 推消息到飞书。你不用另发飞书消息。`,
+  ].join('\n');
+
+  await replyText(
+    client,
+    ctx,
+    `🛠 派发 tweak 任务到 ${tab.tty}\nsession: \`${sessionId}\`\n改的：\`${name}\`\n指令：${feedback.slice(0, 100)}${feedback.length > 100 ? '…' : ''}`,
+  );
+
+  await dispatchSendToTab(client, ctx, tab, prompt);
 }
 
 /**

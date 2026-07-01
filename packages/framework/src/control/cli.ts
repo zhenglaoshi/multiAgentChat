@@ -915,6 +915,7 @@ async function cmdSubagent(flags: Flags): Promise<void> {
       projectRoot: cwd,
     };
     if (flags.action === 'skip') req.location = 'project';
+    if (flags.hard) req.overwrite = true;  // 复用 --hard flag 作 overwrite
     const data = await sendOnce<import('./protocol.js').SubagentGenSubmitData>(req);
     stdout.write(`session=${data.sessionId}\n`);
     stdout.write(`added=${data.added.length}: ${data.added.map((s) => s.name).join(', ')}\n`);

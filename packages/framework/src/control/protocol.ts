@@ -235,6 +235,8 @@ export interface SubagentGenSubmitOp {
   json: string;
   location?: 'user' | 'project';
   projectRoot?: string;
+  /** 是否覆盖已有同名 subagent（tweak 场景=true，gen 场景=false） */
+  overwrite?: boolean;
 }
 
 export type Request =

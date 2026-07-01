@@ -56,6 +56,19 @@ export type ReplyAction =
   | {
       kind: 'gen-subagent';
       desc: string;              // 用户描述的域
+    }
+  | {
+      kind: 'tweak-subagent';
+      name: string;
+      feedback: string;
+      currentDef: {
+        name: string;
+        description?: string;
+        tools?: string[];
+        model?: string;
+        color?: string;
+        body: string;
+      };
     };
 
 export interface SopActionData {
@@ -858,6 +871,39 @@ async function handleSubagentCmd(rest: string): Promise<ReplyAction> {
     return {
       kind: 'gen-subagent',
       desc,
+    };
+  }
+
+  // /subagent tweak <name> <feedback>
+  if (trimmed.startsWith('tweak ') || trimmed === 'tweak') {
+    const after = trimmed.slice(5).trim();
+    const m = after.match(/^(\S+)\s+(.+)$/s);
+    if (!m) {
+      return {
+        kind: 'text',
+        text:
+          '用法：`/subagent tweak <name> <改动指令>`\n' +
+          '例：`/subagent tweak data-fetcher 让它不用生成 preview，直接输出数据`',
+      };
+    }
+    const name = m[1]!;
+    const feedback = m[2]!.trim();
+    const existing = await getSubagent(name, { projectRoot });
+    if (!existing) {
+      return { kind: 'text', text: `❌ subagent 不存在：\`${name}\`` };
+    }
+    return {
+      kind: 'tweak-subagent',
+      name,
+      feedback,
+      currentDef: {
+        name: existing.name,
+        body: existing.body,
+        ...(existing.description !== undefined ? { description: existing.description } : {}),
+        ...(existing.tools !== undefined ? { tools: existing.tools } : {}),
+        ...(existing.model !== undefined ? { model: existing.model } : {}),
+        ...(existing.color !== undefined ? { color: existing.color } : {}),
+      },
     };
   }
 
