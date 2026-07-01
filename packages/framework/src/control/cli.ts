@@ -954,6 +954,42 @@ async function cmdStageRecall(flags: Flags): Promise<void> {
   }
 }
 
+async function cmdDoctor(): Promise<void> {
+  const { runDoctor } = await import('./doctor.js');
+  stderr.write('🩺 诊断中...\n\n');
+  const report = await runDoctor({ repoRoot: procCwd() });
+  const iconMap: Record<string, string> = {
+    pass: '✅',
+    warn: '⚠️ ',
+    fail: '❌',
+    skip: '⏭ ',
+  };
+  const severityWidth = 12;
+  for (const r of report.results) {
+    const icon = iconMap[r.status] ?? '?';
+    const sev = `[${r.severity}]`.padEnd(severityWidth);
+    stdout.write(`${icon} ${sev} ${r.name}: ${r.message}\n`);
+    if (r.detail) stdout.write(`     ${r.detail}\n`);
+    if (r.hint && (r.status === 'fail' || r.status === 'warn')) {
+      stdout.write(`     💡 ${r.hint}\n`);
+    }
+  }
+  stdout.write('\n');
+  stdout.write(
+    `汇总：✅ ${report.summary.pass}  ⚠️  ${report.summary.warn}  ❌ ${report.summary.fail}  ⏭ ${report.summary.skip}\n`,
+  );
+  const overallIcon =
+    report.overall === 'healthy' ? '🟢' : report.overall === 'degraded' ? '🟡' : '🔴';
+  const overallText =
+    report.overall === 'healthy'
+      ? '健康'
+      : report.overall === 'degraded'
+        ? '亚健康（能用但有 warn/fail）'
+        : '不可用（有 critical fail）';
+  stdout.write(`${overallIcon} 整体：${overallText}\n`);
+  if (report.overall === 'broken') exit(1);
+}
+
 async function cmdRequestApproval(flags: Flags): Promise<void> {
   let title = flags.title;
   let body = flags.body;
@@ -1066,6 +1102,9 @@ function printHelp() {
       '  agent stage-recall [--name <stage>] [--cwd <dir>] [-n N] [kw1 kw2 ...]',
       '       查跨任务的 stage memory（"上次 architect 在这个 cwd 做了啥"）',
       '',
+      '诊断：',
+      '  agent doctor                 全项目健康检查（Node/env/socket/AppleScript/skill/subagent...）',
+      '',
       'Subagent 管理（Claude Code 自定义 subagent）：',
       '  agent subagent list                    列所有可用 subagent（用户全局 + 项目本地）',
       '  agent subagent show <name>             看某个 subagent 详情 + system prompt',
@@ -1132,6 +1171,8 @@ async function main(): Promise<void> {
         return await cmdTask(flags);
       case 'stage-recall':
         return await cmdStageRecall(flags);
+      case 'doctor':
+        return await cmdDoctor();
       case 'subagent':
         return await cmdSubagent(flags);
       case 'help':
