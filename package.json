@@ -13,7 +13,7 @@
   "scripts": {
     "dev": "tsx watch apps/daemon/src/index.ts",
     "start": "tsx apps/daemon/src/index.ts",
-    "agent": "tsx apps/daemon/src/control/cli.ts",
+    "agent": "tsx packages/framework/src/control/cli.ts",
     "build": "tsc -b",
     "typecheck": "tsc -b --pretty"
   },

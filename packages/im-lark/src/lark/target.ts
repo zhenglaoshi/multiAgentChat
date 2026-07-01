@@ -1,5 +1,5 @@
 import { basename } from 'node:path';
-import type { TerminalTab } from '../terminal/types.js';
+import type { TerminalTab } from 'multiagent-host-mac';
 
 export interface ResolvedTarget {
   tab: TerminalTab;

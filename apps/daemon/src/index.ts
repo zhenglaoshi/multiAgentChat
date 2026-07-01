@@ -1,12 +1,12 @@
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { startControlServer } from './control/server.js';
-import { startLarkBot } from './lark/client.js';
+import { startControlServer } from 'multiagent-framework';
+import { startLarkBot } from 'multiagent-im-lark';
 import { logger } from 'multiagent-orchestrator';
-import { startHealthCheck } from './monitor/health-check.js';
-import { attachWatcherToLark } from './monitor/notifier.js';
-import { installWsWatchdog } from './monitor/ws-watchdog.js';
+import { startHealthCheck } from 'multiagent-im-lark';
+import { attachWatcherToLark } from 'multiagent-im-lark';
+import { installWsWatchdog } from 'multiagent-im-lark';
 import { attachStageMemoryListener } from 'multiagent-orchestrator';
 
 function checkSkillInstalled(): void {

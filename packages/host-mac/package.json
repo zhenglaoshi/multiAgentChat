@@ -1,0 +1,21 @@
+{
+  "name": "multiagent-host-mac",
+  "version": "0.0.1",
+  "private": true,
+  "description": "macOS host controller: AppleScript-based Terminal.app control + cwd resolution helpers.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "multiagent-orchestrator": "workspace:*"
+  }
+}

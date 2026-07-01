@@ -4,11 +4,11 @@ import { existsSync, unlinkSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import * as Lark from '@larksuiteoapi/node-sdk';
 import { approvals } from 'multiagent-orchestrator';
-import { listAllChats, loadChat, saveChat } from '../chats/store.js';
-import { sendCardMessage, sendFile, sendImage, sendTextMessage } from '../lark/api.js';
+import { listAllChats, loadChat, saveChat } from 'multiagent-im-lark';
+import { sendCardMessage, sendFile, sendImage, sendTextMessage } from 'multiagent-im-lark';
 import { logger } from 'multiagent-orchestrator';
-import { pendingTracker } from '../monitor/pending.js';
-import { listRecentCwds, recordCwd } from '../recent-cwds.js';
+import { pendingTracker } from 'multiagent-im-lark';
+import { listRecentCwds, recordCwd } from 'multiagent-host-mac';
 import {
   createTask,
   getTask,
@@ -21,7 +21,7 @@ import {
   markStageStart,
   markTaskAborted,
 } from 'multiagent-orchestrator';
-import { send as terminalSend } from '../terminal/tabs.js';
+import { send as terminalSend } from 'multiagent-host-mac';
 import { recallStageMemories } from 'multiagent-orchestrator';
 import {
   closeTab,
@@ -30,7 +30,7 @@ import {
   newTab,
   send,
   waitForOutput,
-} from '../terminal/tabs.js';
+} from 'multiagent-host-mac';
 import type {
   ApprovalListData,
   ApprovalRequestData,

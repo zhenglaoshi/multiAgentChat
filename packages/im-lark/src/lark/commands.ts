@@ -21,10 +21,10 @@ import {
   savePreset,
   type Preset,
 } from 'multiagent-orchestrator';
-import { listRecentCwds } from '../recent-cwds.js';
-import { getHistory, listTabs, newTab } from '../terminal/tabs.js';
-import { inferTabStatus, type TabStatusInfo } from '../terminal/status.js';
-import { resolveCdTarget } from '../workspace.js';
+import { listRecentCwds } from 'multiagent-host-mac';
+import { getHistory, listTabs, newTab } from 'multiagent-host-mac';
+import { inferTabStatus, type TabStatusInfo } from 'multiagent-host-mac';
+import { resolveCdTarget } from 'multiagent-host-mac';
 import {
   chooseDirCard,
   dashboardCard,
@@ -37,7 +37,7 @@ import {
   type TemplateListItem,
 } from './cards.js';
 import { getTask, listTasks, markTaskAborted } from 'multiagent-orchestrator';
-import { send as terminalSend } from '../terminal/tabs.js';
+import { send as terminalSend } from 'multiagent-host-mac';
 import { buildStageProgressCardFromTask } from './task-render.js';
 
 export type ReplyAction =
@@ -1140,7 +1140,7 @@ export async function handleCommand(
       const m = rest.match(/-n\s+(\d+)/);
       return m ? Number(m[1]) : 60;
     })();
-    const { getHistory } = await import('../terminal/tabs.js');
+    const { getHistory } = await import('multiagent-host-mac');
     const full = await getHistory(chat.activeTty);
     const arr = full.split('\n');
     const tail = arr.slice(-lines).join('\n');

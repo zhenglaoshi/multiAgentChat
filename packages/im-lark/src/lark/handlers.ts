@@ -2,11 +2,11 @@ import * as Lark from '@larksuiteoapi/node-sdk';
 import { approvals } from 'multiagent-orchestrator';
 import { loadChat, saveChat } from '../chats/store.js';
 import { logger } from 'multiagent-orchestrator';
-import { recordCwd } from '../recent-cwds.js';
+import { recordCwd } from 'multiagent-host-mac';
 import { formatRecallPrefix, recall, tokenize } from 'multiagent-orchestrator';
 import { pendingTracker } from '../monitor/pending.js';
 import { recordInbound } from '../monitor/ws-watchdog.js';
-import { forceEnter, getHistory, listTabs, newTab, send, sendKeysRaw } from '../terminal/tabs.js';
+import { forceEnter, getHistory, listTabs, newTab, send, sendKeysRaw } from 'multiagent-host-mac';
 
 // SYSTEM_GUIDANCE 的去重 — per-tab，每 tty 6h 内最多注入一次
 // 这是 module-level 内存状态，dev 重启会清空（重启后第一次注入是合理的）
@@ -792,7 +792,7 @@ async function handleCardAction(
     if (allPending.length === 0) {
       return { toast: { type: 'info', content: '没有 pending 任务' } };
     }
-    const { runScriptOrThrow } = await import('../terminal/applescript.js');
+    const { runScriptOrThrow } = await import('multiagent-host-mac');
     const script = `
 on run argv
   set targetTty to item 1 of argv
@@ -842,7 +842,7 @@ end run
       // 但 sendKeysRaw 本质是 do script —— 它会把字符当成 shell 命令
       // 飞书侧 cancel 实际有意义的做法：发一个 `kill -INT $(pgrep -P <shellPid> ...)` ?
       // 更简单：通过 AppleScript System Events keystroke
-      const { runScriptOrThrow } = await import('../terminal/applescript.js');
+      const { runScriptOrThrow } = await import('multiagent-host-mac');
       const script = `
 on run argv
   set targetTty to item 1 of argv
@@ -922,7 +922,7 @@ end run
     const currentStep = chain.steps[chain.currentIndex];
     if (currentStep?.tty) {
       try {
-        const { runScriptOrThrow } = await import('../terminal/applescript.js');
+        const { runScriptOrThrow } = await import('multiagent-host-mac');
         const script = `
 on run argv
   set targetTty to item 1 of argv
@@ -1021,7 +1021,7 @@ end run
       if (!result) return { toast: { type: 'error', content: `task ${taskId} 不存在` } };
       // 同样投递 🛑 到 tab
       if (result.tty) {
-        const { send: terminalSend } = await import('../terminal/tabs.js');
+        const { send: terminalSend } = await import('multiagent-host-mac');
         const banner = `\n\n🛑 [SOP 中止] task-id ${taskId} 已被中止${hard ? '（hard）' : '（soft）'}。停止 stage 协议。\n\n`;
         void terminalSend(result.tty, banner).catch(() => {});
       }

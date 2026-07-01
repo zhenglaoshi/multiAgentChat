@@ -7,9 +7,6 @@
   },
   "include": ["src/**/*"],
   "references": [
-    { "path": "../../packages/orchestrator" },
-    { "path": "../../packages/host-mac" },
-    { "path": "../../packages/im-lark" },
-    { "path": "../../packages/framework" }
+    { "path": "../orchestrator" }
   ]
 }

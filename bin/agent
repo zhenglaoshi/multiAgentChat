@@ -4,4 +4,4 @@
 set -e
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
-exec npx --prefix "$ROOT" tsx "$ROOT/apps/daemon/src/control/cli.ts" "$@"
+exec npx --prefix "$ROOT" tsx "$ROOT/packages/framework/src/control/cli.ts" "$@"

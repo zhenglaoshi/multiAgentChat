@@ -1,6 +1,6 @@
 import type { ApprovalRequest } from 'multiagent-orchestrator';
-import { inferTabStatus, type TabStatusInfo } from '../terminal/status.js';
-import type { TerminalTab } from '../terminal/types.js';
+import { inferTabStatus, type TabStatusInfo } from 'multiagent-host-mac';
+import type { TerminalTab } from 'multiagent-host-mac';
 
 function homeify(p: string, home: string): string {
   return p.startsWith(home) ? '~' + p.slice(home.length) : p;

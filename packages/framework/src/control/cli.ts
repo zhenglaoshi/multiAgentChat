@@ -8,7 +8,7 @@ import { argv, cwd as procCwd, exit, stderr, stdin, stdout } from 'node:process'
 import { fileURLToPath } from 'node:url';
 import type { ApprovalRequest } from 'multiagent-orchestrator';
 import type { TaskState, TaskStatus } from 'multiagent-orchestrator';
-import type { TerminalTab } from '../terminal/types.js';
+import type { TerminalTab } from 'multiagent-host-mac';
 import { SOCKET_PATH } from './protocol.js';
 import type {
   ApprovalListData,
@@ -419,9 +419,9 @@ async function resolveTargetChatId(flags: Flags): Promise<string> {
 const SKILL_NAME = 'multiagent-lark';
 
 function projectSkillSrcDir(): string {
-  // 本文件位于 src/control/cli.ts；项目根 = ../..
+  // 本文件位于 packages/framework/src/control/cli.ts；monorepo 根 = ../../../..
   const here = dirname(fileURLToPath(import.meta.url));
-  return resolvePath(here, '..', '..', 'skills', SKILL_NAME);
+  return resolvePath(here, '..', '..', '..', '..', 'skills', SKILL_NAME);
 }
 
 function userSkillDir(): string {

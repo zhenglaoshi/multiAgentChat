@@ -26,9 +26,51 @@ importers:
       dotenv:
         specifier: ^16.4.5
         version: 16.6.1
+      multiagent-framework:
+        specifier: workspace:*
+        version: link:../../packages/framework
+      multiagent-host-mac:
+        specifier: workspace:*
+        version: link:../../packages/host-mac
+      multiagent-im-lark:
+        specifier: workspace:*
+        version: link:../../packages/im-lark
       multiagent-orchestrator:
         specifier: workspace:*
         version: link:../../packages/orchestrator
+
+  packages/framework:
+    dependencies:
+      '@larksuiteoapi/node-sdk':
+        specifier: ^1.40.0
+        version: 1.68.0
+      multiagent-host-mac:
+        specifier: workspace:*
+        version: link:../host-mac
+      multiagent-im-lark:
+        specifier: workspace:*
+        version: link:../im-lark
+      multiagent-orchestrator:
+        specifier: workspace:*
+        version: link:../orchestrator
+
+  packages/host-mac:
+    dependencies:
+      multiagent-orchestrator:
+        specifier: workspace:*
+        version: link:../orchestrator
+
+  packages/im-lark:
+    dependencies:
+      '@larksuiteoapi/node-sdk':
+        specifier: ^1.40.0
+        version: 1.68.0
+      multiagent-host-mac:
+        specifier: workspace:*
+        version: link:../host-mac
+      multiagent-orchestrator:
+        specifier: workspace:*
+        version: link:../orchestrator
 
   packages/orchestrator: {}
 

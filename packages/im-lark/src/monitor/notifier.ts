@@ -21,7 +21,7 @@ import { logger } from 'multiagent-orchestrator';
 import { memoryStore } from 'multiagent-orchestrator';
 import { tokenize } from 'multiagent-orchestrator';
 import type { TaskMemory } from 'multiagent-orchestrator';
-import type { TerminalTab } from '../terminal/types.js';
+import type { TerminalTab } from 'multiagent-host-mac';
 import { chainManager, type ChainState } from './chains.js';
 import { pendingTracker, type PendingOutput } from './pending.js';
 import { watcher } from './watcher.js';

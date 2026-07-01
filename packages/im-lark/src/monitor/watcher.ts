@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { logger } from 'multiagent-orchestrator';
-import { enrichTabsWithCwd, getHistory, listTabsRaw } from '../terminal/tabs.js';
-import type { TerminalTab } from '../terminal/types.js';
+import { enrichTabsWithCwd, getHistory, listTabsRaw } from 'multiagent-host-mac';
+import type { TerminalTab } from 'multiagent-host-mac';
 import { detectWaitingForInput } from './detector.js';
 import { pendingTracker, type PendingOutput } from './pending.js';
 
