@@ -206,7 +206,7 @@ agent help                        # 完整命令清单
             [data/ JSON persistence]
 ```
 
-详细架构（含 SOP 状态机、依赖方向、迁移路径）：[docs/architecture.md](docs/tasks/task-mr198nfa-4u7k/design.md)
+详细架构（含 SOP 状态机、依赖方向、迁移路径）：[docs/architecture.md](docs/architecture.md)
 
 数据流：
 - 飞书消息 → `lark/handlers` → 路由到 tab via `terminal/tabs.send` + AppleScript
@@ -271,7 +271,7 @@ SOP 是 multiAgentChat 的核心差异化能力：把"丢个 prompt 让 claude �
 /run plan topic="X 的可行性"
 ```
 
-详见 [docs/sop.md](docs/) （TODO: 单独文档）
+详见 [docs/sop.md](docs/sop.md)
 
 ---
 
