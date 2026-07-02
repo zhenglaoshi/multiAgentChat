@@ -5,7 +5,8 @@
 ## 🚀 我刚发现这个项目
 1. **[项目 README](../README.md)** — 一句话是什么 + 5 分钟跑通第一条消息
 2. **[installation.md](installation.md)** — 完整安装手册（含飞书应用申请、Accessibility 权限）
-3. **[features.md](features.md)** — 具体能干啥（按能力分类，含真实用例）
+3. **[feishu-bot-setup.md](feishu-bot-setup.md)** — 配飞书机器人的斜杠命令菜单（16 条清单）
+4. **[features.md](features.md)** — 具体能干啥（按能力分类，含真实用例）
 
 ## 📖 我在日常用
 - **[commands.md](commands.md)** — 完整命令速查（飞书 + Mac CLI，按任务分类）
