@@ -216,13 +216,57 @@ function checkDrift(manifest: CommandMeta[]): ValidationIssue[] {
 
 // ── formatters ─────────────────────────────────────
 function fmtMd(list: CommandMeta[]): string {
-  const rows: string[] = [];
-  rows.push('| # | 指令名称 | 指令描述 | 示例 | 隐藏 |');
-  rows.push('|---|---|---|---|---|');
+  const out: string[] = [];
+
+  // 1) 紧凑表
+  out.push('## 命令一览');
+  out.push('');
+  out.push('给飞书开放平台后台填写用（对着 name / description / example 复制）。');
+  out.push('');
+  out.push('| # | 指令名称 | 指令描述 | 示例 | 隐藏 |');
+  out.push('|---|---|---|---|---|');
   list.forEach((c, i) => {
-    rows.push(`| ${i + 1} | ${c.name} | ${c.description} | ${c.example} | ${c.hidden ? '是' : '否'} |`);
+    out.push(`| ${i + 1} | ${c.name} | ${c.description} | ${c.example} | ${c.hidden ? '是' : '否'} |`);
   });
-  return rows.join('\n');
+
+  // 2) 详细用法（分组）
+  const usageItems = list.filter((c) => c.usage && c.usage.length > 0);
+  if (usageItems.length > 0) {
+    out.push('');
+    out.push('---');
+    out.push('');
+    out.push('## 详细用法');
+    out.push('');
+    out.push('每条命令的完整子命令语法。飞书菜单只有短描述，实际语法看这里。');
+    out.push('');
+
+    const groupOrder: CommandGroup[] = ['nav', 'dispatch', 'sop', 'subagent', 'query', 'other'];
+    for (const g of groupOrder) {
+      const items = usageItems.filter((c) => c.group === g);
+      if (items.length === 0) continue;
+      out.push(`### ${GROUP_LABELS[g]}`);
+      out.push('');
+      for (const c of items) {
+        const aliasStr = c.aliases && c.aliases.length > 0
+          ? `（alias: ${c.aliases.map((a) => `\`/${a}\``).join(', ')}）`
+          : '';
+        out.push(`#### \`/${c.name}\`${aliasStr}`);
+        out.push('');
+        out.push(c.description);
+        out.push('');
+        out.push('```');
+        for (const u of c.usage!) out.push(u);
+        out.push('```');
+        if (c.note) {
+          out.push('');
+          out.push(`> ℹ️ ${c.note}`);
+        }
+        out.push('');
+      }
+    }
+  }
+
+  return out.join('\n');
 }
 
 function fmtMdFull(list: CommandMeta[]): string {
@@ -246,6 +290,12 @@ function fmtMdFull(list: CommandMeta[]): string {
       out.push(`- **示例**：\`${c.example}\``);
       if (c.hidden) out.push(`- **隐藏**：是`);
       if (c.note) out.push(`- **备注**：${c.note}`);
+      if (c.usage && c.usage.length > 0) {
+        out.push('- **用法**：');
+        out.push('  ```');
+        for (const u of c.usage) out.push('  ' + u);
+        out.push('  ```');
+      }
       out.push('');
     }
   }
