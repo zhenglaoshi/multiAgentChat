@@ -25,6 +25,34 @@
 
 ---
 
+## 命令清单从哪里来
+
+命令清单**由脚本自动生成**（single source of truth 在 `scripts/feishu-command-manifest.ts`）。
+
+```bash
+# 生成 markdown 表格（默认，用来 copy-paste 到飞书后台）
+pnpm gen:feishu-commands --out docs/feishu-commands.md
+
+# 分组详细版（含 alias / 备注）
+pnpm gen:feishu-commands --format md-full
+
+# JSON / CSV（未来若飞书出批量 API）
+pnpm gen:feishu-commands --format json
+pnpm gen:feishu-commands --format csv
+
+# 只校验不输出（描述长度 / alias 冲突 / 与 commands.ts drift）
+pnpm verify:feishu-commands
+
+# 包含 hidden 命令（chain / audit / presets 兼容旧名）
+pnpm gen:feishu-commands --include-hidden
+```
+
+**推荐流程**：
+
+1. 每次代码里加/改命令后跑 `pnpm verify:feishu-commands`
+2. 通过后 `pnpm gen:feishu-commands --out docs/feishu-commands.md` 更新表
+3. 对着表在飞书开放平台加/改 slash 指令
+
 ## 命令完整清单（12 主命令，按功能分组）
 
 ### 🎛 概览 & 导航（4）
@@ -164,31 +192,19 @@
 ## 未来维护
 
 新加或改命令时：
-- 代码里 `packages/im-lark/src/lark/commands.ts` 加逻辑
-- 飞书开放平台后台**手动补一个 slash 指令**
-- 若命令描述改了，去后台也改
+1. 代码里 `packages/im-lark/src/lark/commands.ts` 加处理逻辑
+2. `scripts/feishu-command-manifest.ts` 里同步加/改元数据
+3. `pnpm verify:feishu-commands` 通过（**会检测代码 ↔ manifest 是否 drift**）
+4. `pnpm gen:feishu-commands --out docs/feishu-commands.md` 重跑生成
+5. 对着 `docs/feishu-commands.md` 在飞书开放平台手动加/改
 
-**两处同步**是手动工作，暂时无法自动。可以考虑加个脚本从代码生成 markdown 报表，方便对照修改。
+drift 检查会同时扫 `commands.ts` 的 `if (name === 'xxx')` **和** `ALIAS` 映射表，报告：
+- 代码里有但 manifest 漏了 → warn
+- manifest 里有但代码没 → warn
+- alias 指向的 canonical 名不一致 → warn
 
 ---
 
-## 附：完整命令一览表（供 copy-paste）
+## 附：当前完整命令一览表
 
-| # | 命令 | 描述 | 示例 | 隐藏 |
-|---|---|---|---|---|
-| 1 | dashboard | 全局概览：tab + pending 任务 + 最近完成 | dashboard | 否 |
-| 2 | shells | 列所有 Terminal tab（可点切换） | shells | 否 |
-| 3 | where | 当前 active tab 的详情 | where | 否 |
-| 4 | history | 当前 tab 屏幕历史 tail | history -n 100 | 否 |
-| 5 | use | 切换本会话的 active tab | use ttys001 | 否 |
-| 6 | new | Mac 上开新 Terminal tab | new ~/code/foo | 否 |
-| 7 | watch | 开关本地任务监听 | watch on | 否 |
-| 8 | run | 跑任务模板，或 --sop 临时 SOP | run --sop 实现 X | 否 |
-| 9 | template | 管理任务模板（save/show/delete） | template | 否 |
-| 10 | task | SOP 任务列表 / 详情 / 中止 | task <id> | 否 |
-| 11 | subagent | 管理 subagent（list/gen/tweak） | subagent gen 视频剪辑 | 否 |
-| 12 | approvals | 待审批 + 最近历史 | approvals | 否 |
-| 13 | recall | 搜任务历史 memory | recall 三梯队 | 否 |
-| 14 | help | 完整命令帮助 | help | 否 |
-| 15 | chain | 查看运行中的任务链路 | chain | 是（可选） |
-| 16 | audit | 审批历史 | audit 20 | 是（可选） |
+**由脚本自动生成，不要手改**。在 [docs/feishu-commands.md](feishu-commands.md) 里，或运行 `pnpm gen:feishu-commands`。

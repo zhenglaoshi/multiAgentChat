@@ -15,7 +15,9 @@
     "start": "tsx apps/daemon/src/index.ts",
     "agent": "tsx packages/framework/src/control/cli.ts",
     "build": "tsc -b",
-    "typecheck": "tsc -b --pretty"
+    "typecheck": "tsc -b --pretty",
+    "gen:feishu-commands": "tsx scripts/gen-feishu-commands.ts",
+    "verify:feishu-commands": "tsx scripts/gen-feishu-commands.ts --verify"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
