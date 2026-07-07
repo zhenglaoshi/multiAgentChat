@@ -78,6 +78,8 @@ interface Flags {
   gateTimeoutMs?: number;
   here: boolean;
   hard: boolean;
+  plain: boolean;         // agent lark send-text --plain：强制纯文本
+  auto: boolean;          // agent lark send-text --auto：Stop-hook 等自动推送，daemon 会按 chat.watchAllTabs gate
   positional: string[];
 }
 
@@ -93,6 +95,8 @@ function parseArgs(args: string[]): Flags {
     newWindow: false,
     here: false,
     hard: false,
+    plain: false,
+    auto: false,
     positional: [],
   };
   for (let i = 0; i < args.length; i++) {
@@ -137,6 +141,10 @@ function parseArgs(args: string[]): Flags {
       flags.here = true;
     } else if (a === '--hard') {
       flags.hard = true;
+    } else if (a === '--plain') {
+      flags.plain = true;
+    } else if (a === '--auto') {
+      flags.auto = true;
     } else if (a === '--reason') {
       flags.reason = args[++i] ?? die('--reason 需要值');
     } else if (a === '--status') {
@@ -481,8 +489,21 @@ async function cmdLark(flags: Flags): Promise<void> {
     }
     if (!text) die('agent lark send-text "..."');
     const chatId = await resolveTargetChatId(flags);
-    await sendOnce<LarkSendData>({ op: 'lark.send-text', chatId, text });
-    stdout.write(`✓ 文本已发到 ${chatId}\n`);
+    const data = await sendOnce<LarkSendData>({
+      op: 'lark.send-text',
+      chatId,
+      text,
+      ...(flags.plain ? { plain: true } : {}),
+      ...(flags.auto ? { auto: true } : {}),
+    });
+    // daemon 在 --auto 且 watchAllTabs=false 时会返回 details.gated=true
+    if (data.details && (data.details as { gated?: boolean }).gated) {
+      stdout.write(`○ auto-push gated（chat ${chatId} 未开启 /watch on）\n`);
+    } else {
+      stdout.write(
+        `✓ 文本已发到 ${chatId}${flags.plain ? ' (plain)' : ''}${flags.auto ? ' (auto)' : ''}\n`,
+      );
+    }
     return;
   }
   if (sub === 'send-card') {

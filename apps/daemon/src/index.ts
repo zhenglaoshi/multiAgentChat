@@ -1,7 +1,9 @@
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { readFile, writeFile } from 'node:fs/promises';
 import { homedir, platform } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { startControlServer } from 'multiagent-framework';
 import { startLarkBot } from 'multiagent-im-lark';
 import { logger } from 'multiagent-orchestrator';
@@ -9,6 +11,77 @@ import { startHealthCheck } from 'multiagent-im-lark';
 import { attachWatcherToLark } from 'multiagent-im-lark';
 import { installWsWatchdog } from 'multiagent-im-lark';
 import { attachStageMemoryListener } from 'multiagent-orchestrator';
+import { refreshDirIndex } from 'multiagent-host-mac';
+
+/**
+ * Upsert Claude Code Stop hook 到 ~/.claude/settings.json。
+ *
+ * Stop hook 会在每次 Claude Code assistant 响应完成时触发，把 stdin JSON
+ * （含 last_assistant_message）传给 bin/mchat-stop-hook，后者调
+ * `agent lark send-text --auto` 推到飞书；daemon 端根据目标 chat 的
+ * watchAllTabs gate。
+ *
+ * 幂等：先移除任何指向 mchat-stop-hook 或临时 mchat-hook-echo 的旧条目，
+ * 再追加当前绝对路径的 hook。保留用户自己的其他 Stop hook。
+ */
+async function installClaudeCodeStopHook(): Promise<void> {
+  const settingsPath = join(homedir(), '.claude', 'settings.json');
+  if (!existsSync(settingsPath)) {
+    logger.info(
+      'Claude Code settings.json not found — Stop hook 未安装 (需先跑一次 claude)',
+      { settingsPath },
+    );
+    return;
+  }
+  const HERE = fileURLToPath(new URL('.', import.meta.url));
+  const hookPath = resolve(HERE, '..', '..', '..', 'bin', 'mchat-stop-hook');
+  if (!existsSync(hookPath)) {
+    logger.warn('bin/mchat-stop-hook not found, Stop hook 未安装', { hookPath });
+    return;
+  }
+  try {
+    const raw = await readFile(settingsPath, 'utf8');
+    const cfg = JSON.parse(raw) as {
+      hooks?: {
+        Stop?: Array<{
+          matcher?: string;
+          hooks?: Array<{ type?: string; command?: string }>;
+        }>;
+      };
+      [k: string]: unknown;
+    };
+    if (!cfg.hooks || typeof cfg.hooks !== 'object') cfg.hooks = {};
+    if (!Array.isArray(cfg.hooks.Stop)) cfg.hooks.Stop = [];
+
+    // 去重：移除指向 mchat-stop-hook 或临时 echo hook 的旧条目
+    const before = cfg.hooks.Stop.length;
+    cfg.hooks.Stop = cfg.hooks.Stop.filter((entry) => {
+      const hks = entry && Array.isArray(entry.hooks) ? entry.hooks : [];
+      return !hks.some(
+        (h) =>
+          h &&
+          typeof h.command === 'string' &&
+          (h.command.includes('mchat-stop-hook') ||
+            h.command.includes('mchat-hook-echo')),
+      );
+    });
+
+    cfg.hooks.Stop.push({
+      matcher: '*',
+      hooks: [{ type: 'command', command: hookPath }],
+    });
+
+    await writeFile(settingsPath, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
+    logger.info('Claude Code Stop hook upserted', {
+      hookPath,
+      removedOld: before - (cfg.hooks.Stop.length - 1),
+    });
+  } catch (e) {
+    logger.warn('failed to upsert Claude Code Stop hook', {
+      err: (e as Error).message,
+    });
+  }
+}
 
 function checkSkillInstalled(): void {
   const skillFile = join(homedir(), '.claude', 'skills', 'multiagent-lark', 'SKILL.md');
@@ -79,6 +152,12 @@ async function main() {
   attachStageMemoryListener();
   startHealthCheck(lark.client);
   checkSkillInstalled();
+  await installClaudeCodeStopHook();
+
+  // 后台刷新目录索引（首次可能扫 15s，不阻塞主流程）
+  void refreshDirIndex().catch((e) => {
+    logger.warn('dir-index initial refresh failed', { err: (e as Error).message });
+  });
 
   process.on('SIGINT', () => {
     logger.info('received SIGINT, shutting down');

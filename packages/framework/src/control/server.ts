@@ -206,7 +206,23 @@ async function handleLarkSendText(
   const client = requireLark(sock);
   if (!client) return;
   try {
-    await sendTextMessage(client, req.chatId, req.text);
+    // --auto 推送（如 Claude Code Stop hook 触发）：仅当目标 chat 的 watchAllTabs=true 才放行
+    if (req.auto) {
+      const chat = await loadChat(req.chatId);
+      if (!chat.watchAllTabs) {
+        logger.info('auto-push gated', {
+          chatId: req.chatId,
+          reason: 'watchAllTabs !== true',
+          textLen: req.text.length,
+        });
+        sendOk<LarkSendData>(sock, { details: { gated: true } });
+        sock.end();
+        return;
+      }
+    }
+    await sendTextMessage(client, req.chatId, req.text, {
+      ...(req.plain ? { plain: true } : {}),
+    });
     sendOk<LarkSendData>(sock, { details: {} });
   } catch (e) {
     sendErr(sock, (e as Error).message);

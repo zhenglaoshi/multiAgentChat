@@ -70,6 +70,14 @@ export interface LarkSendTextOp {
   op: 'lark.send-text';
   chatId: string;
   text: string;
+  /** true → 强制走 msg_type:text 纯文本；默认 auto-detect markdown */
+  plain?: boolean;
+  /**
+   * true → 「自动推送」标记（如 Claude Code Stop hook 触发的）。
+   * daemon 会 gate：若 chat.watchAllTabs !== true，静默丢弃并在 response 里回 gated=true。
+   * 手工 `agent lark send-text` 不带此 flag，任何时候都会正常发送。
+   */
+  auto?: boolean;
 }
 
 export interface LarkSendCardOp {

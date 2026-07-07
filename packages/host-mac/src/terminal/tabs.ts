@@ -246,15 +246,42 @@ export async function waitForOutput(
   return diff;
 }
 
+/**
+ * 在 front window 里开新 tab。
+ *
+ * 坑：Terminal.app 的 `do script "cmd" in window` 在某些场景下会
+ * **在 selected tab 里执行**而不是新开 tab（观察到当 selected tab
+ * 是 alt-screen TUI 如 claude 时 do script 复用了当前 tab，返回原 tty）。
+ * 所以先 snapshot 全 tab tty，do script 后如果返回的 tty 已存在，
+ * fallback 到新 window，保证一定拿到全新 tty。
+ */
 const NEW_TAB_IN_FRONT_SCRIPT = `
 on run argv
   set initCmd to item 1 of argv
+  set prevTtys to {}
   tell application "Terminal"
     activate
+    repeat with w in windows
+      try
+        repeat with t in tabs of w
+          try
+            set end of prevTtys to (tty of t)
+          end try
+        end repeat
+      end try
+    end repeat
     set frontWin to front window
     set newT to do script initCmd in frontWin
-    return tty of newT
+    set newTty to tty of newT
   end tell
+  if newTty is in prevTtys then
+    -- do script 复用了 existing tab，退到新 window
+    tell application "Terminal"
+      set newT to do script initCmd
+      set newTty to tty of newT
+    end tell
+  end if
+  return newTty
 end run
 `;
 
@@ -283,9 +310,19 @@ on run argv
       set prevAppName to name of (first application process whose frontmost is true)
     end tell
   end try
+  set prevTtys to {}
   set newTty to ""
   tell application "Terminal"
     activate
+    repeat with w in windows
+      try
+        repeat with t in tabs of w
+          try
+            set end of prevTtys to (tty of t)
+          end try
+        end repeat
+      end try
+    end repeat
     try
       set frontWin to front window
       set newT to do script initCmd in frontWin
@@ -293,6 +330,10 @@ on run argv
       set newT to do script initCmd
     end try
     set newTty to tty of newT
+    if newTty is in prevTtys then
+      set newT to do script initCmd
+      set newTty to tty of newT
+    end if
   end tell
   -- 立刻切回原 app（如果不是 Terminal）
   if prevAppName is not "" and prevAppName is not "Terminal" then

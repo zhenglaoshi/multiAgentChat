@@ -126,6 +126,25 @@ watcher 检测到非 pending tab 的 history 增长 ≥8 行
 notifier 给所有 watchAllTabs=true 的 chat 发"🏠 本地"卡 + 创建 ghost pending（source='local'）
 ```
 
+### 4. 本地 claude 响应 → Stop hook → 飞书
+
+`watcher` 拿不到 claude TUI 里的 assistant 响应文本（alt-screen 屏蔽）。补一条 Claude Code **Stop hook** 通道：
+
+```
+claude assistant 响应完成
+   ↓ ~/.claude/settings.json hooks.Stop
+bin/mchat-stop-hook   （Node ESM 脚本）
+   ↓ stdin JSON 里 last_assistant_message
+spawn detached: agent lark send-text --auto <text>
+   ↓ IPC → daemon handleLarkSendText
+若 chat.watchAllTabs === true  → sendTextMessage 推到飞书
+否则                            → 静默 gated（返回 details.gated=true）
+```
+
+- hook 由 `apps/daemon/src/index.ts` 的 `installClaudeCodeStopHook()` 在 dev 启动时幂等 upsert 到 `~/.claude/settings.json`
+- `--auto` flag 只由 hook 用；手工 `agent lark send-text` 不带 flag，任何时候都放行
+- 飞书 `/watch on|off` 只改 `chat.watchAllTabs`，daemon 侧 gate；不需要给 tab 里的 claude 重发指令
+
 ## 关键约定（!!! 必读 !!!）
 
 ### 飞书 ack 窗口
@@ -180,6 +199,14 @@ SDK 返回 `{file_key}` 在 **TOP level**，不在 `.data` 下。`api.ts` 已修
 ### memory 写入用 taskOnlyTail
 
 `persistTaskMemory` 用 `pending.cwd ?? tab.cwd ?? ''`（dispatch 时记录的优先）；`outputPreview = taskOnlyTail.slice(-500)`；`filesProduced = extractFilesFromOutput(taskOnlyTail)`。不要用 `outputTail` 否则会捞到 scrollback 里的 noise。
+
+### Stop hook 脚本必须 ESM
+
+`bin/mchat-stop-hook` 是无扩展名的 Node 脚本。monorepo root `package.json` 声明了 `"type": "module"`，Node 22+ 会把所有无扩展名 shebang 脚本按 ESM 加载 → **`require()` 会 ReferenceError 让 hook 静默 crash**（Claude Code 不会往 UI 报，只是 hook 不生效，非常难排查）。
+
+→ 用 `import { ... }` from 'node:xxx'。要 debug 时设 `MCHAT_HOOK_DEBUG=1`，日志落 `/tmp/mchat-stop-hook.log`。
+
+hook 内部必须 fire-and-forget spawn agent CLI（`detached: true` + `proc.unref()` + 立即 `process.exit(0)`），别 await —— 阻塞 Claude Code 的 Stop 流程会拖慢用户 UI。
 
 ## 常见维护操作
 

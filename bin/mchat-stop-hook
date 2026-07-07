@@ -1,0 +1,67 @@
+#!/usr/bin/env node
+/*
+ * multiAgentChat — Claude Code Stop hook
+ *
+ * ~/.claude/settings.json 的 hooks.Stop 指向本脚本。Claude Code 每次
+ * assistant 响应完成会调本脚本，stdin 是 JSON（含 last_assistant_message /
+ * cwd / session_id）。本脚本抽 last_assistant_message，通过
+ * `bin/agent lark send-text --auto` 推到飞书；daemon 根据目标 chat 的
+ * watchAllTabs 决定是否放行。
+ *
+ * Fire-and-forget：spawn detached，hook 立即 exit 0，
+ * 不阻塞 Claude Code 的 Stop 流程。任何异常都吞掉（exit 0），
+ * 避免 hook 报错影响用户 UI。
+ *
+ * 设 MCHAT_HOOK_DEBUG=1 打开 /tmp/mchat-stop-hook.log 调试。
+ *
+ * NOTE: 必须用 ESM —— monorepo root package.json 声明 "type": "module"，
+ *       Node 会把无扩展名脚本按 ESM 加载；require() 会 ReferenceError
+ *       导致 hook crash（曾经的一个坑）。
+ */
+import { spawn } from 'node:child_process';
+import { appendFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const MAX_TEXT_LEN = 3500;
+const DEBUG = process.env['MCHAT_HOOK_DEBUG'] === '1';
+const DEBUG_LOG = '/tmp/mchat-stop-hook.log';
+
+function dbg(msg) {
+  if (!DEBUG) return;
+  try {
+    appendFileSync(DEBUG_LOG, `[${new Date().toISOString()}] ${msg}\n`);
+  } catch {}
+}
+
+let raw = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', (chunk) => {
+  raw += chunk;
+});
+process.stdin.on('error', () => process.exit(0));
+process.stdin.on('end', () => {
+  try {
+    if (!raw.trim()) return process.exit(0);
+    const payload = JSON.parse(raw);
+    let text = payload.last_assistant_message;
+    if (typeof text !== 'string' || !text.trim()) return process.exit(0);
+    if (text.length > MAX_TEXT_LEN) {
+      text = text.slice(0, MAX_TEXT_LEN) + '\n\n…(truncated)';
+    }
+    const agentBin = resolve(HERE, 'agent');
+    dbg(`spawn: session=${payload.session_id} text.len=${text.length}`);
+    const proc = spawn(agentBin, ['lark', 'send-text', '--auto'], {
+      stdio: ['pipe', 'ignore', 'ignore'],
+      detached: true,
+    });
+    proc.on('error', (e) => dbg('spawn error: ' + e.message));
+    proc.stdin.end(text);
+    proc.unref();
+    process.exit(0);
+  } catch (e) {
+    dbg('caught: ' + (e && e.message));
+    process.exit(0);
+  }
+});
