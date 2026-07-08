@@ -25,6 +25,14 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MAX_TEXT_LEN = 3500;
+// 短消息降噪：< 40 chars 的 assistant 响应（e.g. "OK"/"已完成"/"处理中"）不推飞书，
+// 手机端不刷屏。可通过 MCHAT_STOP_MIN_LEN=N 覆盖（0 = 全推，恢复旧行为）。
+const MIN_TEXT_LEN = (() => {
+  const v = process.env['MCHAT_STOP_MIN_LEN'];
+  if (v === undefined) return 40;
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 ? n : 40;
+})();
 const DEBUG = process.env['MCHAT_HOOK_DEBUG'] === '1';
 const DEBUG_LOG = '/tmp/mchat-stop-hook.log';
 
@@ -47,12 +55,24 @@ process.stdin.on('end', () => {
     const payload = JSON.parse(raw);
     let text = payload.last_assistant_message;
     if (typeof text !== 'string' || !text.trim()) return process.exit(0);
+    // 长度降噪：短确认（"OK"、"已完成 X"）不推飞书
+    const trimmedLen = text.trim().length;
+    if (trimmedLen < MIN_TEXT_LEN) {
+      dbg(`skip: too short (len=${trimmedLen} < ${MIN_TEXT_LEN})`);
+      return process.exit(0);
+    }
     if (text.length > MAX_TEXT_LEN) {
       text = text.slice(0, MAX_TEXT_LEN) + '\n\n…(truncated)';
     }
     const agentBin = resolve(HERE, 'agent');
-    dbg(`spawn: session=${payload.session_id} text.len=${text.length}`);
-    const proc = spawn(agentBin, ['lark', 'send-text', '--auto'], {
+    // 传 ppid + cwd 让 daemon 反查触发本 hook 的 shell tab，加 [ttys004] 前缀区分
+    // 多 shell 场景。Stop hook 不带 --question：它不产生"待用户回答"，仅上下文标注。
+    const args = ['lark', 'send-text', '--auto', '--origin-pid', String(process.ppid)];
+    if (typeof payload.cwd === 'string' && payload.cwd) {
+      args.push('--origin-cwd', payload.cwd);
+    }
+    dbg(`spawn: session=${payload.session_id} text.len=${text.length} ppid=${process.ppid} cwd=${payload.cwd ?? ''}`);
+    const proc = spawn(agentBin, args, {
       stdio: ['pipe', 'ignore', 'ignore'],
       detached: true,
     });

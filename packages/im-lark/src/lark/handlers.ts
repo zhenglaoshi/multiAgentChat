@@ -1,6 +1,7 @@
 import * as Lark from '@larksuiteoapi/node-sdk';
 import { approvals } from 'multiagent-orchestrator';
 import { loadChat, saveChat } from '../chats/store.js';
+import { PENDING_ANSWER_TTL_MS, RECENT_REPLY_TTL_MS } from '../chats/types.js';
 import { logger } from 'multiagent-orchestrator';
 import { recordCwd } from 'multiagent-host-mac';
 import { formatRecallPrefix, recall, tokenize } from 'multiagent-orchestrator';
@@ -20,6 +21,7 @@ const SYSTEM_GUIDANCE = [
   '- 任务完成时**必须**调用 `agent lark send-text "结果摘要..."` 主动推送到飞书',
   '- 长任务请每完成一步用 `agent lark send-text` 推送进度',
   '- 文件产出用 `agent lark send-file <path>` 推送文件本体',
+  '- **调 AskUserQuestion / 弹任何交互式选项前，必须先 `agent lark send-text` 把「问题原文 + 每个选项的完整说明」推给飞书**（TUI 里的选项框在飞书完全看不见，用户在手机端没上下文没法回答）',
   '- 高风险操作（写数据库 / git push --force / rm -rf / 改 .env）先 `agent request-approval --title --body` 等批准',
   '- 不要直接调任何 webhook（功能弱、不支持文件）',
   '',
@@ -29,10 +31,13 @@ const SYSTEM_GUIDANCE = [
 const CLAUDE_TUI_REMINDER = [
   '',
   '---',
-  '⚠ 回到飞书 — 飞书看不见你的 TUI 屏幕。完成后必须 `agent lark send-text "<回复全文>"` 推送，否则用户看到的卡片只是 watcher 抓的残片。',
+  '⚠ 回到飞书 — 飞书看不见你的 TUI 屏幕。完成后必须 `agent lark send-text "<回复全文>"` 推送。要问用户任何选项/确认，先把问题+选项 send-text 一份到飞书（否则手机端看到的卡片只是 watcher 抓的残片，没上下文）。',
 ].join('\n');
-import { sendCardReturnId } from './api.js';
-import { ackCard, batchProgressCard, chainProgressCard, progressCard, type BatchTaskItem, type ChainStepItem } from './cards.js';
+import { patchCard, sendCardReturnId } from './api.js';
+import { ackCard, batchProgressCard, browseCard, chainProgressCard, progressCard, receiptCard, type BatchTaskItem, type ChainStepItem } from './cards.js';
+import { readdir } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { dirname, basename } from 'node:path';
 import { parseMessage, resolveTarget } from './target.js';
 import { chainManager } from '../monitor/chains.js';
 
@@ -81,8 +86,75 @@ interface CardActionEvent {
   operator?: { open_id?: string };
 }
 
+async function buildBrowseReply(
+  cwd: string,
+): Promise<{ toast?: { type: string; content: string }; card?: unknown }> {
+  if (!existsSync(cwd)) {
+    return { toast: { type: 'error', content: `目录不存在：${cwd}` } };
+  }
+  let subdirs: { path: string; name: string; isGitRepo: boolean }[] = [];
+  try {
+    const entries = await readdir(cwd, { withFileTypes: true });
+    subdirs = entries
+      .filter((e) => e.isDirectory() && !e.name.startsWith('.'))
+      .map((e) => ({
+        path: `${cwd}/${e.name}`,
+        name: e.name,
+        isGitRepo: existsSync(`${cwd}/${e.name}/.git`),
+      }))
+      .sort((a, b) => {
+        // git repo 排前面
+        if (a.isGitRepo !== b.isGitRepo) return a.isGitRepo ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      });
+  } catch (e) {
+    return { toast: { type: 'error', content: `读目录失败: ${(e as Error).message}` } };
+  }
+  const parent = cwd === '/' ? undefined : dirname(cwd);
+  return {
+    card: browseCard({
+      currentCwd: cwd,
+      parentCwd: parent === cwd ? undefined : parent,
+      subdirs: subdirs.slice(0, 30),
+      home: homedir(),
+      truncated: subdirs.length > 30,
+    }),
+  };
+}
+
 function getChatId(data: CardActionEvent): string | undefined {
   return data.context?.open_chat_id ?? data.open_chat_id;
+}
+
+/** 兼容 schema 1.x / 2.0 拿卡片消息 id（patch 原卡需要） */
+function getMessageId(data: CardActionEvent): string | undefined {
+  return data.context?.open_message_id ?? data.open_message_id;
+}
+
+/**
+ * 按钮点击后 patch 原卡为回执态 —— 通用 helper。
+ * patchCard 失败静默降级（logger.warn），不影响业务动作。
+ *
+ * @param template 'green'=完成/成功（默认）、'blue'=arm/等待、'grey'=已消费
+ */
+async function patchOrigToReceipt(
+  client: Lark.Client,
+  data: CardActionEvent,
+  title: string,
+  detail?: string,
+  template: 'green' | 'blue' | 'grey' = 'green',
+): Promise<void> {
+  const messageId = getMessageId(data);
+  if (!messageId) return;
+  try {
+    await patchCard(
+      client,
+      messageId,
+      receiptCard({ title, ...(detail ? { detail } : {}), template }),
+    );
+  } catch (e) {
+    logger.warn('patchCard receipt failed', { err: (e as Error).message, messageId });
+  }
 }
 
 /**
@@ -545,6 +617,73 @@ async function sendToActiveTab(
 ): Promise<void> {
   logger.info('sendToActiveTab start', { chatId: ctx.chatId, textLen: text.length });
   const chat = await loadChat(ctx.chatId);
+  const tabs = await listTabs();
+  const now = Date.now();
+
+  // 路由优先级（无 @target 时）：
+  //  1. pendingAnswerTty (one-shot, TTL 10min) —— AskUserQuestion / [→ 发一条] arm 过
+  //  2. recentReplyTty (sticky, TTL 5min，每次刷新) —— pendingAnswerTty 消耗后 promote 出来
+  //  3. activeTty —— 默认兜底
+
+  // ---- Priority 1: pendingAnswerTty one-shot ----
+  if (
+    chat.pendingAnswerTty &&
+    chat.pendingAnswerAt &&
+    now - chat.pendingAnswerAt <= PENDING_ANSWER_TTL_MS
+  ) {
+    const answerTab = tabs.find((t) => t.tty === chat.pendingAnswerTty);
+    if (answerTab) {
+      const consumedTty = chat.pendingAnswerTty;
+      logger.info('routing via pendingAnswerTty (one-shot → sticky)', {
+        tty: consumedTty,
+        ageMs: now - chat.pendingAnswerAt,
+      });
+      delete chat.pendingAnswerTty;
+      delete chat.pendingAnswerAt;
+      // promote 到 sticky recentReplyTty（若不是 activeTty 本身 —— 是的话没必要绕）
+      if (consumedTty !== chat.activeTty) {
+        chat.recentReplyTty = consumedTty;
+        chat.recentReplyAt = now;
+      }
+      chat.lastActiveAt = now;
+      await saveChat(chat);
+      await dispatchSendToTab(client, ctx, answerTab, text);
+      return;
+    }
+    // tab 消失了 → 清空 pending，继续走后续优先级
+    logger.info('pendingAnswerTty tab gone, clearing', { tty: chat.pendingAnswerTty });
+    delete chat.pendingAnswerTty;
+    delete chat.pendingAnswerAt;
+    await saveChat(chat);
+  }
+
+  // ---- Priority 2: recentReplyTty sticky ----
+  if (
+    chat.recentReplyTty &&
+    chat.recentReplyAt &&
+    now - chat.recentReplyAt <= RECENT_REPLY_TTL_MS &&
+    chat.recentReplyTty !== chat.activeTty
+  ) {
+    const stickyTab = tabs.find((t) => t.tty === chat.recentReplyTty);
+    if (stickyTab) {
+      logger.info('routing via recentReplyTty (sticky refresh)', {
+        tty: chat.recentReplyTty,
+        ageMs: now - chat.recentReplyAt,
+      });
+      chat.recentReplyAt = now; // 刷新 TTL 起点
+      chat.lastActiveAt = now;
+      await saveChat(chat);
+      await dispatchSendToTab(client, ctx, stickyTab, text);
+      return;
+    }
+    // tab 消失了 → 清空 sticky，继续走 activeTty
+    logger.info('recentReplyTty tab gone, clearing', { tty: chat.recentReplyTty });
+    delete chat.recentReplyTty;
+    delete chat.recentReplyAt;
+    await saveChat(chat);
+  }
+
+  // ---- Priority 3: activeTty ----
   if (!chat.activeTty) {
     logger.info('sendToActiveTab: no active tty');
     await replyText(
@@ -554,7 +693,6 @@ async function sendToActiveTab(
     );
     return;
   }
-  const tabs = await listTabs();
   const tab = tabs.find((t) => t.tty === chat.activeTty);
   if (!tab) {
     logger.info('sendToActiveTab: tab gone', { tty: chat.activeTty });
@@ -905,14 +1043,23 @@ async function handleCardAction(
     const chat = await loadChat(chatId);
     chat.activeTty = tab.tty;
     chat.lastActiveAt = Date.now();
+    // 用户明确切了 shell → 清 one-shot pendingAnswerTty 与 sticky recentReplyTty
+    // （否则旧粘性会抢新 activeTty 的路由）
+    delete chat.pendingAnswerTty;
+    delete chat.pendingAnswerAt;
+    delete chat.recentReplyTty;
+    delete chat.recentReplyAt;
     await saveChat(chat);
     if (tab.cwd) void recordCwd(tab.cwd);
+    // patch 原卡为回执，不再新发 ackCard 避免 timeline 堆卡
+    await patchOrigToReceipt(
+      client,
+      data,
+      `⭐ 已切到 ${tab.tty}`,
+      tab.cwd ? `cwd: \`${tab.cwd}\`` : undefined,
+    );
     return {
       toast: { type: 'success', content: `★ 切到 ${tab.tty}` },
-      card: ackCard({
-        title: `★ 已切到 ${tab.tty}`,
-        body: `cwd: \`${tab.cwd ?? '?'}\`\n${tab.title ? `title: ${tab.title}\n` : ''}\n现在普通文本会进入这个 tab。`,
-      }),
     };
   }
 
@@ -972,12 +1119,35 @@ async function handleCardAction(
     };
   }
 
-  if (action === 'send-to-tab') {
-    const tty = value['tty'] as string | undefined;
-    const text = (value['text'] as string | undefined) ?? '';
-    if (!tty) return { toast: { type: 'error', content: '缺 tty' } };
+  if (action === 'browse-dir' || action === 'browse-dir-select') {
+    let target: string | undefined;
+    if (action === 'browse-dir-select') {
+      const option = data.action?.option;
+      if (option?.startsWith('browse-dir|')) {
+        target = option.slice('browse-dir|'.length);
+      }
+    } else {
+      target = value['cwd'] as string | undefined;
+    }
+    if (!target) return { toast: { type: 'error', content: '缺 cwd' } };
+    return await buildBrowseReply(target);
+  }
+
+  // originShellPushCard 的下拉选择：value 是 `answer|<tty>|<label>`，用户选中后
+  // 直接把 label 打进源 shell（同 send-to-tab 语义，只是组件不同）。
+  if (action === 'answer-select') {
+    const option = data.action?.option;
+    if (!option || !option.startsWith('answer|')) {
+      return { toast: { type: 'error', content: '无效的选项' } };
+    }
+    // 用 split 只切前 2 段，第 3 段保留 label 里可能的 `|`
+    const rest = option.slice('answer|'.length);
+    const sep = rest.indexOf('|');
+    if (sep < 0) return { toast: { type: 'error', content: '无效选项格式' } };
+    const tty = rest.slice(0, sep);
+    const label = rest.slice(sep + 1);
     try {
-      const sent = await sendKeysRaw(tty, text);
+      const sent = await sendKeysRaw(tty, label);
       if (!sent) {
         return {
           toast: { type: 'error', content: `tab ${tty} 不存在了` },
@@ -988,13 +1158,104 @@ async function handleCardAction(
           }),
         };
       }
-      const shown = text === '' ? '⏎ Enter' : text;
+      await patchOrigToReceipt(
+        client,
+        data,
+        `✓ 已回答『${label.length > 20 ? label.slice(0, 20) + '…' : label}』→ ${tty}`,
+      );
       return {
         toast: { type: 'success', content: `→ 已发送到 ${tty}` },
-        card: ackCard({
-          title: `→ 已发送到 ${tty}`,
-          body: `\`${shown}\``,
-        }),
+      };
+    } catch (e) {
+      return { toast: { type: 'error', content: (e as Error).message } };
+    }
+  }
+
+  // originShellPushCard 上的「→ 回复当前」按钮：把 pendingAnswerTty 重定向到
+  // chat.activeTty，覆盖卡片默认的"回复源 shell"行为。逃生口场景：
+  //   activeTty=A；shell B 弹 AskUserQuestion → pendingAnswerTty=B
+  //   用户点这个按钮 → pendingAnswerTty=A → 下一条裸文本走 A
+  if (action === 'arm-active-reply') {
+    const chat = await loadChat(chatId);
+    if (!chat.activeTty) {
+      return {
+        toast: { type: 'error', content: '本 chat 无 active tab；用 /use 选一个' },
+      };
+    }
+    const tabs = await listTabs();
+    const tab = tabs.find((t) => t.tty === chat.activeTty);
+    if (!tab) {
+      return { toast: { type: 'error', content: `active ${chat.activeTty} 不存在` } };
+    }
+    chat.pendingAnswerTty = chat.activeTty;
+    chat.pendingAnswerAt = Date.now();
+    // sticky 也清一下，让 activeTty 干净接管
+    delete chat.recentReplyTty;
+    delete chat.recentReplyAt;
+    await saveChat(chat);
+    await patchOrigToReceipt(
+      client,
+      data,
+      `⏳ 下一条文本发到 active（${chat.activeTty}）`,
+      `${tab.cwd ? `cwd: \`${tab.cwd}\`\n` : ''}<font color='grey'>在下方 chat 直接输入即可</font>`,
+      'blue',
+    );
+    return {
+      toast: { type: 'info', content: `⏳ 等你输入 → active ${chat.activeTty}` },
+    };
+  }
+
+  // 「→ 发一条」按钮：不发消息，只 arm 一个 pendingAnswerTty（复用 AskUserQuestion
+  // 的同一机制）。下一条无 @target 的裸文本自动路由到该 tab，one-shot 消耗。
+  // 目的：手机端免打 @tty，两 tap（选 tab + 输文本）就能定向发一条。
+  if (action === 'send-to-tab-arm') {
+    const tty = value['tty'] as string | undefined;
+    if (!tty) return { toast: { type: 'error', content: '缺 tty' } };
+    const tabs = await listTabs();
+    const tab = tabs.find((t) => t.tty === tty);
+    if (!tab) return { toast: { type: 'error', content: `tab ${tty} 不存在` } };
+    const chat = await loadChat(chatId);
+    chat.pendingAnswerTty = tty;
+    chat.pendingAnswerAt = Date.now();
+    await saveChat(chat);
+    await patchOrigToReceipt(
+      client,
+      data,
+      `⏳ 下一条文本发到 ${tty}`,
+      `${tab.cwd ? `cwd: \`${tab.cwd}\`\n` : ''}<font color='grey'>在下方 chat 直接输入即可（10 min 内 one-shot 生效）</font>`,
+      'blue',
+    );
+    return {
+      toast: { type: 'info', content: `⏳ 等你输入 → ${tty}` },
+    };
+  }
+
+  if (action === 'send-to-tab') {
+    const tty = value['tty'] as string | undefined;
+    const text = (value['text'] as string | undefined) ?? '';
+    if (!tty) return { toast: { type: 'error', content: '缺 tty' } };
+    try {
+      const sent = await sendKeysRaw(tty, text);
+      if (!sent) {
+        // tab 消失 → 保留原卡（作为可诊断上下文），另发红色错误卡
+        return {
+          toast: { type: 'error', content: `tab ${tty} 不存在了` },
+          card: ackCard({
+            title: '❌ 发送失败',
+            body: `tab \`${tty}\` 已经不在了`,
+            template: 'red',
+          }),
+        };
+      }
+      const shown = text === '' ? '⏎ Enter' : text;
+      // patch 原卡为回执，去掉按钮避免重复点击
+      await patchOrigToReceipt(
+        client,
+        data,
+        `✓ 已回答『${shown.length > 20 ? shown.slice(0, 20) + '…' : shown}』→ ${tty}`,
+      );
+      return {
+        toast: { type: 'success', content: `→ 已发送到 ${tty}` },
       };
     } catch (e) {
       return {

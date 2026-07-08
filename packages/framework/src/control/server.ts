@@ -1,11 +1,14 @@
 import { createServer, type Socket } from 'node:net';
+import { execFile } from 'node:child_process';
 import { mkdir, unlink } from 'node:fs/promises';
 import { existsSync, unlinkSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { homedir } from 'node:os';
+import { basename, dirname, resolve } from 'node:path';
+import { promisify } from 'node:util';
 import * as Lark from '@larksuiteoapi/node-sdk';
 import { approvals } from 'multiagent-orchestrator';
 import { listAllChats, loadChat, saveChat } from 'multiagent-im-lark';
-import { sendCardMessage, sendFile, sendImage, sendTextMessage } from 'multiagent-im-lark';
+import { originShellPushCard, sendCardMessage, sendFile, sendImage, sendTextMessage } from 'multiagent-im-lark';
 import { logger } from 'multiagent-orchestrator';
 import { pendingTracker } from 'multiagent-im-lark';
 import { listRecentCwds, recordCwd } from 'multiagent-host-mac';
@@ -199,6 +202,57 @@ function requireLark(sock: Socket): Lark.Client | null {
   return larkClient;
 }
 
+const execFileAsync = promisify(execFile);
+
+/**
+ * 反查触发本次自动推送的 shell tab：
+ *  1. 优先用 originPid（hook 的 process.ppid = Claude Code 进程）跑 `ps -o tty=`。
+ *     macOS 会回 "ttys004"（无 /dev/ 前缀），补上后跟 listTabs 的 tty 匹配。
+ *  2. 兜底：按 originCwd 匹配跑 claude 的 tab；多个匹配时挑第一个。
+ * 返回 null 时 daemon 不加前缀、也不记 pendingAnswerTty，退化成原来的 --auto 行为。
+ */
+async function resolveOriginTab(
+  originPid?: number,
+  originCwd?: string,
+): Promise<{ tty: string; cwd?: string } | null> {
+  const tabs = await listTabs();
+  if (originPid && Number.isFinite(originPid)) {
+    try {
+      const { stdout } = await execFileAsync('ps', ['-o', 'tty=', '-p', String(originPid)]);
+      const raw = stdout.trim();
+      if (raw && raw !== '?' && raw !== '??') {
+        const normalized = raw.startsWith('/dev/') ? raw : `/dev/${raw}`;
+        const hit = tabs.find((t) => t.tty === normalized);
+        if (hit) return { tty: hit.tty, ...(hit.cwd ? { cwd: hit.cwd } : {}) };
+      }
+    } catch {
+      /* ps 找不到进程 —— 落到 cwd 兜底 */
+    }
+  }
+  if (originCwd) {
+    const candidates = tabs.filter(
+      (t) =>
+        t.cwd === originCwd &&
+        t.processes.some((p) => p.toLowerCase().includes('claude')),
+    );
+    if (candidates.length >= 1) {
+      const hit = candidates[0]!;
+      return { tty: hit.tty, ...(hit.cwd ? { cwd: hit.cwd } : {}) };
+    }
+  }
+  return null;
+}
+
+/**
+ * 拼「[ttys004 · project-name]\n」前缀。cwd 空则只显示 tty。
+ * home 目录会替换成 `~/…`。tty 去掉 /dev/ 前缀更省字符。
+ */
+function formatOriginPrefix(origin: { tty: string; cwd?: string }): string {
+  const shortTty = origin.tty.startsWith('/dev/') ? origin.tty.slice(5) : origin.tty;
+  const label = origin.cwd ? `${shortTty} · ${basename(origin.cwd)}` : shortTty;
+  return `🖥 ${label}\n`;
+}
+
 async function handleLarkSendText(
   sock: Socket,
   req: Extract<Request, { op: 'lark.send-text' }>,
@@ -206,9 +260,10 @@ async function handleLarkSendText(
   const client = requireLark(sock);
   if (!client) return;
   try {
+    const chat = await loadChat(req.chatId);
+
     // --auto 推送（如 Claude Code Stop hook 触发）：仅当目标 chat 的 watchAllTabs=true 才放行
     if (req.auto) {
-      const chat = await loadChat(req.chatId);
       if (!chat.watchAllTabs) {
         logger.info('auto-push gated', {
           chatId: req.chatId,
@@ -220,10 +275,64 @@ async function handleLarkSendText(
         return;
       }
     }
-    await sendTextMessage(client, req.chatId, req.text, {
-      ...(req.plain ? { plain: true } : {}),
+
+    // origin tab 反查。仅当有 originPid 或 originCwd 时才尝试；反查失败静默降级。
+    let origin: Awaited<ReturnType<typeof resolveOriginTab>> = null;
+    if (req.originPid !== undefined || req.originCwd !== undefined) {
+      origin = await resolveOriginTab(req.originPid, req.originCwd);
+      if (!origin) {
+        logger.info('origin tab unresolved', {
+          originPid: req.originPid,
+          originCwd: req.originCwd,
+        });
+      }
+    }
+
+    // 路径分叉：
+    //  - origin 反查到 + 非 activeTty + 非 plain → 用 originShellPushCard 发交互卡片
+    //    （带 [option 快答] [⭐ 切到此 shell] [📜 shell history] 按钮）
+    //  - 其他情况（含 origin === activeTty、反查失败、--plain） → 走文本，
+    //    有 origin 时前面加 `🖥 ttys004 · project` identifier 前缀
+    const isActive = origin ? chat.activeTty === origin.tty : false;
+    const useCard = origin && !isActive && !req.plain;
+
+    if (useCard && origin) {
+      const card = originShellPushCard({
+        tty: origin.tty,
+        ...(origin.cwd ? { cwd: origin.cwd } : {}),
+        home: homedir(),
+        body: req.text,
+        question: !!req.question,
+        ...(req.quickAnswerOptions && req.quickAnswerOptions.length > 0
+          ? { quickAnswerOptions: req.quickAnswerOptions }
+          : {}),
+      });
+      await sendCardMessage(client, req.chatId, card);
+    } else {
+      let finalText = req.text;
+      if (origin) finalText = formatOriginPrefix(origin) + finalText;
+      await sendTextMessage(client, req.chatId, finalText, {
+        ...(req.plain ? { plain: true } : {}),
+      });
+    }
+
+    // question=true + 反查到 tty + 与 activeTty 不同 → 记 pendingAnswerTty
+    // （与 activeTty 相同时，sendToActiveTab 会自然走 activeTty，不需要 override）
+    if (req.question && origin && !isActive) {
+      chat.pendingAnswerTty = origin.tty;
+      chat.pendingAnswerAt = Date.now();
+      await saveChat(chat);
+      logger.info('pendingAnswerTty set', {
+        chatId: req.chatId,
+        tty: origin.tty,
+      });
+    }
+
+    sendOk<LarkSendData>(sock, {
+      details: origin
+        ? { originTty: origin.tty, ...(useCard ? { renderedAs: 'card' } : { renderedAs: 'text' }) }
+        : {},
     });
-    sendOk<LarkSendData>(sock, { details: {} });
   } catch (e) {
     sendErr(sock, (e as Error).message);
   }

@@ -78,6 +78,25 @@ export interface LarkSendTextOp {
    * 手工 `agent lark send-text` 不带此 flag，任何时候都会正常发送。
    */
   auto?: boolean;
+  /**
+   * 触发本次推送的 Claude Code 进程 PID（一般是 hook 里的 process.ppid）。
+   * daemon 用 `ps -o tty=` 反查该 PID 的 ctty → 对应到 shell tab。
+   */
+  originPid?: number;
+  /** 触发本次推送时 Claude Code 的 cwd；若 ppid 反查失败，daemon 用 cwd 匹配 claude tab */
+  originCwd?: string;
+  /**
+   * true → 本次推送包含"需要用户回答的问题"（PreToolUse AskUserQuestion 会置 true）。
+   * daemon 会记 chat.pendingAnswerTty = 反查到的 origin tty，下次飞书无 @target 回复
+   * one-shot 路由到该 tab 而非 chat.activeTty。TTL 10 min。
+   */
+  question?: boolean;
+  /**
+   * AskUserQuestion 的选项 label 列表（PreToolUse hook 拆 tool_input.questions[0].options 传入）。
+   * daemon 在 originShellPushCard 里把每个 label 变成一个 send-to-tab 按钮，一 tap 直答。
+   * 只在单问题、options 数 ≤ 4 时给；多问题场景 hook 不传，落回纯 body 显示。
+   */
+  quickAnswerOptions?: string[];
 }
 
 export interface LarkSendCardOp {

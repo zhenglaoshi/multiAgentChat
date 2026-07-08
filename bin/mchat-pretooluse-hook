@@ -1,0 +1,121 @@
+#!/usr/bin/env node
+/*
+ * multiAgentChat — Claude Code PreToolUse hook
+ *
+ * 用途：AskUserQuestion 类"交互式选项"工具是在 turn 中途弹出的 —— Stop hook
+ * 要等整个 turn 结束才触发，来不及把选项推到飞书。手机端用户看不到选项。
+ * 本 hook 在 tool 真正 render 之前抢先把 question+options 通过
+ * `agent lark send-text --auto` 推到目标 chat（受 watchAllTabs gate）。
+ *
+ * ~/.claude/settings.json 里 hooks.PreToolUse 用 matcher="AskUserQuestion" 指向本脚本。
+ * stdin 是 Claude Code 给的 tool call JSON（含 tool_name / tool_input / session_id / cwd）。
+ *
+ * Fire-and-forget：spawn detached，hook 立即 exit 0，不 block 工具 —— 用户在
+ * 终端里的 AskUserQuestion 交互体验完全无感。
+ *
+ * 设 MCHAT_HOOK_DEBUG=1 打开 /tmp/mchat-pretooluse-hook.log 调试。
+ *
+ * NOTE: ESM only（package.json 里 "type": "module"，require() 会 crash，见 stop-hook）
+ */
+import { spawn } from 'node:child_process';
+import { appendFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const MAX_TEXT_LEN = 3500;
+const DEBUG = process.env['MCHAT_HOOK_DEBUG'] === '1';
+const DEBUG_LOG = '/tmp/mchat-pretooluse-hook.log';
+
+function dbg(msg) {
+  if (!DEBUG) return;
+  try {
+    appendFileSync(DEBUG_LOG, `[${new Date().toISOString()}] ${msg}\n`);
+  } catch {}
+}
+
+function truncate(s, n) {
+  if (typeof s !== 'string') return '';
+  return s.length > n ? s.slice(0, n) + '…' : s;
+}
+
+/**
+ * 从 AskUserQuestion 的 tool_input 拆出 questions[]，格式化成给飞书看的 markdown。
+ * 每个 question 一段，multiSelect 会标"多选"，options 逐条列出 label+description。
+ * 单问题且 options ≤ 4 时同时返回 quickOptions，daemon 会把它们变成卡片按钮（一 tap 直答）。
+ */
+function formatAskUserQuestion(toolInput) {
+  const qs = Array.isArray(toolInput?.questions) ? toolInput.questions : [];
+  if (qs.length === 0) return { body: '', quickOptions: null };
+  const lines = ['❓ Claude 请你选择（终端里 AskUserQuestion 弹出中）：', ''];
+  qs.forEach((q, i) => {
+    const question = truncate(q?.question || '(no question)', 400);
+    const multi = q?.multiSelect ? ' [多选]' : '';
+    lines.push(`${i + 1}. **${question}**${multi}`);
+    const opts = Array.isArray(q?.options) ? q.options : [];
+    for (const o of opts) {
+      const label = truncate(o?.label || '', 80);
+      const desc = truncate(o?.description || '', 200);
+      lines.push(desc ? `   • ${label} — ${desc}` : `   • ${label}`);
+    }
+    lines.push('');
+  });
+  // quickOptions：单问题、非多选 → 传所有 options（daemon 侧按数量决定组件：
+  // ≤4 走按钮组、≥5 走下拉框）。多选场景暂不支持（一次交互只能送一个 label）。
+  let quickOptions = null;
+  if (qs.length === 1 && !qs[0].multiSelect) {
+    const opts = Array.isArray(qs[0].options) ? qs[0].options : [];
+    const labels = opts
+      .map((o) => (typeof o?.label === 'string' ? o.label.trim() : ''))
+      .filter((l) => l.length > 0);
+    if (labels.length > 0) {
+      quickOptions = labels;
+    }
+  }
+  return { body: lines.join('\n'), quickOptions };
+}
+
+let raw = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', (chunk) => {
+  raw += chunk;
+});
+process.stdin.on('error', () => process.exit(0));
+process.stdin.on('end', () => {
+  try {
+    if (!raw.trim()) return process.exit(0);
+    const payload = JSON.parse(raw);
+    const toolName = payload?.tool_name;
+    dbg(`tool_name=${toolName} session=${payload?.session_id}`);
+    if (toolName !== 'AskUserQuestion') return process.exit(0);
+
+    const { body, quickOptions } = formatAskUserQuestion(payload?.tool_input);
+    let text = body;
+    if (!text) return process.exit(0);
+    if (text.length > MAX_TEXT_LEN) {
+      text = text.slice(0, MAX_TEXT_LEN) + '\n\n…(truncated)';
+    }
+    const agentBin = resolve(HERE, 'agent');
+    // ppid = Claude Code 进程 pid，daemon 用它 `ps -o tty=` 反查 shell tab；
+    // cwd 兜底：ppid 反查失败时用 cwd 匹配跑 claude 的 tab
+    const args = ['lark', 'send-text', '--auto', '--question', '--origin-pid', String(process.ppid)];
+    if (typeof payload.cwd === 'string' && payload.cwd) {
+      args.push('--origin-cwd', payload.cwd);
+    }
+    if (quickOptions && quickOptions.length > 0) {
+      args.push('--options-json', JSON.stringify(quickOptions));
+    }
+    dbg(`spawn: text.len=${text.length} ppid=${process.ppid} cwd=${payload.cwd ?? ''} quickOptions=${quickOptions?.length ?? 0}`);
+    const proc = spawn(agentBin, args, {
+      stdio: ['pipe', 'ignore', 'ignore'],
+      detached: true,
+    });
+    proc.on('error', (e) => dbg('spawn error: ' + e.message));
+    proc.stdin.end(text);
+    proc.unref();
+    process.exit(0);
+  } catch (e) {
+    dbg('caught: ' + (e && e.message));
+    process.exit(0);
+  }
+});

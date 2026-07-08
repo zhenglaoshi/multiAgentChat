@@ -31,6 +31,16 @@ import { getHistory, listTabs, newTab } from 'multiagent-host-mac';
 import { inferTabStatus, type TabStatusInfo } from 'multiagent-host-mac';
 import { resolveCdTarget } from 'multiagent-host-mac';
 import {
+  addBookmark,
+  getBookmark,
+  listBookmarks,
+  removeBookmark,
+  getDirIndex,
+  refreshDirIndex,
+  searchDirs,
+  type DirEntry,
+} from 'multiagent-host-mac';
+import {
   chooseDirCard,
   dashboardCard,
   tabsCard,
@@ -104,6 +114,14 @@ const ALIAS: Record<string, string> = {
   tpl: 'template',
   // /chain 系列
   c: 'chain',
+  // /subagent 系列 —— HELP_TEXT 早就写了 /sa 但 ALIAS 之前漏了导致失效
+  sa: 'subagent',
+  sub: 'subagent',
+  subagents: 'subagent',
+  // /pin 收藏目录
+  pins: 'pin',
+  bookmark: 'pin',
+  bookmarks: 'pin',
 };
 
 function parseCommand(text: string): { name: string; rest: string } {
@@ -144,7 +162,15 @@ const HELP_TEXT = [
   '可用命令（短 alias 加粗）：',
   '  **/d**  /dashboard            概览：active tab + pending 任务 + 最近完成',
   '  **/s**  /shells               列所有 Terminal tab（可点切换）',
-  '  **/n**  /new [path]           开新 tab（无参数弹选目录卡片）',
+  '  **/n**  /new [path|@alias|关键词]  开新 tab',
+  '       /new                    无参数弹选目录卡片（含浏览器/收藏/git 项目）',
+  '       /new ~/code/foo         精确路径',
+  '       /new @mac               用收藏（/pin 存的别名）',
+  '       /new pigeon             关键词模糊匹配已知目录',
+  '  **/pin**                    列所有收藏',
+  '       /pin <alias> [path]     收藏目录（省 path 用当前 active tab 的 cwd）',
+  '       /pin del <alias>        删收藏（或 /unpin <alias>）',
+  '  /dirindex refresh          手动刷 git 项目索引',
   '  **/u**  /use <tty>            切换本会话 active tab',
   '  **/w**  /where                当前 active tab 信息',
   '  **/h**  /history [-n N]       active tab 的屏幕历史 tail',
@@ -204,6 +230,107 @@ async function scanSearchPaths(): Promise<string[]> {
   return out;
 }
 
+async function createTabAndAck(chatId: string, cwd: string): Promise<ReplyAction> {
+  try {
+    const tty = await newTab({ cwd });
+    const chat = await loadChat(chatId);
+    chat.activeTty = tty;
+    chat.lastActiveAt = Date.now();
+    await saveChat(chat);
+    return {
+      kind: 'text',
+      text: `🆕 新 tab \`${tty}\`  cwd: ${homeify(cwd)}\n★ 已设为本会话 active`,
+    };
+  } catch (e) {
+    return { kind: 'text', text: `❌ 开 tab 失败：${(e as Error).message}` };
+  }
+}
+
+async function buildFuzzyMatchCard(
+  query: string,
+  matches: DirEntry[],
+): Promise<ReplyAction> {
+  const home = homedir();
+  const entries: ChooseDirEntry[] = matches.map((m) => ({
+    cwd: m.path,
+    label: m.name,
+    hint: m.isGitRepo ? '📦 git' : undefined,
+  }));
+  return {
+    kind: 'card',
+    card: chooseDirCard({
+      quickEntries: entries,
+      dropdownEntries: [],
+      home,
+      defaultCwd: home,
+      title: `🔍 关键词 "${query}" 有 ${matches.length} 个匹配`,
+    }),
+  };
+}
+
+async function handlePinCommand(
+  chatId: string,
+  rest: string,
+): Promise<ReplyAction> {
+  // /pin        → 列
+  // /pin <alias> [path]  → 加（省 path 就用 active tab cwd）
+  // /pin del <alias>     → 删
+  if (!rest) {
+    const bms = await listBookmarks();
+    if (bms.length === 0) {
+      return {
+        kind: 'text',
+        text: '还没有收藏。\n`/pin <alias> [path]` 添加（省 path 就用 active tab 的 cwd）\n`/new @<alias>` 用收藏开 tab',
+      };
+    }
+    const lines = bms.map((b) => `  📌 @${b.alias}  →  ${homeify(b.path)}`);
+    return {
+      kind: 'text',
+      text: `📌 收藏 (${bms.length})：\n${lines.join('\n')}\n\n/new @<alias> 秒开 tab`,
+    };
+  }
+
+  const parts = rest.split(/\s+/);
+  if (parts[0] === 'del' || parts[0] === 'remove' || parts[0] === 'rm') {
+    const alias = parts[1];
+    if (!alias) return { kind: 'text', text: '用法：/pin del <alias>' };
+    const ok = await removeBookmark(alias);
+    return {
+      kind: 'text',
+      text: ok ? `✅ 删除收藏 @${alias}` : `❌ 收藏 @${alias} 不存在`,
+    };
+  }
+
+  const alias = parts[0]!;
+  let pathArg = parts.slice(1).join(' ').trim();
+  if (!pathArg) {
+    // 用 active tab 的 cwd
+    const chat = await loadChat(chatId);
+    if (!chat.activeTty) {
+      return {
+        kind: 'text',
+        text: '本会话没有 active tab，请显式给路径：/pin <alias> <path>',
+      };
+    }
+    const tabs = await listTabs();
+    const t = tabs.find((x) => x.tty === chat.activeTty);
+    if (!t?.cwd) {
+      return {
+        kind: 'text',
+        text: 'active tab 拿不到 cwd，请显式给路径：/pin <alias> <path>',
+      };
+    }
+    pathArg = t.cwd;
+  }
+  const r = await resolveCdTarget(pathArg, resolve('.'));
+  if (!r.ok) return { kind: 'text', text: `❌ ${r.error}` };
+  await addBookmark(alias, r.path);
+  return {
+    kind: 'text',
+    text: `✅ 收藏 @${alias} → ${homeify(r.path)}\n以后 /new @${alias} 秒开`,
+  };
+}
+
 async function buildChooseDirCard(): Promise<ReplyAction> {
   const home = homedir();
   const quickEntries: ChooseDirEntry[] = [];
@@ -217,54 +344,72 @@ async function buildChooseDirCard(): Promise<ReplyAction> {
     quickEntries.push(e);
   };
 
-  // 1. Home（默认建议）
-  pushQuick(home, '🏠 Home', '默认建议');
+  // 1. 📌 收藏（最优先）
+  for (const bm of await listBookmarks()) {
+    pushQuick(bm.path, `📌 @${bm.alias}`, homeify(bm.path));
+  }
 
-  // 2. 已开 tab 的 cwd
+  // 2. 🚀 已开 tab 的 cwd
   try {
     const tabs = await listTabs();
     for (const t of tabs) {
       if (!t.cwd) continue;
-      pushQuick(t.cwd, `${t.tty} 在用`, t.title ? `"${t.title}"` : undefined);
+      pushQuick(t.cwd, `🚀 ${t.tty} 在用`, t.title ? `"${t.title}"` : undefined);
     }
   } catch {
     /* ignore */
   }
 
-  // 3. 项目根目录
-  pushQuick(resolve('.'), '📁 项目根目录');
-
-  // 4. 最近用过
+  // 3. 🕓 最近用过
   for (const cwd of await listRecentCwds()) {
     pushQuick(cwd, '🕓 最近用过');
   }
 
-  // 5. 常见入口
+  // 4. Home + 项目根 + 常见入口（兜底）
+  pushQuick(home, '🏠 Home');
+  pushQuick(resolve('.'), '📁 项目根目录');
   for (const sp of ['~/Desktop', '~/Downloads', '~/Documents']) {
     const abs = sp.startsWith('~/') ? join(home, sp.slice(2)) : sp;
     if (existsSync(abs)) pushQuick(abs, sp);
   }
 
-  // 6. 限制 quick 数量
   const quickFinal = quickEntries.slice(0, 8);
 
-  // dropdown: ~/code/* 和 ~/Projects/* 一层
+  // dropdown：全机 git 项目 + 顶层容器（dir-index 提供）
   const dropdownEntries: ChooseDirEntry[] = [];
   const dropSeen = new Set<string>();
-  for (const p of await scanSearchPaths()) {
-    if (dropSeen.has(p)) continue;
-    if (quickFinal.some((q) => q.cwd === p)) continue;
-    dropSeen.add(p);
-    dropdownEntries.push({ cwd: p, label: homeify(p) });
+  try {
+    const idx = await getDirIndex();
+    // git 项目排前面
+    const sorted = [...idx.dirs].sort((a, b) => {
+      if (a.isGitRepo !== b.isGitRepo) return a.isGitRepo ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+    for (const d of sorted) {
+      if (dropSeen.has(d.path)) continue;
+      if (quickFinal.some((q) => q.cwd === d.path)) continue;
+      dropSeen.add(d.path);
+      const prefix = d.isGitRepo ? '📦 ' : '📂 ';
+      dropdownEntries.push({ cwd: d.path, label: prefix + homeify(d.path) });
+    }
+  } catch {
+    /* ignore, fallback 用旧 scanSearchPaths */
+    for (const p of await scanSearchPaths()) {
+      if (dropSeen.has(p)) continue;
+      if (quickFinal.some((q) => q.cwd === p)) continue;
+      dropSeen.add(p);
+      dropdownEntries.push({ cwd: p, label: homeify(p) });
+    }
   }
 
   return {
     kind: 'card',
     card: chooseDirCard({
       quickEntries: quickFinal,
-      dropdownEntries: dropdownEntries.slice(0, 30),
+      dropdownEntries: dropdownEntries.slice(0, 90),
       home,
       defaultCwd: home,
+      browseStart: home,
     }),
   };
 }
@@ -1253,22 +1398,59 @@ export async function handleCommand(
 
   if (name === 'new') {
     if (!rest) return buildChooseDirCard();
-    // /new <path>
-    const r = await resolveCdTarget(rest, resolve('.'));
-    if (!r.ok) return { kind: 'text', text: `❌ ${r.error}` };
-    try {
-      const tty = await newTab({ cwd: r.path });
-      const chat = await loadChat(chatId);
-      chat.activeTty = tty;
-      chat.lastActiveAt = Date.now();
-      await saveChat(chat);
+
+    // /new @<alias> → 用收藏
+    if (rest.startsWith('@')) {
+      const alias = rest.slice(1).trim();
+      const bm = await getBookmark(alias);
+      if (!bm) {
+        return {
+          kind: 'text',
+          text: `❌ 没找到收藏 @${alias}\n/pin 看所有收藏`,
+        };
+      }
+      return createTabAndAck(chatId, bm.path);
+    }
+
+    // /new <path>：绝对路径 / 相对路径 / ~
+    if (rest.startsWith('/') || rest.startsWith('~') || rest.startsWith('./') || rest.startsWith('../')) {
+      const r = await resolveCdTarget(rest, resolve('.'));
+      if (!r.ok) return { kind: 'text', text: `❌ ${r.error}` };
+      return createTabAndAck(chatId, r.path);
+    }
+
+    // /new <keyword> → fuzzy match dir index
+    const matches = await searchDirs(rest, 8);
+    if (matches.length === 0) {
       return {
         kind: 'text',
-        text: `🆕 新 tab \`${tty}\`  cwd: ${homeify(r.path)}\n★ 已设为本会话 active`,
+        text: `❌ 没匹配到目录：\`${rest}\`\n可选：/new <绝对路径> · /new @<收藏> · /new（弹选择器）`,
       };
-    } catch (e) {
-      return { kind: 'text', text: `❌ 开 tab 失败：${(e as Error).message}` };
     }
+    if (matches.length === 1) {
+      return createTabAndAck(chatId, matches[0]!.path);
+    }
+    // 多个匹配 → 展示卡片让用户挑
+    return buildFuzzyMatchCard(rest, matches);
+  }
+
+  if (name === 'pin' || name === 'unpin') {
+    return handlePinCommand(chatId, name === 'unpin' ? `del ${rest}` : rest);
+  }
+
+  if (name === 'dirindex') {
+    if (rest === 'refresh') {
+      const idx = await refreshDirIndex(true);
+      return {
+        kind: 'text',
+        text: `✅ 目录索引刷新完成，共 ${idx.dirs.length} 条`,
+      };
+    }
+    const idx = await getDirIndex();
+    return {
+      kind: 'text',
+      text: `📇 目录索引 ${idx.dirs.length} 条（更新于 ${fmtAgoSec(idx.updatedAt)}）\n/dirindex refresh 手动刷新`,
+    };
   }
 
   if (name === 'use') {
@@ -1279,6 +1461,11 @@ export async function handleCommand(
     const chat = await loadChat(chatId);
     chat.activeTty = tab.tty;
     chat.lastActiveAt = Date.now();
+    // 显式切 active → 清 pending / sticky，避免旧粘性抢新 activeTty 的路由
+    delete chat.pendingAnswerTty;
+    delete chat.pendingAnswerAt;
+    delete chat.recentReplyTty;
+    delete chat.recentReplyAt;
     await saveChat(chat);
     return {
       kind: 'text',
@@ -1319,12 +1506,29 @@ export async function handleCommand(
       return m ? Number(m[1]) : 60;
     })();
     const { getHistory } = await import('multiagent-host-mac');
+    const { sanitizeTerminalOutput } = await import('../monitor/sanitize.js');
     const full = await getHistory(chat.activeTty);
     const arr = full.split('\n');
     const tail = arr.slice(-lines).join('\n');
+    // sanitize：剥 ANSI/OSC、折叠 \r 重绘、连续同行去重
+    // 走 card（单 lark_md div）：正文包在 ``` 里当纯文本渲染 —— 里面的 `#`/`---`/prompt
+    // 分隔符 `─────` 都不会被 Feishu 二次解析成 heading/hr（这就是之前"一对横线"的根源）
+    const cleaned = sanitizeTerminalOutput(tail);
+    const meta = `📜 \`${chat.activeTty}\` · tail ${lines}/${arr.length}`;
     return {
-      kind: 'text',
-      text: `# ${chat.activeTty}  (tail ${lines}/${arr.length})\n\n${tail}`,
+      kind: 'card',
+      card: {
+        config: { wide_screen_mode: true },
+        elements: [
+          {
+            tag: 'div',
+            text: {
+              tag: 'lark_md',
+              content: `${meta}\n\`\`\`\n${cleaned}\n\`\`\``,
+            },
+          },
+        ],
+      },
     };
   }
 

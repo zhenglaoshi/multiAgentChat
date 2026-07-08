@@ -80,6 +80,10 @@ interface Flags {
   hard: boolean;
   plain: boolean;         // agent lark send-text --plain：强制纯文本
   auto: boolean;          // agent lark send-text --auto：Stop-hook 等自动推送，daemon 会按 chat.watchAllTabs gate
+  originPid?: number;     // agent lark send-text --origin-pid <ppid>：hook 传 Claude Code pid，daemon 反查 tab
+  originCwd?: string;     // agent lark send-text --origin-cwd <cwd>：hook 传 Claude Code cwd，反查 fallback
+  question: boolean;      // agent lark send-text --question：本次推送含待用户回答的问题，daemon 记 pendingAnswerTty
+  optionsJson?: string;   // agent lark send-text --options-json '["是","否"]'：AskUserQuestion 选项 label
   positional: string[];
 }
 
@@ -97,6 +101,7 @@ function parseArgs(args: string[]): Flags {
     hard: false,
     plain: false,
     auto: false,
+    question: false,
     positional: [],
   };
   for (let i = 0; i < args.length; i++) {
@@ -145,6 +150,17 @@ function parseArgs(args: string[]): Flags {
       flags.plain = true;
     } else if (a === '--auto') {
       flags.auto = true;
+    } else if (a === '--question') {
+      flags.question = true;
+    } else if (a === '--origin-pid') {
+      const v = args[++i] ?? die('--origin-pid 需要数字');
+      const n = Number(v);
+      if (!Number.isFinite(n) || n <= 0) die(`--origin-pid 非法：${v}`);
+      flags.originPid = n;
+    } else if (a === '--origin-cwd') {
+      flags.originCwd = args[++i] ?? die('--origin-cwd 需要路径');
+    } else if (a === '--options-json') {
+      flags.optionsJson = args[++i] ?? die('--options-json 需要 JSON');
     } else if (a === '--reason') {
       flags.reason = args[++i] ?? die('--reason 需要值');
     } else if (a === '--status') {
@@ -489,12 +505,27 @@ async function cmdLark(flags: Flags): Promise<void> {
     }
     if (!text) die('agent lark send-text "..."');
     const chatId = await resolveTargetChatId(flags);
+    let quickAnswerOptions: string[] | undefined;
+    if (flags.optionsJson) {
+      try {
+        const parsed = JSON.parse(flags.optionsJson);
+        if (Array.isArray(parsed) && parsed.every((x) => typeof x === 'string')) {
+          quickAnswerOptions = parsed;
+        }
+      } catch {
+        /* 解析失败 → 忽略，走无按钮 body */
+      }
+    }
     const data = await sendOnce<LarkSendData>({
       op: 'lark.send-text',
       chatId,
       text,
       ...(flags.plain ? { plain: true } : {}),
       ...(flags.auto ? { auto: true } : {}),
+      ...(flags.question ? { question: true } : {}),
+      ...(flags.originPid !== undefined ? { originPid: flags.originPid } : {}),
+      ...(flags.originCwd !== undefined ? { originCwd: flags.originCwd } : {}),
+      ...(quickAnswerOptions ? { quickAnswerOptions } : {}),
     });
     // daemon 在 --auto 且 watchAllTabs=false 时会返回 details.gated=true
     if (data.details && (data.details as { gated?: boolean }).gated) {

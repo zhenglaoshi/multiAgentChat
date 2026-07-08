@@ -162,25 +162,28 @@ export function tabsCard(data: TabsCardData) {
           : '';
         elements.push({
           tag: 'div',
-          fields: [
-            {
-              is_short: false,
-              text: {
-                tag: 'lark_md',
-                content: `${star}${statusInfo.icon} \`${t.tty}\` · **${statusInfo.label.replace(/^[^\w一-龥]+\s*/, '')}**\n📁 \`${cwdShown}\`${detailLine}${title}${procs}`,
-              },
-            },
-          ],
-          extra: {
-            tag: 'button',
-            text: {
-              tag: 'plain_text',
-              content: t.tty === data.activeTty ? '当前' : '切到这个',
-            },
-            type: t.tty === data.activeTty ? 'default' : 'primary',
-            value: { action: 'use-tab', tty: t.tty },
+          text: {
+            tag: 'lark_md',
+            content: `${star}${statusInfo.icon} \`${t.tty}\` · **${statusInfo.label.replace(/^[^\w一-龥]+\s*/, '')}**\n📁 \`${cwdShown}\`${detailLine}${title}${procs}`,
           },
         });
+        // 按钮行：非当前 tab → [★ 用它] [→ 发一条]；当前 tab → 只 [→ 发一条]（切没意义）
+        const perTabActions: unknown[] = [];
+        if (t.tty !== data.activeTty) {
+          perTabActions.push({
+            tag: 'button',
+            text: { tag: 'plain_text', content: '★ 切到这个' },
+            type: 'primary',
+            value: { action: 'use-tab', tty: t.tty },
+          });
+        }
+        perTabActions.push({
+          tag: 'button',
+          text: { tag: 'plain_text', content: '→ 发一条' },
+          type: t.tty === data.activeTty ? 'primary' : 'default',
+          value: { action: 'send-to-tab-arm', tty: t.tty },
+        });
+        elements.push({ tag: 'action', actions: perTabActions });
       }
       elements.push({ tag: 'hr' });
     }
@@ -221,6 +224,8 @@ export interface ChooseDirCardData {
   dropdownEntries: ChooseDirEntry[];   // 下拉框选项
   home: string;
   defaultCwd: string;                  // ~
+  title?: string;                      // 覆盖 header 标题（fuzzy 匹配卡片用）
+  browseStart?: string;                // 「浏览」按钮的起点，通常 = home
 }
 
 export function chooseDirCard(data: ChooseDirCardData) {
@@ -229,7 +234,7 @@ export function chooseDirCard(data: ChooseDirCardData) {
       tag: 'div',
       text: {
         tag: 'lark_md',
-        content: '**在哪个目录开新 tab？**\n默认在 front window 开新 tab（如果想新开 window，命令里加 `--new-window`）。',
+        content: '**在哪个目录开新 tab？**\n手机端选目录：先看下面按钮；找不到就点最下方「🗂 浏览」层层进；或发 `/new pigeon` 关键词模糊匹配、`/new @<alias>` 用收藏。',
       },
     },
     { tag: 'hr' },
@@ -287,11 +292,30 @@ export function chooseDirCard(data: ChooseDirCardData) {
   }
 
   elements.push({ tag: 'hr' });
+  // 🗂 浏览按钮 —— 从 browseStart 开始级联点击
+  if (data.browseStart) {
+    elements.push({
+      tag: 'action',
+      actions: [
+        {
+          tag: 'button',
+          text: { tag: 'plain_text', content: '🗂 浏览文件夹（层层点）' },
+          type: 'default',
+          value: { action: 'browse-dir', cwd: data.browseStart },
+        },
+      ],
+    });
+  }
   elements.push({
     tag: 'div',
     text: {
       tag: 'lark_md',
-      content: '想自定义路径？发送 `/new <path>`（例：`/new ~/code/foo`）',
+      content:
+        '**其它快捷用法**\n' +
+        '• `/new ~/code/foo`  精确路径\n' +
+        '• `/new pigeon`      关键词模糊匹配\n' +
+        '• `/new @mac`        用收藏\n' +
+        '• `/pin mac`         把当前 tab 的 cwd 存为 @mac',
     },
   });
 
@@ -299,7 +323,111 @@ export function chooseDirCard(data: ChooseDirCardData) {
     config: { wide_screen_mode: true },
     header: {
       template: 'green',
-      title: { tag: 'plain_text', content: '🗂 选择目录开新 Tab' },
+      title: {
+        tag: 'plain_text',
+        content: data.title ?? '🗂 选择目录开新 Tab',
+      },
+    },
+    elements,
+  };
+}
+
+// ---- Browse card (级联浏览文件系统) ----
+
+export interface BrowseCardEntry {
+  path: string;      // 绝对路径
+  name: string;      // basename 展示
+  isGitRepo?: boolean;
+}
+
+export interface BrowseCardData {
+  currentCwd: string;              // 当前浏览到哪
+  parentCwd?: string;              // 上一层（用于「返回上级」）
+  subdirs: BrowseCardEntry[];      // 当前目录下的子文件夹
+  home: string;
+  truncated?: boolean;             // 是否列表被截断（超过展示上限）
+}
+
+export function browseCard(data: BrowseCardData) {
+  const cwdShown = homeify(data.currentCwd, data.home);
+  const elements: unknown[] = [
+    {
+      tag: 'div',
+      text: {
+        tag: 'lark_md',
+        content: `📍 **当前**：\`${cwdShown}\`\n${data.subdirs.length === 0 ? '（这里没有子文件夹）' : `子文件夹 ${data.subdirs.length} 个${data.truncated ? '（已截断，显示前 30）' : ''}`}`,
+      },
+    },
+    { tag: 'hr' },
+    {
+      tag: 'action',
+      actions: [
+        {
+          tag: 'button',
+          text: { tag: 'plain_text', content: '✅ 就在这开 tab' },
+          type: 'primary',
+          value: { action: 'create-tab', cwd: data.currentCwd },
+        },
+        ...(data.parentCwd
+          ? [
+              {
+                tag: 'button',
+                text: { tag: 'plain_text', content: '⬆ 上一层' },
+                type: 'default',
+                value: { action: 'browse-dir', cwd: data.parentCwd },
+              },
+            ]
+          : []),
+      ],
+    },
+  ];
+
+  if (data.subdirs.length > 0) {
+    elements.push({ tag: 'hr' });
+    elements.push({
+      tag: 'div',
+      text: { tag: 'lark_md', content: '📂 **进入子文件夹**' },
+    });
+    // 用 select_static 一次性列出（避免几十个按钮把卡片撑爆）
+    elements.push({
+      tag: 'action',
+      actions: [
+        {
+          tag: 'select_static',
+          placeholder: {
+            tag: 'plain_text',
+            content: '选一个子文件夹进入…',
+          },
+          options: data.subdirs.slice(0, 30).map((e) => ({
+            text: {
+              tag: 'plain_text',
+              content: truncate(
+                (e.isGitRepo ? '📦 ' : '📁 ') + e.name,
+                60,
+              ),
+            },
+            value: `browse-dir|${e.path}`,
+          })),
+          value: { action: 'browse-dir-select' },
+        },
+      ],
+    });
+  }
+
+  elements.push({ tag: 'hr' });
+  elements.push({
+    tag: 'div',
+    text: {
+      tag: 'lark_md',
+      content: `<font color='grey'>Tip：也可以直接发 \`/new ${cwdShown}/子目录名\`</font>`,
+    },
+  });
+
+  return {
+    config: { wide_screen_mode: true },
+    header: {
+      template: 'blue',
+      title: { tag: 'plain_text', content: `🗂 浏览目录` },
     },
     elements,
   };
@@ -451,31 +579,37 @@ export function progressCard(data: ProgressCardData) {
     data.state === 'done' ? '完成' :
     '失败';
 
-  const cwdLine = data.cwd ? `📁 \`${data.cwd}\`\n` : '';
   const elapsed = fmtElapsed(data.updatedAt - data.startedAt);
   const updatedSec = Math.floor((Date.now() - data.updatedAt) / 1000);
-
   const body = (data.outputTail || '(暂无输出)').slice(-2500);
 
-  const targetTag = `🏷 \`${data.tty}\``;
+  // 布局：一个 div 装完（正文代码块 + 元数据灰字），一行 action 按钮
+  //   header — [icon][state] · [tty] · [taskDescription 前 40 字]
+  //   div    — 正文代码块 + `<font color='grey'>` 元数据行
+  //   action — 按钮组
+  // Feishu 会在 header/div/action 之间画很淡的隐式分隔；只保留 div↔action 之间那 1 条
+  // （不再单独用 note 元素，避免多一条 div↔note 分隔）
+  const shortDesc = data.taskDescription.length > 40
+    ? data.taskDescription.slice(0, 40) + '…'
+    : data.taskDescription;
+
+  const metaParts: string[] = [];
+  if (data.cwd) metaParts.push(`📁 ${data.cwd}`);
+  metaParts.push(`⏱ ${elapsed}`);
+  metaParts.push(`${updatedSec}s 前更新`);
+
+  const bodyBlock = '```\n' + body + '\n```';
+  const metaLine = `<font color='grey'>${metaParts.join(' · ')}</font>`;
+
   const elements: unknown[] = [
     {
       tag: 'div',
-      text: {
-        tag: 'lark_md',
-        content: `${targetTag}\n**任务**：${data.taskDescription}\n${cwdLine}<font color='grey'>已运行 ${elapsed} · ${updatedSec}s 前更新</font>`,
-      },
-    },
-    { tag: 'hr' },
-    {
-      tag: 'div',
-      text: { tag: 'lark_md', content: '```\n' + body + '\n```' },
+      text: { tag: 'lark_md', content: `${bodyBlock}\n${metaLine}` },
     },
   ];
 
   // running 状态下加操作按钮
   if (data.state === 'running') {
-    elements.push({ tag: 'hr' });
     const activeBtn = data.isActiveForChat
       ? {
           tag: 'button',
@@ -508,8 +642,6 @@ export function progressCard(data: ProgressCardData) {
       ],
     });
   } else {
-    // done / failed 状态加按钮
-    elements.push({ tag: 'hr' });
     const doneActions: unknown[] = [
       {
         tag: 'button',
@@ -541,7 +673,7 @@ export function progressCard(data: ProgressCardData) {
       template,
       title: {
         tag: 'plain_text',
-        content: `${sourceTag}${icon} ${stateLabel} · ${data.tty}`,
+        content: `${sourceTag}${icon} ${stateLabel} · ${data.tty} · ${shortDesc}`,
       },
     },
     elements,
@@ -1466,6 +1598,175 @@ export function templateDetailCard(d: TemplateDetailData) {
       title: { tag: 'plain_text', content: `📋 ${d.name}` },
     },
     elements,
+  };
+}
+
+// ---- Origin-shell push card（hook 从非 activeTty 的 shell 推消息用） ----
+
+export interface OriginShellPushCardData {
+  /** 触发本次推送的 shell tty，e.g. "/dev/ttys004" */
+  tty: string;
+  /** 触发本次推送时 Claude Code 的 cwd（可为空） */
+  cwd?: string;
+  home: string;
+  /** 消息正文，支持 lark_md */
+  body: string;
+  /** true → PreToolUse AskUserQuestion；false → Stop hook 等一般消息 */
+  question: boolean;
+  /**
+   * AskUserQuestion 的选项 label 列表。只在单问题（questions.length===1）且
+   * options 数 ≤ 4 时给。有值 → 每个 option 变成一个按钮，点击直接 send-to-tab 到源 shell，
+   * 不改 activeTty（保留用户在别的 shell 长期会话的意图）。
+   */
+  quickAnswerOptions?: string[];
+}
+
+/** answer-select 组件 value 编码：`answer|<tty>|<label>`。tty 无 `|`，label 允许含（split 时 splice 剩下）。 */
+function encodeAnswerOption(tty: string, label: string): string {
+  return `answer|${tty}|${label}`;
+}
+
+/**
+ * 非 activeTty 的 shell 通过 hook 推消息到飞书时用的卡片。
+ * header 显示 `❓/💬 ttys004`。
+ * 快答组件（根据 options 数）：
+ *  - 1-4 options → 每 option 一个按钮（一 tap 直答）
+ *  - 5+ options → select_static 下拉（避免按钮撑爆卡片）
+ * 附加按钮：[⭐ 切到此 shell]（use-tab）+ [📜 shell history]（show-history）。
+ *
+ * activeTty 自己的推送不走本卡片，走纯文本 + `🖥 ...` 前缀，避免每条 Stop hook 都变卡片。
+ */
+export function originShellPushCard(d: OriginShellPushCardData) {
+  const shortTty = d.tty.startsWith('/dev/') ? d.tty.slice(5) : d.tty;
+  const cwdShown = d.cwd ? homeify(d.cwd, d.home) : '?';
+  const icon = d.question ? '❓' : '💬';
+  const template: 'yellow' | 'blue' = d.question ? 'yellow' : 'blue';
+
+  const opts = d.quickAnswerOptions ?? [];
+  // ≤ 4：按钮组；≥ 5：下拉框。都通过 send-to-tab 或 answer-select 走同源 shell。
+  const useButtons = opts.length > 0 && opts.length <= 4;
+  const useDropdown = opts.length >= 5;
+
+  const buttonActions = useButtons
+    ? opts.map((label, i) => ({
+        tag: 'button' as const,
+        text: { tag: 'plain_text' as const, content: truncate(label, 18) },
+        type: i === 0 ? ('primary' as const) : ('default' as const),
+        value: { action: 'send-to-tab', tty: d.tty, text: label },
+      }))
+    : null;
+
+  const dropdownAction = useDropdown
+    ? {
+        tag: 'select_static' as const,
+        placeholder: {
+          tag: 'plain_text' as const,
+          content: `选择答案… (${opts.length} 项)`,
+        },
+        options: opts.map((label) => ({
+          text: { tag: 'plain_text' as const, content: truncate(label, 60) },
+          value: encodeAnswerOption(d.tty, label),
+        })),
+        value: { action: 'answer-select' },
+      }
+    : null;
+
+  const hasQuickWidget = buttonActions !== null || dropdownAction !== null;
+  const hintLine = d.question
+    ? hasQuickWidget
+      ? '<font color=\'grey\'>点选项直发到此 shell；也可直接回复文本，会 one-shot 路由到这里（不必 @）</font>'
+      : '<font color=\'grey\'>直接回复即可，会 one-shot 路由到此 shell（不必 @）</font>'
+    : '<font color=\'grey\'>此 shell 非当前 tab；点⭐切到它，后续回复会持续发到这里</font>';
+
+  const elements: unknown[] = [
+    {
+      tag: 'div',
+      text: {
+        tag: 'lark_md',
+        content: `🏷 \`${shortTty}\` · 📁 \`${cwdShown}\``,
+      },
+    },
+    { tag: 'hr' },
+    { tag: 'div', text: { tag: 'lark_md', content: d.body } },
+    { tag: 'hr' },
+    { tag: 'div', text: { tag: 'lark_md', content: hintLine } },
+  ];
+
+  if (buttonActions) {
+    elements.push({ tag: 'action', actions: buttonActions });
+  } else if (dropdownAction) {
+    elements.push({ tag: 'action', actions: [dropdownAction] });
+  }
+  elements.push({
+    tag: 'action',
+    actions: [
+      {
+        tag: 'button',
+        text: { tag: 'plain_text', content: '⭐ 切到此 shell' },
+        type: 'primary',
+        value: { action: 'use-tab', tty: d.tty },
+      },
+      // 逃生口：这张卡片来自非 active 的源 shell，pendingAnswerTty 已经被
+      // arm 到源 shell 了。用户想给 chat.activeTty 说话时，一 tap 把 pending
+      // 重定向到 activeTty（daemon 侧读实时 chat 拿 tty，不 embed 在按钮里）。
+      {
+        tag: 'button',
+        text: { tag: 'plain_text', content: '→ 回复当前' },
+        type: 'default',
+        value: { action: 'arm-active-reply' },
+      },
+      {
+        tag: 'button',
+        text: { tag: 'plain_text', content: '📜 shell history' },
+        type: 'default',
+        value: { action: 'show-history', tty: d.tty },
+      },
+    ],
+  });
+
+  return {
+    config: { wide_screen_mode: true },
+    header: {
+      template,
+      title: { tag: 'plain_text', content: `${icon} ${shortTty}` },
+    },
+    elements,
+  };
+}
+
+// ---- Receipt card（按钮点后 patch 原卡的"已完成"回执） ----
+
+export interface ReceiptCardData {
+  /** 标题，e.g. "✓ 已回答『是』 → ttys004" */
+  title: string;
+  /** 可选详情行，e.g. "cwd: ~/proj" */
+  detail?: string;
+  /** 模板色，默认 green（完成态） */
+  template?: 'green' | 'blue' | 'grey';
+  /** 时间戳 ms，默认 now；渲染成"HH:MM:SS" */
+  at?: number;
+}
+
+/**
+ * 按钮点击后的回执卡（patch 原卡用）。刻意做得比 ackCard 更瘦：
+ *  - 无 body 大段文字
+ *  - 无残留按钮（原卡的 action 被整个覆盖掉）
+ *  - 只留 header + 一行详情 + 灰色时间戳
+ * 目的：让用户在飞书 timeline 上一眼看清"这一步做完了"，且不留误点空间。
+ */
+export function receiptCard(d: ReceiptCardData) {
+  const template = d.template ?? 'green';
+  const at = new Date(d.at ?? Date.now()).toLocaleTimeString('zh-CN', { hour12: false });
+  const detailLine = d.detail
+    ? `${d.detail}\n<font color='grey'>${at}</font>`
+    : `<font color='grey'>${at}</font>`;
+  return {
+    config: { wide_screen_mode: true },
+    header: {
+      template,
+      title: { tag: 'plain_text', content: d.title },
+    },
+    elements: [{ tag: 'div', text: { tag: 'lark_md', content: detailLine } }],
   };
 }
 

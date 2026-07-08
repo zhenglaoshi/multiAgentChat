@@ -14,70 +14,100 @@ import { attachStageMemoryListener } from 'multiagent-orchestrator';
 import { refreshDirIndex } from 'multiagent-host-mac';
 
 /**
- * Upsert Claude Code Stop hook 到 ~/.claude/settings.json。
+ * Upsert Claude Code hooks 到 ~/.claude/settings.json。
  *
- * Stop hook 会在每次 Claude Code assistant 响应完成时触发，把 stdin JSON
- * （含 last_assistant_message）传给 bin/mchat-stop-hook，后者调
- * `agent lark send-text --auto` 推到飞书；daemon 端根据目标 chat 的
- * watchAllTabs gate。
+ * 装两个 hook：
+ *  - Stop → bin/mchat-stop-hook：turn 结束时把 last_assistant_message 推飞书
+ *  - PreToolUse (matcher=AskUserQuestion) → bin/mchat-pretooluse-hook：
+ *      交互式选项弹出前先把 question+options 推飞书，否则手机端看不见选项
  *
- * 幂等：先移除任何指向 mchat-stop-hook 或临时 mchat-hook-echo 的旧条目，
- * 再追加当前绝对路径的 hook。保留用户自己的其他 Stop hook。
+ * 两个 hook 都由脚本内部 fire-and-forget spawn `agent lark send-text --auto`，
+ * daemon 根据目标 chat 的 watchAllTabs gate。
+ *
+ * 幂等：移除任何指向 mchat-* 的旧条目再追加当前绝对路径。保留用户其他 hook。
  */
-async function installClaudeCodeStopHook(): Promise<void> {
+async function installClaudeCodeHooks(): Promise<void> {
   const settingsPath = join(homedir(), '.claude', 'settings.json');
   if (!existsSync(settingsPath)) {
     logger.info(
-      'Claude Code settings.json not found — Stop hook 未安装 (需先跑一次 claude)',
+      'Claude Code settings.json not found — hooks 未安装 (需先跑一次 claude)',
       { settingsPath },
     );
     return;
   }
   const HERE = fileURLToPath(new URL('.', import.meta.url));
-  const hookPath = resolve(HERE, '..', '..', '..', 'bin', 'mchat-stop-hook');
-  if (!existsSync(hookPath)) {
-    logger.warn('bin/mchat-stop-hook not found, Stop hook 未安装', { hookPath });
-    return;
-  }
+  const binDir = resolve(HERE, '..', '..', '..', 'bin');
+  const stopHookPath = resolve(binDir, 'mchat-stop-hook');
+  const preToolUseHookPath = resolve(binDir, 'mchat-pretooluse-hook');
+
+  const stopOk = existsSync(stopHookPath);
+  const preOk = existsSync(preToolUseHookPath);
+  if (!stopOk) logger.warn('bin/mchat-stop-hook not found', { stopHookPath });
+  if (!preOk) logger.warn('bin/mchat-pretooluse-hook not found', { preToolUseHookPath });
+  if (!stopOk && !preOk) return;
+
+  type HookEntry = {
+    matcher?: string;
+    hooks?: Array<{ type?: string; command?: string }>;
+  };
   try {
     const raw = await readFile(settingsPath, 'utf8');
     const cfg = JSON.parse(raw) as {
       hooks?: {
-        Stop?: Array<{
-          matcher?: string;
-          hooks?: Array<{ type?: string; command?: string }>;
-        }>;
+        Stop?: HookEntry[];
+        PreToolUse?: HookEntry[];
+        [k: string]: HookEntry[] | undefined;
       };
       [k: string]: unknown;
     };
     if (!cfg.hooks || typeof cfg.hooks !== 'object') cfg.hooks = {};
-    if (!Array.isArray(cfg.hooks.Stop)) cfg.hooks.Stop = [];
 
-    // 去重：移除指向 mchat-stop-hook 或临时 echo hook 的旧条目
-    const before = cfg.hooks.Stop.length;
-    cfg.hooks.Stop = cfg.hooks.Stop.filter((entry) => {
-      const hks = entry && Array.isArray(entry.hooks) ? entry.hooks : [];
-      return !hks.some(
-        (h) =>
-          h &&
-          typeof h.command === 'string' &&
-          (h.command.includes('mchat-stop-hook') ||
-            h.command.includes('mchat-hook-echo')),
-      );
-    });
+    /** 从某个 hook slot 里剔除指向 mchat-* 的旧条目，返回剔除数。 */
+    const stripOld = (slot: keyof NonNullable<typeof cfg.hooks>): number => {
+      const arr = cfg.hooks![slot];
+      if (!Array.isArray(arr)) {
+        cfg.hooks![slot] = [];
+        return 0;
+      }
+      const before = arr.length;
+      cfg.hooks![slot] = arr.filter((entry) => {
+        const hks = entry && Array.isArray(entry.hooks) ? entry.hooks : [];
+        return !hks.some(
+          (h) =>
+            h &&
+            typeof h.command === 'string' &&
+            (h.command.includes('mchat-stop-hook') ||
+              h.command.includes('mchat-pretooluse-hook') ||
+              h.command.includes('mchat-hook-echo')),
+        );
+      });
+      return before - cfg.hooks![slot]!.length;
+    };
 
-    cfg.hooks.Stop.push({
-      matcher: '*',
-      hooks: [{ type: 'command', command: hookPath }],
-    });
+    const removedStop = stripOld('Stop');
+    const removedPre = stripOld('PreToolUse');
+
+    if (stopOk) {
+      cfg.hooks.Stop!.push({
+        matcher: '*',
+        hooks: [{ type: 'command', command: stopHookPath }],
+      });
+    }
+    if (preOk) {
+      cfg.hooks.PreToolUse!.push({
+        matcher: 'AskUserQuestion',
+        hooks: [{ type: 'command', command: preToolUseHookPath }],
+      });
+    }
 
     await writeFile(settingsPath, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
-    logger.info('Claude Code Stop hook upserted', {
-      hookPath,
-      removedOld: before - (cfg.hooks.Stop.length - 1),
+    logger.info('Claude Code hooks upserted', {
+      stopHookPath: stopOk ? stopHookPath : null,
+      preToolUseHookPath: preOk ? preToolUseHookPath : null,
+      removedOld: { Stop: removedStop, PreToolUse: removedPre },
     });
   } catch (e) {
-    logger.warn('failed to upsert Claude Code Stop hook', {
+    logger.warn('failed to upsert Claude Code hooks', {
       err: (e as Error).message,
     });
   }
@@ -152,7 +182,7 @@ async function main() {
   attachStageMemoryListener();
   startHealthCheck(lark.client);
   checkSkillInstalled();
-  await installClaudeCodeStopHook();
+  await installClaudeCodeHooks();
 
   // 后台刷新目录索引（首次可能扫 15s，不阻塞主流程）
   void refreshDirIndex().catch((e) => {
