@@ -4,3 +4,5 @@ export * from './terminal/status.js';
 export * from './terminal/applescript.js';
 export * from './workspace.js';
 export * from './recent-cwds.js';
+export * from './dir-index.js';
+export * from './bookmarks.js';

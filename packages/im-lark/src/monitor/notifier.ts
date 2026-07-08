@@ -24,20 +24,27 @@ import type { TaskMemory } from 'multiagent-orchestrator';
 import type { TerminalTab } from 'multiagent-host-mac';
 import { chainManager, type ChainState } from './chains.js';
 import { pendingTracker, type PendingOutput } from './pending.js';
+import { sanitizeTerminalOutput } from './sanitize.js';
 import { watcher } from './watcher.js';
 import { taskEvents } from 'multiagent-orchestrator';
 import type { StageRecord, TaskState } from 'multiagent-orchestrator';
 import { buildStageProgressCardFromTask } from '../lark/task-render.js';
 
 // 单卡输出预览的"行/字符"上限——避免卡片占满半屏
-const CARD_TAIL_MAX_LINES = 20;
-const CARD_TAIL_MAX_CHARS = 1500;
+// 净化后（ANSI/TUI 重绘剥离）冗余内容少了很多，因此可以给更宽的窗口
+const CARD_TAIL_MAX_LINES = 30;
+const CARD_TAIL_MAX_CHARS = 3000;
 
-/** 把任务输出截到适合卡片显示的尺寸（行+字符双重 cap，空时返回等待提示） */
+/**
+ * 把任务输出截到适合卡片显示的尺寸：
+ *   1. 先跑 ANSI/TUI 净化（去转义、\r 折叠、同行去重）
+ *   2. 再按行/字符双重 cap 截尾
+ *   3. 空时返回等待提示
+ */
 function trimTailForCard(s: string): string {
-  const text = (s ?? '').trimEnd();
-  if (!text) return '(等待输出…)';
-  const lines = text.split('\n');
+  const clean = sanitizeTerminalOutput(s ?? '').trimEnd();
+  if (!clean) return '(等待输出…)';
+  const lines = clean.split('\n');
   const tailLines =
     lines.length > CARD_TAIL_MAX_LINES
       ? lines.slice(-CARD_TAIL_MAX_LINES)
@@ -50,7 +57,8 @@ function trimTailForCard(s: string): string {
 }
 
 // Batch 聚合卡 patch 节流：每个 batch 最少间隔 N ms
-const BATCH_PATCH_THROTTLE_MS = 2500;
+// 800ms 让 batch 卡也跟得上 1s poll 的节奏；final 状态无视节流强制 patch
+const BATCH_PATCH_THROTTLE_MS = 800;
 const lastBatchPatchAt = new Map<string, number>();
 const batchItemsState = new Map<string, BatchTaskItem[]>(); // batchId → 已记录的所有 task items
 
@@ -175,7 +183,9 @@ async function persistTaskMemory(
 ): Promise<void> {
   const prompt = pending.originalPrompt ?? pending.taskDescription;
   // 用 taskOnlyTail（仅本任务新增）抓文件，避免抓到历史 scrollback 里的 noise
-  const filesProduced = extractFilesFromOutput(taskOnlyTail);
+  // 先净化 ANSI/TUI 再抽路径 & 存 preview，否则 memory recall 出来一堆转义字符
+  const cleanTail = sanitizeTerminalOutput(taskOnlyTail);
+  const filesProduced = extractFilesFromOutput(cleanTail);
   const tags = tokenize(prompt).slice(0, 12);
   const id = `mem-${pending.sentAt.toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
   // 优先用 pending.cwd（任务发起时记录）；缺省 fallback tab.cwd（watcher 可能没拿到）
@@ -186,7 +196,7 @@ async function persistTaskMemory(
     tty: tab.tty,
     cwd,
     prompt,
-    outputPreview: taskOnlyTail.slice(-500),
+    outputPreview: cleanTail.slice(-500),
     ...(filesProduced.length ? { filesProduced } : {}),
     tags,
     startedAt: pending.sentAt,
@@ -280,7 +290,7 @@ export function attachWatcherToLark(larkClient: Lark.Client): void {
           const { next, chainDone } = chainManager.markStepDone(
             pending.chainId,
             pending.chainStepIndex,
-            taskOnlyTail || outputTail || '',
+            sanitizeTerminalOutput(taskOnlyTail || outputTail || ''),
           );
           if (next && !chainDone) {
             logger.info('chain advance', {
@@ -308,7 +318,11 @@ export function attachWatcherToLark(larkClient: Lark.Client): void {
         // 批量任务路径：patch 共享聚合卡（节流），不走独立卡逻辑
         // 用 taskOnlyTail（只本任务新增）避免在卡片里展示之前 scrollback 的历史
         const batchStatus = isFinal ? 'done' : 'running';
-        await maybePatchBatchCard(pending, batchStatus, taskOnlyTail || '');
+        await maybePatchBatchCard(
+          pending,
+          batchStatus,
+          sanitizeTerminalOutput(taskOnlyTail || ''),
+        );
       } else {
         // 单任务/独立卡路径
         let isActiveForChat = false;
@@ -383,6 +397,7 @@ export function attachWatcherToLark(larkClient: Lark.Client): void {
       const taskDescription = `🏠 本地${dirName ? ` @${dirName}` : ''}`;
       const home = homedir();
 
+      const cleanTail = sanitizeTerminalOutput(outputTail);
       for (const chat of watchers) {
         try {
           const isActiveForChat = chat.activeTty === tab.tty;
@@ -390,7 +405,7 @@ export function attachWatcherToLark(larkClient: Lark.Client): void {
             state: 'running',
             tty: tab.tty,
             taskDescription,
-            outputTail,
+            outputTail: cleanTail,
             startedAt: Date.now(),
             updatedAt: Date.now(),
             isActiveForChat,

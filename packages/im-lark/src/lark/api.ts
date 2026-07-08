@@ -50,11 +50,66 @@ function inferFileType(filename: string): FileType {
   return 'stream';
 }
 
+/**
+ * 判断一段文本是否含 markdown 语法特征。
+ * 用于决定 `sendTextMessage` 是走纯文本还是 markdown 卡片渲染。
+ */
+export function looksLikeMarkdown(text: string): boolean {
+  if (!text) return false;
+  if (/```/.test(text)) return true;                        // fenced code block
+  if (/(^|\n)#{1,6} \S/.test(text)) return true;            // ATX heading
+  if (/\*\*[^*\n]{1,}\*\*/.test(text)) return true;         // **bold**
+  if (/(^|\n)[-*+] \S/.test(text)) return true;             // bullet list
+  if (/(^|\n)\d+\. \S/.test(text)) return true;             // numbered list
+  if (/\[[^\]\n]+\]\([^)\n]+\)/.test(text)) return true;    // [link](url)
+  if (/(^|\n)> \S/.test(text)) return true;                 // blockquote
+  if (/<font\s+color=/i.test(text)) return true;            // feishu font color
+  if (/\|.+\|.+\|\n\s*\|[-: |]+\|/.test(text)) return true; // markdown table
+  return false;
+}
+
+/**
+ * 发送 markdown 卡片（带青绿色 header 标记 —— 便于跟 progressCard(蓝/绿/红)、
+ * 审批卡(黄/红)等系统卡在飞书 chat 里视觉上区分开）。
+ *
+ * 结构：颜色 header（"💬 Claude"）+ 单个 lark_md div。
+ * Feishu 会渲染粗体/代码块/列表/链接等 markdown 语法。
+ */
+export async function sendMarkdownMessage(
+  client: Lark.Client,
+  chatId: string,
+  md: string,
+): Promise<void> {
+  const card = {
+    config: { wide_screen_mode: true },
+    header: {
+      template: 'turquoise',
+      title: { tag: 'plain_text', content: '💬 Claude' },
+    },
+    elements: [
+      {
+        tag: 'div',
+        text: { tag: 'lark_md', content: md },
+      },
+    ],
+  };
+  await sendCardMessage(client, chatId, card);
+}
+
+/**
+ * 智能发送文本：默认自动检测 markdown 特征，命中 → 走 markdown 卡片；否则纯文本。
+ * `plain: true` 强制走纯文本（供日志/URL 等场景 opt-out）。
+ */
 export async function sendTextMessage(
   client: Lark.Client,
   chatId: string,
   text: string,
+  options: { plain?: boolean } = {},
 ): Promise<void> {
+  if (!options.plain && looksLikeMarkdown(text)) {
+    await sendMarkdownMessage(client, chatId, text);
+    return;
+  }
   await withRetry('sendText', () =>
     client.im.message.create({
       params: { receive_id_type: 'chat_id' },

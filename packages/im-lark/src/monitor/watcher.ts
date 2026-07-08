@@ -62,9 +62,17 @@ export class TabWatcher {
   private cachedTabs: TerminalTab[] = [];
   private cachedHistories = new Map<string, string>();
   private cacheUpdatedAt = 0;
+  // cwd cache：idle 且已知 cwd 的 tab 不再每 tick 重刷（省 ps+lsof）
+  // 只在 tab busy / 有 pending / 首次见 / TTL 过期 时重取
+  private cwdCache = new Map<string, { cwd: string; updatedAt: number }>();
+  private static readonly CWD_STALE_MS = 5 * 60 * 1000; // 5min TTL 兜底
 
   constructor(opts: { pollMs?: number; renotifyMs?: number } = {}) {
-    this.pollMs = opts.pollMs ?? 3000;
+    // 默认 1s poll —— 让飞书卡片有"接近流式"的更新节奏（原来 3s 太慢）
+    // 可通过 WATCHER_POLL_MS env 调整（500ms 更快但 CPU 稍高；≥5000 会明显滞后）
+    const envPoll = Number(process.env['WATCHER_POLL_MS']);
+    this.pollMs =
+      opts.pollMs ?? (Number.isFinite(envPoll) && envPoll >= 200 ? envPoll : 1000);
     this.renotifyMs = opts.renotifyMs ?? 60 * 60 * 1000; // 60 分钟再通知一次（避免同 tab 反复骚扰）
   }
 
@@ -171,6 +179,29 @@ export class TabWatcher {
     }
 
     const tail = arr.slice(-30).join('\n');
+
+    // Claude 进程 tab 完全跳过 needsInput 检测：
+    //   1. Claude 的 AskUserQuestion 组件绘制在 alt-screen buffer，`history of tab` 拿不到 →
+    //      watcher 看到的是滚回区的 task list checkbox（`◻ ...`），会假阳性触发 pattern
+    //   2. 触发后推给飞书的 promptSnippet 是 scrollback tail，跟真问题无关，
+    //      手机端看到"要输入"但没有问题原文 —— 信息量为零反而添乱
+    //   3. Claude 用 AskUserQuestion 时应自己主动 `agent lark send-text` 推问题+选项
+    //      （skill 和 SYSTEM_GUIDANCE 里补了这条规则）
+    const isClaudeTab = tab.processes.some((p) =>
+      /(^|\/)claude(-code)?$/i.test(p) || p.toLowerCase().includes('claude'),
+    );
+    if (isClaudeTab) {
+      // 保留 snapshot 便于其他逻辑（比如 processPendingByStability），但不做 waiting 判定
+      const prev = this.snapshots.get(tab.tty);
+      this.snapshots.set(tab.tty, {
+        ...(prev ?? { tty: tab.tty, busy: tab.busy, waiting: false }),
+        tty: tab.tty,
+        busy: tab.busy,
+        waiting: false,
+        historyLen: arr.length,
+      });
+      return;
+    }
 
     const det = detectWaitingForInput(tail, tab.busy);
     const prev = this.snapshots.get(tab.tty);
@@ -399,14 +430,47 @@ export class TabWatcher {
 
   /**
    * 内部：每 tick 给 tabs 加 cwd（用于 cache）。
-   * 注意性能 — 14 tabs 并发拿 cwd ~200ms，可接受。
+   *
+   * 优化：只对**需要**重取 cwd 的 tab 调 ps+lsof：
+   *   - 首次见（cache 无记录）
+   *   - tab 当前 busy（可能刚 cd）
+   *   - 有 pending（该 tab 是任务派发目标）
+   *   - cache 过期（超过 5min，兜底）
+   * idle 且已缓存的 tab 直接复用，省 2 个 spawn/tab/tick。
+   *
+   * 极端场景：用户在 idle shell 手动 cd 又不跑命令 → dashboard 看到旧 cwd，
+   * 但 5min TTL 会自然纠正；tab busy 后也立刻纠正。
    */
   private async enrichForCache(tabs: TerminalTab[]): Promise<TerminalTab[]> {
-    try {
-      return await enrichTabsWithCwd(tabs);
-    } catch {
-      return tabs;
+    const now = Date.now();
+    const needsRefresh: TerminalTab[] = [];
+    for (const t of tabs) {
+      const cached = this.cwdCache.get(t.tty);
+      const hasPending = pendingTracker.forTty(t.tty).length > 0;
+      const stale = !cached || now - cached.updatedAt > TabWatcher.CWD_STALE_MS;
+      if (!cached || t.busy || hasPending || stale) {
+        needsRefresh.push(t);
+      }
     }
+    // 并发拿需要 refresh 的
+    try {
+      const refreshed = await enrichTabsWithCwd(needsRefresh);
+      for (const t of refreshed) {
+        if (t.cwd) this.cwdCache.set(t.tty, { cwd: t.cwd, updatedAt: now });
+      }
+    } catch {
+      // 失败就 fallback 到 cache
+    }
+    // 清 cache 里已消失的 tab
+    const seen = new Set(tabs.map((t) => t.tty));
+    for (const tty of this.cwdCache.keys()) {
+      if (!seen.has(tty)) this.cwdCache.delete(tty);
+    }
+    // 输出 tab：优先 cache（含新 refresh 的），否则原样返回（无 cwd）
+    return tabs.map((t) => {
+      const cached = this.cwdCache.get(t.tty);
+      return cached ? { ...t, cwd: cached.cwd } : t;
+    });
   }
 
   /** 拿最近一次 tick 的 tabs（带 cwd）。给 dashboard / commands 复用，避免重复 osascript */

@@ -1,5 +1,5 @@
 import { utimesSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import * as Lark from '@larksuiteoapi/node-sdk';
 import { config } from '../config.js';
 import { logger } from 'multiagent-orchestrator';
@@ -7,8 +7,11 @@ import { isWsLikelyDead, wsState } from './ws-watchdog.js';
 
 const HEALTH_INTERVAL_MS = 30_000;
 const FAIL_THRESHOLD = 3;
-// 触发 tsx watch 重新加载的"哨兵"文件
-const RELOAD_TRIGGER = resolve('./src/index.ts');
+// 触发 tsx watch 重新加载的"哨兵"文件 —— 用 import.meta.url 自指
+// 即当前文件（health-check.ts）本身。tsx watch 追踪 entry 的全部依赖 import 树，
+// 只要触碰任何 import 到的文件就能触发 reload。
+// 之前硬编码 './src/index.ts' 在项目 monorepo 化后失效 → 自杀路径踩空，daemon 死了不重启。
+const RELOAD_TRIGGER = fileURLToPath(import.meta.url);
 
 /**
  * 后台 health check：每 30s 调一次 lark bot.v3.info API。

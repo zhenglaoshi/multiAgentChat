@@ -98,6 +98,32 @@ agent lark send-card "$(cat /tmp/card.json)"
 - **不要把凭证写进代码** —— 凭证由 multiAgentChat 服务持有，你不需要知道
 - 如果 `agent.sock` 不存在或 `agent` 命令不可用，**直接告诉用户**（"multiAgentChat 服务没在跑"），不要瞎 try 别的飞书发送方式
 
+## ⚠️ 交互式选项（AskUserQuestion 等）必须先推飞书
+
+**为什么**：AskUserQuestion / 类似 TUI 选项框绘制在 alt-screen buffer 里。飞书那边看不见 —— 飞书只能拿 `history of tab` 里 pre-alt-screen 的 scrollback。手机端用户看到的是 watcher 抓到的碎片（可能是 task list、tool 输出之类），**跟你问的问题完全无关**。
+
+**规则**：调 AskUserQuestion（或任何"让用户选一项/输入"的 TUI 交互）**之前**，先 `agent lark send-text` 把问题原文+每个选项的完整说明推到飞书。示例：
+
+```bash
+agent lark send-text - <<'EOF'
+**❓ 请选择**
+
+**问题**：pigeon 连 mongo 副本集 timeout 了，怎么绕过？
+
+**选项**：
+1. 你自己 nc 探测 6 个 host 全通后重试（推荐）—— 手动跑 nc 探测，全通就重启 pigeon
+2. 授权我改 .env 用单节点 directConnection —— 跳过副本集探测。风险：少数依赖 secondary read 的代码可能异常
+3. 跳过本地 pigeon，App 接测试环境 —— 但测不到新加的 mutation
+4. 先停下来问运维要单节点连接串
+
+在飞书回复选项号或写自由文字。
+EOF
+```
+
+之后再调 AskUserQuestion 让本地 shell 用户也能选。手机端和本地端信息对齐。
+
+**特例**：如果问题很短（单纯的 y/n 确认），可以简写：`agent lark send-text "❓ 要继续 xxx 吗？回 y/n"`。
+
 ## 高风险操作前请求审批
 
 如果你即将执行**不可逆 / 影响生产 / 操作真实数据库 / 删除大量文件**等高风险动作，**先调审批 CLI**，等用户飞书侧批准再执行：
