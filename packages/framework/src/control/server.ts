@@ -75,10 +75,14 @@ import type {
   SubagentSummary,
 } from './protocol.js';
 import { SOCKET_PATH } from './protocol.js';
+import type { IMTransport } from '../im/index.js';
 
 const ABS_SOCKET = resolve(SOCKET_PATH);
 
 let larkClient: Lark.Client | null = null;
+// 企微 transport 由 daemon 传入（用抽象 IMTransport 接口避免循环 project reference）。
+// 缺 WECOM_* env 时为 null，所有 wecom.* op 会 error 提示。
+let wecomTransport: IMTransport | null = null;
 
 function writeLine(sock: Socket, obj: unknown): void {
   if (sock.destroyed || !sock.writable) return;
@@ -505,6 +509,98 @@ async function handleApprovalResolve(
     req.resolvedBy ?? 'cli:unknown',
   );
   sendOk<ApprovalResolveData>(sock, { request: finished ?? null });
+  sock.end();
+}
+
+// ---- WeCom ops ----
+
+function requireWeCom(): NonNullable<typeof wecomTransport> {
+  if (!wecomTransport) {
+    throw new Error('企微 transport 未 attach —— 检查 .env 里的 WECOM_* 5 项，然后重启 dev');
+  }
+  return wecomTransport;
+}
+
+function resolveWeComTarget(reqChatId: string | undefined): string {
+  // 简单反查：显式给了就用；否则依赖 WECOM_DEFAULT_TO_USER 兜底（transport 内部处理）
+  if (reqChatId) return reqChatId;
+  const def = process.env['WECOM_DEFAULT_TO_USER'];
+  if (def) return `wecom:user:${def}`;
+  throw new Error('无法反查企微 chat —— 明示 --chat 或设置 WECOM_DEFAULT_TO_USER');
+}
+
+async function handleWeComSendText(
+  sock: Socket,
+  req: Extract<Request, { op: 'wecom.send-text' }>,
+) {
+  try {
+    const wecom = requireWeCom();
+    const target = resolveWeComTarget(req.chatId);
+    const r = await wecom.sendText(target, req.text);
+    sendOk<import('./protocol.js').WeComSendData>(sock, {
+      messageId: r.messageId,
+      details: { target },
+    });
+  } catch (e) {
+    sendErr(sock, (e as Error).message);
+  }
+  sock.end();
+}
+
+async function handleWeComSendFile(
+  sock: Socket,
+  req: Extract<Request, { op: 'wecom.send-file' }>,
+) {
+  try {
+    const wecom = requireWeCom();
+    const target = resolveWeComTarget(req.chatId);
+    const opts: Parameters<typeof wecom.sendFile>[2] = {};
+    if (req.name) opts.name = req.name;
+    const r = await wecom.sendFile(target, req.path, opts);
+    sendOk<import('./protocol.js').WeComSendData>(sock, {
+      messageId: r.messageId,
+      details: { target, path: req.path },
+    });
+  } catch (e) {
+    sendErr(sock, (e as Error).message);
+  }
+  sock.end();
+}
+
+async function handleWeComSendImage(
+  sock: Socket,
+  req: Extract<Request, { op: 'wecom.send-image' }>,
+) {
+  try {
+    const wecom = requireWeCom();
+    const target = resolveWeComTarget(req.chatId);
+    const r = await wecom.sendImage(target, req.path);
+    sendOk<import('./protocol.js').WeComSendData>(sock, {
+      messageId: r.messageId,
+      details: { target, path: req.path },
+    });
+  } catch (e) {
+    sendErr(sock, (e as Error).message);
+  }
+  sock.end();
+}
+
+async function handleWeComResolveChat(
+  sock: Socket,
+  _req: Extract<Request, { op: 'wecom.resolve-chat' }>,
+) {
+  const def = process.env['WECOM_DEFAULT_TO_USER'];
+  if (def) {
+    sendOk<import('./protocol.js').WeComResolveChatData>(sock, {
+      chatId: `wecom:user:${def}`,
+      source: 'default-user',
+    });
+  } else {
+    sendOk<import('./protocol.js').WeComResolveChatData>(sock, {
+      chatId: null,
+      source: 'none',
+    });
+  }
   sock.end();
 }
 
@@ -1193,6 +1289,14 @@ async function dispatch(sock: Socket, req: Request): Promise<void> {
       return handleApprovalResolve(sock, req);
     case 'lark.ask':
       return handleLarkAsk(sock, req);
+    case 'wecom.send-text':
+      return handleWeComSendText(sock, req);
+    case 'wecom.send-file':
+      return handleWeComSendFile(sock, req);
+    case 'wecom.send-image':
+      return handleWeComSendImage(sock, req);
+    case 'wecom.resolve-chat':
+      return handleWeComResolveChat(sock, req);
     case 'task.create':
       return handleTaskCreate(sock, req);
     case 'task.get':
@@ -1257,8 +1361,12 @@ function onConnection(sock: Socket): void {
   });
 }
 
-export async function startControlServer(client?: Lark.Client): Promise<void> {
+export async function startControlServer(
+  client?: Lark.Client,
+  wecom?: IMTransport,
+): Promise<void> {
   if (client) larkClient = client;
+  if (wecom) wecomTransport = wecom;
   await mkdir(dirname(ABS_SOCKET), { recursive: true });
   if (existsSync(ABS_SOCKET)) {
     try {

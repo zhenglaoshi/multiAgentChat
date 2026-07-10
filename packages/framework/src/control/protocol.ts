@@ -170,6 +170,42 @@ export interface ApprovalResolveOp {
   resolvedBy?: string;
 }
 
+// ---- WeCom ops（企微对齐飞书能力） ----
+
+export interface WeComSendTextOp {
+  op: 'wecom.send-text';
+  chatId?: string;    // 空 → 走 WECOM_DEFAULT_TO_USER
+  text: string;
+}
+
+export interface WeComSendFileOp {
+  op: 'wecom.send-file';
+  chatId?: string;
+  path: string;
+  name?: string;
+}
+
+export interface WeComSendImageOp {
+  op: 'wecom.send-image';
+  chatId?: string;
+  path: string;
+}
+
+export interface WeComResolveChatOp {
+  op: 'wecom.resolve-chat';
+  tty?: string;
+}
+
+export interface WeComSendData {
+  messageId: string;
+  details?: Record<string, unknown>;
+}
+
+export interface WeComResolveChatData {
+  chatId: string | null;
+  source: 'default-user' | 'none';
+}
+
 // ---- Ask op（弹飞书交互卡片，阻塞式拿答案） ----
 
 export interface LarkAskOp {
@@ -317,6 +353,10 @@ export type Request =
   | ApprovalListOp
   | ApprovalResolveOp
   | LarkAskOp
+  | WeComSendTextOp
+  | WeComSendFileOp
+  | WeComSendImageOp
+  | WeComResolveChatOp
   | TaskCreateOp
   | TaskGetOp
   | TaskListOp

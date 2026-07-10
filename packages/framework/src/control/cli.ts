@@ -20,6 +20,8 @@ import type {
   LarkSendData,
   TabScreenData,
   TabKeysData,
+  WeComSendData,
+  WeComResolveChatData,
   Request,
   Response,
   StageRecallData,
@@ -716,6 +718,83 @@ async function cmdLark(flags: Flags): Promise<void> {
   die(`未知 lark 子命令：${sub}`);
 }
 
+async function resolveWeComChatId(flags: Flags): Promise<string> {
+  if (flags.chat) return flags.chat;
+  const data = await sendOnce<WeComResolveChatData>({ op: 'wecom.resolve-chat' });
+  if (!data.chatId) {
+    die('无法反查企微 chat（缺 WECOM_DEFAULT_TO_USER），请用 --chat wecom:user:<userid>');
+  }
+  return data.chatId;
+}
+
+async function cmdWeCom(flags: Flags): Promise<void> {
+  const sub = flags.positional[0];
+  if (!sub) die('agent wecom <send-text|send-file|send-image|which-chat>');
+  const rest = flags.positional.slice(1);
+
+  if (sub === 'which-chat') {
+    const data = await sendOnce<WeComResolveChatData>({ op: 'wecom.resolve-chat' });
+    stdout.write(`chat: ${data.chatId ?? '(none)'}\n`);
+    stdout.write(`source: ${data.source}\n`);
+    return;
+  }
+
+  if (sub === 'send-text') {
+    let text = rest.join(' ');
+    if (!text || text === '-') {
+      const piped = await readStdinIfPiped();
+      if (piped) text = piped;
+    }
+    if (!text) die('agent wecom send-text "..."');
+    const chatId = await resolveWeComChatId(flags);
+    const data = await sendOnce<WeComSendData>({
+      op: 'wecom.send-text',
+      chatId,
+      text,
+    });
+    stdout.write(`✓ 文本已发到 ${chatId}（msgid=${data.messageId || '-'}）\n`);
+    if (!flags.auto) {
+      const MAX = 800;
+      const preview = text.length > MAX ? text.slice(0, MAX) + '\n…(截断，共 ' + text.length + ' 字符)' : text;
+      stderr.write('─── 推送内容 ───\n' + preview + '\n────────────────\n');
+    }
+    return;
+  }
+
+  if (sub === 'send-file') {
+    const path = rest[0];
+    if (!path) die('agent wecom send-file <path>');
+    const abs = resolvePath(path);
+    if (!existsSync(abs)) die(`文件不存在: ${abs}`);
+    const chatId = await resolveWeComChatId(flags);
+    const data = await sendOnce<WeComSendData>({
+      op: 'wecom.send-file',
+      chatId,
+      path: abs,
+      ...(flags.name ? { name: flags.name } : {}),
+    });
+    stdout.write(`✓ 文件已发到 ${chatId}（msgid=${data.messageId || '-'}）\n`);
+    return;
+  }
+
+  if (sub === 'send-image') {
+    const path = rest[0];
+    if (!path) die('agent wecom send-image <path>');
+    const abs = resolvePath(path);
+    if (!existsSync(abs)) die(`文件不存在: ${abs}`);
+    const chatId = await resolveWeComChatId(flags);
+    const data = await sendOnce<WeComSendData>({
+      op: 'wecom.send-image',
+      chatId,
+      path: abs,
+    });
+    stdout.write(`✓ 图片已发到 ${chatId}（msgid=${data.messageId || '-'}）\n`);
+    return;
+  }
+
+  die(`未知 wecom 子命令：${sub}`);
+}
+
 async function cmdRecentCwds(): Promise<void> {
   const data = await sendOnce<TabRecentCwdsData>({ op: 'tab.recent-cwds' });
   if (data.cwds.length === 0) {
@@ -1260,6 +1339,14 @@ function printHelp() {
       '            agent lark ask multi  --title "勾几个" --options "1,2,3"',
       '            agent lark ask input  --title "输入什么"   # 用户在 chat 回文本',
       '',
+      '企业微信外发（企微 transport，需 .env 里 WECOM_* 5 项）：',
+      '  agent wecom send-text [--chat wecom:user:X] "..."',
+      '  agent wecom send-file [--chat X] <path>',
+      '  agent wecom send-image [--chat X] <path>',
+      '  agent wecom which-chat                   看当前默认企微 chat',
+      '       --chat 不给时走 WECOM_DEFAULT_TO_USER；@target 派发到 tab 目前只支持',
+      '       企微收消息端（企微 chat → @ttys003 命令），CLI 侧发消息不涉及 tab',
+      '',
       '安装 Claude Code 全局 skill：',
       '  agent install-skill                      把 multiagent-lark 装到 ~/.claude/skills/',
       '                                            装完所有 Mac 上的 claude 都自动知道用 agent lark',
@@ -1345,6 +1432,8 @@ async function main(): Promise<void> {
         return await cmdRecentCwds();
       case 'lark':
         return await cmdLark(flags);
+      case 'wecom':
+        return await cmdWeCom(flags);
       case 'install-skill':
         return await cmdInstallSkill();
       case 'uninstall-skill':

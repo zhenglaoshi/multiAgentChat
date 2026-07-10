@@ -440,6 +440,30 @@ daemon 启动时**自动**做的事，让新 PC 首次跑通只需要 3 步（�
 
 ---
 
+## 18. 企业微信（WeCom）· 第二个 IM · beta
+
+### 能力
+- `packages/im-wecom` · WeCom transport 实现（AES 加解密 / 内嵌 HTTP receiver / template_card 渲染）
+- daemon attach：`.env` 里配了 WECOM_* 5 项就起（不配就静默跳过，飞书完全不受影响）
+- **CLI**：`agent wecom send-text / send-file / send-image / which-chat`（parallel `agent lark`）
+- **收消息 → 派发到 tab**：企微里发 `@ttys003 命令`，daemon 反查 tab + AppleScript 注入 + 回执文本
+
+### 与飞书的差异（v1 版本已知限制）
+- 卡片交互能力受限：`ask multi` 走 `multiple_interaction` 卡，用户体验不如飞书 checkbox
+- `patchCard` 靠重发（企微不支持任意 body 更新）
+- 群聊 target `wecom:chat:xxx` 未接（v1 只支持 1v1 应用消息 + `WECOM_DEFAULT_TO_USER` 兜底）
+- 收消息端**无 sticky/active tty**：必须 `@target text` 显式指定，不像飞书能自动路由到 activeTty
+- 没有：`/watch`、`/quiet`、进度卡自适应节流、Stop hook auto-push、pending 追踪、审批卡片、`agent wecom ask`
+
+### 什么时候用
+- iHealth / 团队用企微不用飞书
+- 想在飞书 + 企微双端同时挂机器人（各自独立 chat state）
+
+### 配置
+详见 [wecom-bot-setup.md](wecom-bot-setup.md)：企业自建应用申请 + cloudflared tunnel + 5 个 env vars。
+
+---
+
 ## 已知的能力边界
 
 **能做**：

@@ -12,7 +12,8 @@ import { startHealthCheck } from 'multiagent-im-lark';
 import { attachWatcherToLark } from 'multiagent-im-lark';
 import { installWsWatchdog } from 'multiagent-im-lark';
 import { attachStageMemoryListener } from 'multiagent-orchestrator';
-import { refreshDirIndex } from 'multiagent-host-mac';
+import { listTabs, refreshDirIndex, send as terminalSend, forceEnter } from 'multiagent-host-mac';
+import type { IMMessageEvent } from 'multiagent-framework';
 
 /**
  * Upsert Claude Code hooks 到 ~/.claude/settings.json。
@@ -301,6 +302,74 @@ function startCaffeinate(): void {
   }
 }
 
+/**
+ * 极简版企微 → Terminal tab 派发（v1）。
+ *
+ * 目前实现：
+ *   - 解析 "@target text" 或纯文本
+ *   - @target 支持：tty (ttys003 / /dev/ttys003) / tab 标题 / cwd basename
+ *   - 无 @ 时提示需要 @target（企微 v1 不支持 sticky/active tty 状态，简单粗暴）
+ *   - AppleScript send 到 tab；如果是 claude TUI 还 forceEnter
+ *   - 派发结果通过 wecom.sendText 回执给用户
+ *
+ * 不做（Day 6+）：
+ *   - 进度卡 (template_card render + patch)
+ *   - pending tracker（企微 patch 靠重发，UX 不同）
+ *   - Stop hook auto-push
+ *   - /watch, /quiet 等 slash 命令
+ */
+async function dispatchWeComMessage(
+  wecom: WeComTransport,
+  ev: IMMessageEvent,
+): Promise<void> {
+  const text = ev.text.trim();
+  if (!text) return;
+
+  // 解析 @target
+  const m = /^@(\S+)\s+([\s\S]+)$/.exec(text);
+  if (!m) {
+    await wecom.sendText(
+      ev.chatId,
+      '❓ 需要 `@target 命令` 格式（企微 v1 暂不支持 sticky/active tty）\n例：@ttys003 ls -la',
+    );
+    return;
+  }
+  const target = (m[1] ?? '').toLowerCase();
+  const cmd = m[2] ?? '';
+
+  const tabs = await listTabs();
+  const tab = tabs.find((t) => {
+    const ttyShort = t.tty.replace(/^\/dev\//, '').toLowerCase();
+    if (ttyShort === target || t.tty.toLowerCase() === target) return true;
+    if (t.title.toLowerCase().includes(target)) return true;
+    if (t.cwd && t.cwd.toLowerCase().endsWith('/' + target)) return true;
+    return false;
+  });
+  if (!tab) {
+    await wecom.sendText(
+      ev.chatId,
+      `❌ 找不到 target=${target}。可用 tab：\n` +
+        tabs.slice(0, 8).map((t) => `- ${t.tty.replace(/^\/dev\//, '')}${t.cwd ? ` (${t.cwd})` : ''}`).join('\n'),
+    );
+    return;
+  }
+
+  const result = await terminalSend(tab.tty, cmd);
+  if (!result.ok) {
+    await wecom.sendText(ev.chatId, `❌ send 失败：${result.reason ?? '(无原因)'}`);
+    return;
+  }
+  // 如果是 claude TUI，do script 加 \n 会被理解成换行；显式发一次 Return
+  if (tab.hasTUI) {
+    await new Promise((r) => setTimeout(r, 400));
+    await forceEnter(tab.tty);
+  }
+  await wecom.sendText(
+    ev.chatId,
+    `✓ 已注入到 ${tab.tty.replace(/^\/dev\//, '')}${tab.cwd ? ` (${tab.cwd})` : ''}\n命令：${cmd.slice(0, 100)}`,
+  );
+}
+
 async function main() {
   // ---- Preflight（都是幂等 / 快速，早失败 hint 给用户） ----
   assertNodeVersion();
@@ -313,31 +382,33 @@ async function main() {
   // WS watchdog 必须在 startLarkBot 前安装 —— 它 monkey-patch console.log 截获 SDK 输出
   installWsWatchdog();
   const lark = startLarkBot();
-  await startControlServer(lark.client);
-  attachWatcherToLark(lark.client);
-  attachStageMemoryListener();
-  startHealthCheck(lark.client);
-  await ensureSkillInstalled();
-  await installClaudeCodeHooks();
-  await ensureAgentOnPath();
 
   // ---- 企微 transport（可选）：仅在 .env 里配了 WECOM_* 时 attach ----
+  // 需要在 startControlServer 之前起，让 server 拿到 transport 引用
+  let wecom: WeComTransport | null = null;
   const wecomCfg = loadWeComConfig();
   if (wecomCfg) {
     try {
-      const wecom = new WeComTransport(wecomCfg);
+      wecom = new WeComTransport(wecomCfg);
       await wecom.start();
-      // TODO Day 5：把 wecom.events.on('message' / 'cardAction') 接进 dispatch 流
-      // 目前只 attach receiver + REST 发消息 API 可用；收消息还没自动派发到 tab
-      wecom.events.on('message', (ev) => {
-        logger.info('wecom message received (dispatch WIP)', {
+      // 收到企微 text 消息 → 用 host-mac 反查 tty + send 到 tab（v1 极简版：不发进度卡）
+      wecom.events.on('message', async (ev) => {
+        logger.info('wecom message received', {
           chatId: ev.chatId,
           senderId: ev.senderId,
-          textLen: ev.text.length,
+          textPreview: ev.text.slice(0, 60),
         });
+        try {
+          await dispatchWeComMessage(wecom!, ev);
+        } catch (e) {
+          logger.warn('wecom dispatch failed', { err: (e as Error).message });
+          try {
+            await wecom!.sendText(ev.chatId, `❌ 派发失败：${(e as Error).message}`);
+          } catch { /* ignore */ }
+        }
       });
       wecom.events.on('cardAction', (ev) => {
-        logger.info('wecom cardAction received (dispatch WIP)', {
+        logger.info('wecom cardAction received (未接 handler)', {
           chatId: ev.chatId,
           action: ev.action,
         });
@@ -351,10 +422,19 @@ async function main() {
       logger.warn('wecom transport start failed（daemon 继续跑，只是企微不可用）', {
         err: (e as Error).message,
       });
+      wecom = null;
     }
   } else {
     logger.info('wecom transport 未 attach（缺 WECOM_CORP_ID/AGENT_ID/SECRET/TOKEN/AES_KEY 任一）');
   }
+
+  await startControlServer(lark.client, wecom ?? undefined);
+  attachWatcherToLark(lark.client);
+  attachStageMemoryListener();
+  startHealthCheck(lark.client);
+  await ensureSkillInstalled();
+  await installClaudeCodeHooks();
+  await ensureAgentOnPath();
 
   // 后台刷新目录索引（首次可能扫 15s，不阻塞主流程）
   void refreshDirIndex().catch((e) => {
