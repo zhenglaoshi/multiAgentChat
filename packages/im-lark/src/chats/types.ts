@@ -4,6 +4,11 @@ export interface ChatState {
   /** /watch on → 监听所有 claude tab 的本地任务，自动推送进度卡片 */
   watchAllTabs?: boolean;
   /**
+   * /quiet on → 该 chat 里所有 pending 只发首次 + 最终收尾卡，中途不 patch。
+   * 适合专注其他任务、后台跑 build/长任务时。
+   */
+  quietMode?: boolean;
+  /**
    * 一次性问题回路：某个 tab 通过 PreToolUse AskUserQuestion hook 推来问题、
    * 或 /shells 里 [→ 发一条] 显式 arm 时写入。下一次飞书无 @target 的回复
    * one-shot 路由到该 tty 而不是 activeTty，消耗后：

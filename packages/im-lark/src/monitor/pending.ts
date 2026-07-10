@@ -39,6 +39,13 @@ export interface PendingOutput {
   lastSeenLen?: number;        // 上次 tick 看到的 history line count（兼容字段）
   stableSince?: number;        // 字符数稳定起始时间
   pushedAtStableLen?: number;  // 已 push 过的 stable line count（避免重复 push）
+
+  /**
+   * 单卡静默：用户在该 pending 的进度卡上点了「🔇 静默」按钮 → true。
+   * notifier 收到非-isFinal 的 taskOutput 时对该 pending 跳过 patch，
+   * isFinal 时正常发收尾卡。跟 chat.quietMode（全局）互相独立、生效条件是 OR。
+   */
+  quietUntilDone?: boolean;
 }
 
 export interface DoneRecord {

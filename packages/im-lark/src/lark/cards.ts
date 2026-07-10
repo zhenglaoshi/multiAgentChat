@@ -552,6 +552,10 @@ export interface ProgressCardData {
   rerunTargetLabel?: string;
   /** 本地任务（非飞书发起）—— 卡片标题加 🏠 标识 */
   source?: 'feishu' | 'local';
+  /** pending.sentAt，作为按钮 value 里的唯一 key 找回 pending */
+  sentAt?: number;
+  /** 单卡静默模式：显示"已静默"提示 + 按钮变成"🔊 恢复实时" */
+  quietUntilDone?: boolean;
 }
 
 function fmtElapsed(ms: number): string {
@@ -597,6 +601,9 @@ export function progressCard(data: ProgressCardData) {
   if (data.cwd) metaParts.push(`📁 ${data.cwd}`);
   metaParts.push(`⏱ ${elapsed}`);
   metaParts.push(`${updatedSec}s 前更新`);
+  if (data.quietUntilDone && data.state === 'running') {
+    metaParts.push(`🔇 已静默 · 完成时才更新`);
+  }
 
   const bodyBlock = '```\n' + body + '\n```';
   const metaLine = `<font color='grey'>${metaParts.join(' · ')}</font>`;
@@ -623,24 +630,39 @@ export function progressCard(data: ProgressCardData) {
           type: 'default',
           value: { action: 'use-tab', tty: data.tty },
         };
-    elements.push({
-      tag: 'action',
-      actions: [
-        {
-          tag: 'button',
-          text: { tag: 'plain_text', content: '📜 完整 history' },
-          type: 'default',
-          value: { action: 'show-history', tty: data.tty },
-        },
-        activeBtn,
-        {
-          tag: 'button',
-          text: { tag: 'plain_text', content: '⊘ Ctrl-C' },
-          type: 'danger',
-          value: { action: 'cancel-task', tty: data.tty },
-        },
-      ],
+    const runningActions: unknown[] = [
+      {
+        tag: 'button',
+        text: { tag: 'plain_text', content: '📜 完整 history' },
+        type: 'default',
+        value: { action: 'show-history', tty: data.tty },
+      },
+      activeBtn,
+    ];
+    if (data.sentAt !== undefined) {
+      runningActions.push(
+        data.quietUntilDone
+          ? {
+              tag: 'button',
+              text: { tag: 'plain_text', content: '🔊 恢复实时' },
+              type: 'default',
+              value: { action: 'pending-unquiet', tty: data.tty, sentAt: data.sentAt },
+            }
+          : {
+              tag: 'button',
+              text: { tag: 'plain_text', content: '🔇 静默此任务' },
+              type: 'default',
+              value: { action: 'pending-quiet', tty: data.tty, sentAt: data.sentAt },
+            },
+      );
+    }
+    runningActions.push({
+      tag: 'button',
+      text: { tag: 'plain_text', content: '⊘ Ctrl-C' },
+      type: 'danger',
+      value: { action: 'cancel-task', tty: data.tty },
     });
+    elements.push({ tag: 'action', actions: runningActions });
   } else {
     const doneActions: unknown[] = [
       {

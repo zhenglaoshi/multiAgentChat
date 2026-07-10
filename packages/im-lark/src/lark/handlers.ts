@@ -990,6 +990,7 @@ async function dispatchSendToTab(
           startedAt: now,
           updatedAt: now,
           isActiveForChat,
+          sentAt: now,
         });
         progressMessageId = await sendCardReturnId(client, ctx.chatId, card);
         logger.info('progress card sent', {
@@ -1595,6 +1596,56 @@ end run
       }
     })();
     return { toast: { type: 'success', content: `已删除 ${tplName}` } };
+  }
+
+  if (action === 'pending-quiet' || action === 'pending-unquiet') {
+    const tty = value['tty'] as string | undefined;
+    const sentAt = value['sentAt'] as number | undefined;
+    if (!tty || typeof sentAt !== 'number') {
+      return { toast: { type: 'error', content: '缺 tty/sentAt' } };
+    }
+    const pendings = pendingTracker.forTty(tty);
+    const p = pendings.find((x) => x.sentAt === sentAt);
+    if (!p) {
+      return { toast: { type: 'error', content: '任务已完成或找不到' } };
+    }
+    const next = action === 'pending-quiet';
+    p.quietUntilDone = next;
+    logger.info('pending quiet toggled', { tty, sentAt, quiet: next });
+    // 立刻 patch 一次卡片，让按钮和状态提示同步
+    if (p.progressMessageId) {
+      const tabs = await listTabs();
+      const tab = tabs.find((t) => t.tty === tty);
+      if (tab) {
+        try {
+          const chatState = await loadChat(chatId);
+          const card = progressCard({
+            state: 'running',
+            tty,
+            taskDescription: p.taskDescription,
+            ...(tab.cwd ? { cwd: tab.cwd } : {}),
+            outputTail: '(静默中，任务完成时会更新最终输出)',
+            startedAt: p.sentAt,
+            updatedAt: Date.now(),
+            isActiveForChat: chatState.activeTty === tty,
+            sentAt: p.sentAt,
+            quietUntilDone: next,
+            ...(p.originalPrompt ? { rerunPrompt: p.originalPrompt } : {}),
+            ...(p.targetLabel ? { rerunTargetLabel: p.targetLabel } : {}),
+            ...(p.source ? { source: p.source } : {}),
+          });
+          void patchCard(client, p.progressMessageId, card);
+        } catch (e) {
+          logger.warn('pending-quiet card patch failed', { err: (e as Error).message });
+        }
+      }
+    }
+    return {
+      toast: {
+        type: 'success',
+        content: next ? '🔇 已静默，完成时才更新' : '🔊 已恢复实时进度',
+      },
+    };
   }
 
   if (action === 'ask.pick' || action === 'ask.toggle' || action === 'ask.submit' || action === 'ask.cancel') {

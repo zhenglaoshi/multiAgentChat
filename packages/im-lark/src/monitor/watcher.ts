@@ -42,8 +42,23 @@ export interface WatcherEvents {
 const PENDING_HARD_TIMEOUT_MS = 60 * 60 * 1000;
 const PARAGRAPH_STABLE_MS = 30 * 1000;
 const STABLE_REMOVE_MS = 3 * 60 * 1000;
-const PATCH_THROTTLE_MS = 3500;
 const OUTPUT_TAIL_LINES = 60;
+
+/**
+ * 自适应 patch 节流：任务时间越长，进度卡刷新越慢。
+ *   前 30s   ：3.5s（短任务体验不变，快速反馈）
+ *   30s-2min ：15s
+ *   2-5min   ：30s
+ *   5min+   ：60s
+ * 长任务视觉上"降噪"，isFinal 那次永远会 patch。
+ */
+function patchThrottleFor(taskStartedAt: number, now: number): number {
+  const elapsed = now - taskStartedAt;
+  if (elapsed < 30_000) return 3500;
+  if (elapsed < 2 * 60_000) return 15_000;
+  if (elapsed < 5 * 60_000) return 30_000;
+  return 60_000;
+}
 
 // 本地任务检测
 const LOCAL_TRIGGER_LINES = 8;       // history 增长 ≥ 8 行 = 显著事件
@@ -360,8 +375,9 @@ export class TabWatcher {
         p.lastSeenLen = currentLen;
         p.stableSince = undefined;
 
-        // 节流 patch
-        if (now - lastPatchedAt >= PATCH_THROTTLE_MS) {
+        // 自适应节流 patch（任务越长，间隔越大）
+        const throttleMs = patchThrottleFor(p.sentAt, now);
+        if (now - lastPatchedAt >= throttleMs) {
           this.events.emit('taskOutput', {
             pending: p,
             tab,

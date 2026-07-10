@@ -196,6 +196,8 @@ const HELP_TEXT = [
   '       /audit [N]               审批历史（最近 N 条）',
   '  **/r**  /recall [关键词]      搜任务历史；不带关键词 = 最近 10 条',
   '       /watch on/off            本地任务监听（你在 Mac 直接发的命令也推送到飞书）',
+  '  **/quiet on/off**              静默模式：长任务只发首次+完成，中间不刷进度卡',
+  '                                 （关闭状态下走自适应节流：3.5s→15s→30s→60s 随任务时长）',
   '  /help                         本帮助',
   '',
   '**普通文本** → 默认发到 active tab',
@@ -1369,7 +1371,7 @@ export async function handleCommand(
     if (arg === '' || arg === 'status') {
       return {
         kind: 'text',
-        text: `本地任务监听：${chat.watchAllTabs ? '✓ 开启' : '✗ 关闭'}\n用法：/watch on  /watch off`,
+        text: `本地任务监听：${chat.watchAllTabs ? '✓ 开启' : '✗ 关闭'}\n用法：/watch on  /watch off\n\n说明：只 gate 两件事 —— (1) 你在 pc shell 直接敲命令时的自动推送；(2) Stop hook auto push。不影响你从飞书发命令的进度卡（那是必然反馈）。想让长任务少刷 → 用 /quiet on`,
       };
     }
     if (arg === 'on' || arg === 'true' || arg === '1') {
@@ -1388,6 +1390,33 @@ export async function handleCommand(
       return { kind: 'text', text: '✗ 本地任务监听已关闭' };
     }
     return { kind: 'text', text: `未知参数：${arg}\n用法：/watch on  /watch off` };
+  }
+
+  if (name === 'quiet') {
+    const arg = rest.toLowerCase().trim();
+    const chat = await loadChat(chatId);
+    if (arg === '' || arg === 'status') {
+      return {
+        kind: 'text',
+        text: `静默模式：${chat.quietMode ? '✓ 开启（长任务中途不刷卡，只发首次+完成）' : '✗ 关闭（进度卡实时 patch，自适应节流 3.5s→60s）'}\n用法：/quiet on  /quiet off`,
+      };
+    }
+    if (arg === 'on' || arg === 'true' || arg === '1') {
+      chat.quietMode = true;
+      chat.lastActiveAt = Date.now();
+      await saveChat(chat);
+      return {
+        kind: 'text',
+        text: '🔇 静默模式已开启\n所有活跃 & 新建的 pending 只发首次卡 + 最终收尾卡，中间不再 patch 进度。\n关闭：/quiet off',
+      };
+    }
+    if (arg === 'off' || arg === 'false' || arg === '0') {
+      chat.quietMode = false;
+      chat.lastActiveAt = Date.now();
+      await saveChat(chat);
+      return { kind: 'text', text: '🔊 静默模式已关闭，恢复实时进度卡（自适应节流 3.5s→60s）' };
+    }
+    return { kind: 'text', text: `未知参数：${arg}\n用法：/quiet on  /quiet off  /quiet status` };
   }
 
   if (name === 'dashboard') return buildDashboardCard(chatId);

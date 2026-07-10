@@ -318,6 +318,13 @@ export function attachWatcherToLark(larkClient: Lark.Client): void {
       } else if (pending.batchId && pending.batchMessageId) {
         // 批量任务路径：patch 共享聚合卡（节流），不走独立卡逻辑
         // 用 taskOnlyTail（只本任务新增）避免在卡片里展示之前 scrollback 的历史
+        // 静默模式下也跳中途 patch，只在 isFinal 更新聚合卡
+        let quietMode = false;
+        try {
+          const chatState = await loadChat(pending.chatId);
+          quietMode = chatState.quietMode === true;
+        } catch { /* ignore */ }
+        if (quietMode && !isFinal) return;
         const batchStatus = isFinal ? 'done' : 'running';
         await maybePatchBatchCard(
           pending,
@@ -327,11 +334,18 @@ export function attachWatcherToLark(larkClient: Lark.Client): void {
       } else {
         // 单任务/独立卡路径
         let isActiveForChat = false;
+        let quietMode = false;
         try {
           const chatState = await loadChat(pending.chatId);
           isActiveForChat = chatState.activeTty === tab.tty;
+          quietMode = chatState.quietMode === true;
         } catch {
           /* ignore */
+        }
+        // 静默模式（全局 chat.quietMode 或 单卡 pending.quietUntilDone）：
+        // 中途 patch 全跳过，只保留 isFinal 的收尾卡
+        if ((quietMode || pending.quietUntilDone) && !isFinal) {
+          return;
         }
         // 卡片只展示「本次任务新增」的输出，不含历史 scrollback
         let tailForCard = trimTailForCard(taskOnlyTail || '');
@@ -352,6 +366,8 @@ export function attachWatcherToLark(larkClient: Lark.Client): void {
           startedAt: pending.sentAt,
           updatedAt: Date.now(),
           isActiveForChat,
+          sentAt: pending.sentAt,
+          quietUntilDone: pending.quietUntilDone === true,
           ...(pending.originalPrompt ? { rerunPrompt: pending.originalPrompt } : {}),
           ...(pending.targetLabel ? { rerunTargetLabel: pending.targetLabel } : {}),
           ...(pending.source ? { source: pending.source } : {}),
@@ -402,15 +418,17 @@ export function attachWatcherToLark(larkClient: Lark.Client): void {
       for (const chat of watchers) {
         try {
           const isActiveForChat = chat.activeTty === tab.tty;
+          const now = Date.now();
           const cardData: Parameters<typeof progressCard>[0] = {
             state: 'running',
             tty: tab.tty,
             taskDescription,
             outputTail: cleanTail,
-            startedAt: Date.now(),
-            updatedAt: Date.now(),
+            startedAt: now,
+            updatedAt: now,
             isActiveForChat,
             source: 'local',
+            sentAt: now,
           };
           if (tab.cwd) cardData.cwd = tab.cwd;
           const card = progressCard(cardData);
