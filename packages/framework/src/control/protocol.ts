@@ -1,6 +1,6 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import type { ApprovalRequest, ApprovalStatus } from 'multiagent-orchestrator';
+import type { ApprovalRequest, ApprovalStatus, AskRequest, AskType } from 'multiagent-orchestrator';
 import type { ChatState } from 'multiagent-im-lark';
 import type { LoopRule } from 'multiagent-orchestrator';
 import type { TaskState, TaskStatus } from 'multiagent-orchestrator';
@@ -47,6 +47,21 @@ export interface TabCloseRequest {
 
 export interface TabRecentCwdsRequest {
   op: 'tab.recent-cwds';
+}
+
+export interface TabScreenRequest {
+  op: 'tab.screen';
+  tty: string;
+  /** 可选：截完自动推到该 chat 的飞书 */
+  pushToChatId?: string;
+}
+
+export interface TabKeysRequest {
+  op: 'tab.keys';
+  tty: string;
+  /** 按键序列，如 "2d . ctrl+c ⏎" */
+  sequence: string;
+  intervalMs?: number;
 }
 
 // ---- Chat ops ----
@@ -153,6 +168,21 @@ export interface ApprovalResolveOp {
   id: string;
   decision: Exclude<ApprovalStatus, 'pending'>;
   resolvedBy?: string;
+}
+
+// ---- Ask op（弹飞书交互卡片，阻塞式拿答案） ----
+
+export interface LarkAskOp {
+  op: 'lark.ask';
+  chatId?: string;               // 空 → daemon 自动反查
+  type: AskType;                 // 'single' | 'multi' | 'input'
+  title: string;
+  options?: string[];            // single/multi 用
+  timeoutMs?: number;            // 默认 5min
+}
+
+export interface LarkAskData {
+  request: AskRequest;
 }
 
 // ---- Task ops (SOP) ----
@@ -274,6 +304,8 @@ export type Request =
   | TabNewRequest
   | TabCloseRequest
   | TabRecentCwdsRequest
+  | TabScreenRequest
+  | TabKeysRequest
   | ChatGetRequest
   | ChatSetActiveRequest
   | LarkSendTextOp
@@ -284,6 +316,7 @@ export type Request =
   | ApprovalRequestOp
   | ApprovalListOp
   | ApprovalResolveOp
+  | LarkAskOp
   | TaskCreateOp
   | TaskGetOp
   | TaskListOp
@@ -331,6 +364,17 @@ export interface TabCloseData {
 
 export interface TabRecentCwdsData {
   cwds: string[];
+}
+
+export interface TabScreenData {
+  tty: string;
+  path: string;
+  pushed?: { chatId: string; imageKey?: string };
+}
+
+export interface TabKeysData {
+  tty: string;
+  steps: number;
 }
 
 export interface ChatGetData {

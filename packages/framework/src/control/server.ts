@@ -6,12 +6,12 @@ import { homedir } from 'node:os';
 import { basename, dirname, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import * as Lark from '@larksuiteoapi/node-sdk';
-import { approvals } from 'multiagent-orchestrator';
+import { approvals, asks } from 'multiagent-orchestrator';
 import { listAllChats, loadChat, saveChat } from 'multiagent-im-lark';
 import { originShellPushCard, sendCardMessage, sendFile, sendImage, sendTextMessage } from 'multiagent-im-lark';
 import { logger } from 'multiagent-orchestrator';
 import { pendingTracker } from 'multiagent-im-lark';
-import { listRecentCwds, recordCwd } from 'multiagent-host-mac';
+import { captureScreen, listRecentCwds, recordCwd, sendKeys } from 'multiagent-host-mac';
 import {
   createTask,
   getTask,
@@ -45,6 +45,7 @@ import type {
   ApprovalListData,
   ApprovalRequestData,
   ApprovalResolveData,
+  LarkAskData,
   ChatGetData,
   ChatSetActiveData,
   LarkResolveChatData,
@@ -57,6 +58,8 @@ import type {
   TabListData,
   TabNewData,
   TabRecentCwdsData,
+  TabScreenData,
+  TabKeysData,
   TabSendData,
   StageRecallData,
   TaskAbortData,
@@ -155,6 +158,48 @@ async function handleTabClose(sock: Socket, req: Extract<Request, { op: 'tab.clo
 async function handleTabRecentCwds(sock: Socket) {
   const cwds = await listRecentCwds();
   sendOk<TabRecentCwdsData>(sock, { cwds });
+  sock.end();
+}
+
+async function handleTabScreen(
+  sock: Socket,
+  req: Extract<Request, { op: 'tab.screen' }>,
+) {
+  try {
+    const path = await captureScreen(req.tty);
+    const data: TabScreenData = { tty: req.tty, path };
+    if (req.pushToChatId && larkClient) {
+      try {
+        const r = await sendImage(larkClient, req.pushToChatId, path);
+        data.pushed = { chatId: req.pushToChatId, imageKey: r.imageKey };
+      } catch (e) {
+        logger.warn('screen auto-push failed', {
+          chatId: req.pushToChatId,
+          err: (e as Error).message,
+        });
+      }
+    }
+    sendOk<TabScreenData>(sock, data);
+  } catch (e) {
+    sendErr(sock, (e as Error).message);
+  }
+  sock.end();
+}
+
+async function handleTabKeys(
+  sock: Socket,
+  req: Extract<Request, { op: 'tab.keys' }>,
+) {
+  try {
+    const opts: Parameters<typeof sendKeys>[2] = {};
+    if (typeof req.intervalMs === 'number') opts.intervalMs = req.intervalMs;
+    await sendKeys(req.tty, req.sequence, opts);
+    // steps 数从 tokenize+expand 之后能拿到，但服务器不再复算一次；返回一个近似值
+    const approx = req.sequence.trim().split(/\s+/).length;
+    sendOk<TabKeysData>(sock, { tty: req.tty, steps: approx });
+  } catch (e) {
+    sendErr(sock, (e as Error).message);
+  }
   sock.end();
 }
 
@@ -460,6 +505,53 @@ async function handleApprovalResolve(
     req.resolvedBy ?? 'cli:unknown',
   );
   sendOk<ApprovalResolveData>(sock, { request: finished ?? null });
+  sock.end();
+}
+
+// ---- Ask op（阻塞式弹飞书交互卡片） ----
+
+async function resolveChatIdFallback(tty?: string): Promise<string | null> {
+  if (tty) {
+    const pendings = pendingTracker.forTty(tty);
+    if (pendings.length > 0) {
+      const latest = pendings.reduce((a, b) => (a.sentAt > b.sentAt ? a : b));
+      return latest.chatId;
+    }
+  }
+  const chats = await listAllChats();
+  if (chats.length === 0) return null;
+  const top = [...chats].sort((a, b) => b.lastActiveAt - a.lastActiveAt)[0]!;
+  return top.chatId;
+}
+
+async function handleLarkAsk(
+  sock: Socket,
+  req: Extract<Request, { op: 'lark.ask' }>,
+) {
+  try {
+    let chatId = req.chatId;
+    if (!chatId) {
+      const guess = await resolveChatIdFallback();
+      if (!guess) {
+        sendErr(sock, '无法反查目标 chat（无 pending 也无 recent chat）');
+        sock.end();
+        return;
+      }
+      chatId = guess;
+    }
+    const createInput: Parameters<typeof asks.create>[0] = {
+      chatId,
+      type: req.type,
+      title: req.title,
+      options: req.options ?? [],
+    };
+    if (typeof req.timeoutMs === 'number') createInput.timeoutMs = req.timeoutMs;
+    const { result } = await asks.create(createInput);
+    const final = await result;
+    sendOk<LarkAskData>(sock, { request: final });
+  } catch (e) {
+    sendErr(sock, (e as Error).message);
+  }
   sock.end();
 }
 
@@ -1075,6 +1167,10 @@ async function dispatch(sock: Socket, req: Request): Promise<void> {
       return handleTabClose(sock, req);
     case 'tab.recent-cwds':
       return handleTabRecentCwds(sock);
+    case 'tab.screen':
+      return handleTabScreen(sock, req);
+    case 'tab.keys':
+      return handleTabKeys(sock, req);
     case 'chat.get':
       return handleChatGet(sock, req);
     case 'chat.set-active':
@@ -1095,6 +1191,8 @@ async function dispatch(sock: Socket, req: Request): Promise<void> {
       return handleApprovalList(sock, req);
     case 'approval.resolve':
       return handleApprovalResolve(sock, req);
+    case 'lark.ask':
+      return handleLarkAsk(sock, req);
     case 'task.create':
       return handleTaskCreate(sock, req);
     case 'task.get':

@@ -1,12 +1,13 @@
 import { basename } from 'node:path';
 import { homedir } from 'node:os';
 import * as Lark from '@larksuiteoapi/node-sdk';
-import { approvals } from 'multiagent-orchestrator';
-import type { ApprovalRequest } from 'multiagent-orchestrator';
+import { approvals, asks } from 'multiagent-orchestrator';
+import type { ApprovalRequest, AskRequest } from 'multiagent-orchestrator';
 import { listAllChats, loadChat } from '../chats/store.js';
 import { patchCard, sendCardMessage, sendCardReturnId } from '../lark/api.js';
 import {
   approvalCard,
+  askCard,
   batchProgressCard,
   chainProgressCard,
   progressCard,
@@ -514,6 +515,35 @@ export function attachWatcherToLark(larkClient: Lark.Client): void {
       });
     } catch (e) {
       logger.warn('approval card patch failed', {
+        id: req.id,
+        err: (e as Error).message,
+      });
+    }
+  });
+
+  // ---- Ask 生命周期：created → 发交互卡片；resolved → patch（兜底 timeout 场景） ----
+  asks.events.on('created', async (req: AskRequest) => {
+    if (!client) return;
+    try {
+      const messageId = await sendCardReturnId(client, req.chatId, askCard(req));
+      asks.setCardMessageId(req.id, messageId);
+      logger.info('ask card sent', { id: req.id, type: req.type, messageId });
+    } catch (e) {
+      logger.warn('ask card send failed', {
+        id: req.id,
+        chatId: req.chatId,
+        err: (e as Error).message,
+      });
+    }
+  });
+
+  asks.events.on('resolved', async (req: AskRequest) => {
+    if (!client) return;
+    if (!req.cardMessageId) return;   // 已在 handleCardAction 里 patch 过或超时前根本没发出去
+    try {
+      await patchCard(client, req.cardMessageId, askCard(req));
+    } catch (e) {
+      logger.warn('ask card patch (resolved) failed', {
         id: req.id,
         err: (e as Error).message,
       });

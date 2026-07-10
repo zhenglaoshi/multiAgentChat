@@ -6,6 +6,13 @@ description: |
 
 # multiagent-lark
 
+## 🔴 首要原则：**两个渠道并行输出**
+
+用户可能在飞书**也**在 pc shell 面前。响应必须**两边都能看到**：
+- **不要**把响应内容 * 只 * 通过 `agent lark send-text` 推给飞书 → 那样 shell TUI 里就啥都没有，用户扫一眼 shell 会以为你没干活
+- **正确姿势**：先在 TUI 里**完整回答用户**（自然响应，跟你平时对话一样），然后**再**用 `agent lark send-text` 推**同样一份摘要**给飞书。两个渠道同一内容并行。
+- 只有一种例外：这份内容特别长（>2000 字），可以 TUI 里完整写、飞书推浓缩摘要；但绝不能相反或只推不答。
+
 ## 何时用这个 skill
 
 激活条件：
@@ -24,6 +31,14 @@ description: |
 ```
 
 ## 命令清单
+
+**核心：让用户选/填 → 用 `agent lark ask`（弹卡片，用户手指点，stdout 拿答案 JSON）**：
+```bash
+agent lark ask single --title "选一个" --options "a,b,c"
+agent lark ask multi  --title "勾几个" --options "1,2,3"
+agent lark ask input  --title "输入什么"    # 用户在 chat 回文本
+```
+
 
 ```bash
 # 发文本（最常用）
@@ -98,31 +113,47 @@ agent lark send-card "$(cat /tmp/card.json)"
 - **不要把凭证写进代码** —— 凭证由 multiAgentChat 服务持有，你不需要知道
 - 如果 `agent.sock` 不存在或 `agent` 命令不可用，**直接告诉用户**（"multiAgentChat 服务没在跑"），不要瞎 try 别的飞书发送方式
 
-## ⚠️ 交互式选项（AskUserQuestion 等）必须先推飞书
+## ⚠️ 让用户选选项 / 填输入：用 `agent lark ask`（不要 AskUserQuestion）
 
-**为什么**：AskUserQuestion / 类似 TUI 选项框绘制在 alt-screen buffer 里。飞书那边看不见 —— 飞书只能拿 `history of tab` 里 pre-alt-screen 的 scrollback。手机端用户看到的是 watcher 抓到的碎片（可能是 task list、tool 输出之类），**跟你问的问题完全无关**。
+**为什么**：AskUserQuestion / TUI 选项框绘制在 alt-screen buffer 里，飞书那边看不见。手机端用户根本无从选。
 
-**规则**：调 AskUserQuestion（或任何"让用户选一项/输入"的 TUI 交互）**之前**，先 `agent lark send-text` 把问题原文+每个选项的完整说明推到飞书。示例：
+**规则**：需要用户在**多个选项里选**（单选/多选）或**填一段文本**时，直接调 `agent lark ask`，它会弹一张飞书交互卡片，用户手指点选/回复文本，答案 JSON 从 stdout 回给你。用户完全不用手打命令。
+
+### 单选（radio）
 
 ```bash
-agent lark send-text - <<'EOF'
-**❓ 请选择**
-
-**问题**：pigeon 连 mongo 副本集 timeout 了，怎么绕过？
-
-**选项**：
-1. 你自己 nc 探测 6 个 host 全通后重试（推荐）—— 手动跑 nc 探测，全通就重启 pigeon
-2. 授权我改 .env 用单节点 directConnection —— 跳过副本集探测。风险：少数依赖 secondary read 的代码可能异常
-3. 跳过本地 pigeon，App 接测试环境 —— 但测不到新加的 mutation
-4. 先停下来问运维要单节点连接串
-
-在飞书回复选项号或写自由文字。
-EOF
+answer=$(agent lark ask single \
+  --title "pigeon 连 mongo 副本集 timeout，怎么绕过？" \
+  --options "自己 nc 探测 6 host 后重试,改 .env 用单节点 directConnection,跳过本地 pigeon 接测试环境,问运维要单节点串")
+# → answer = {"status":"answered","type":"single","index":1,"value":"改 .env 用单节点 directConnection"}
+echo "$answer" | jq -r '.index'
 ```
 
-之后再调 AskUserQuestion 让本地 shell 用户也能选。手机端和本地端信息对齐。
+### 多选（checkbox）
 
-**特例**：如果问题很短（单纯的 y/n 确认），可以简写：`agent lark send-text "❓ 要继续 xxx 吗？回 y/n"`。
+```bash
+answer=$(agent lark ask multi \
+  --title "跑哪些 stage？" \
+  --options "requirement,architect,coder,tester,regression")
+# → {"status":"answered","type":"multi","indices":[0,2,3],"values":["requirement","coder","tester"]}
+```
+
+### 输入（用户在飞书回复一条文本消息）
+
+```bash
+answer=$(agent lark ask input --title "输入 commit message")
+# → {"status":"answered","type":"input","text":"fix: xxx"}
+```
+
+### 退出码 / 状态
+
+- 0 = `answered`（stdout 是完整答案 JSON）
+- 1 = `cancelled`（用户点了取消）
+- 2 = `timeout`（5 min 没响应，默认；用 `--timeout <ms>` 改）
+
+### 特例：极短 y/n 确认
+
+小到不值得弹卡片，可以简写 `agent lark send-text "❓ 要继续 xxx 吗？回 y/n"` + 常规 stdin 走。但只要选项 ≥ 3 或需要多选，一律 `agent lark ask`。
 
 ## 高风险操作前请求审批
 

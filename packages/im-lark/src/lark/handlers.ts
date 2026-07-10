@@ -1,5 +1,5 @@
 import * as Lark from '@larksuiteoapi/node-sdk';
-import { approvals } from 'multiagent-orchestrator';
+import { approvals, asks } from 'multiagent-orchestrator';
 import { loadChat, saveChat } from '../chats/store.js';
 import { PENDING_ANSWER_TTL_MS, RECENT_REPLY_TTL_MS } from '../chats/types.js';
 import { logger } from 'multiagent-orchestrator';
@@ -7,7 +7,7 @@ import { recordCwd } from 'multiagent-host-mac';
 import { formatRecallPrefix, recall, tokenize } from 'multiagent-orchestrator';
 import { pendingTracker } from '../monitor/pending.js';
 import { recordInbound } from '../monitor/ws-watchdog.js';
-import { forceEnter, getHistory, getUserFocus, listTabs, newTab, send, sendKeysRaw } from 'multiagent-host-mac';
+import { captureScreen, forceEnter, getHistory, getUserFocus, listTabs, newTab, send, sendKeys, sendKeysRaw } from 'multiagent-host-mac';
 
 // SYSTEM_GUIDANCE 的去重 — per-tab，每 tty 6h 内最多注入一次
 // 这是 module-level 内存状态，dev 重启会清空（重启后第一次注入是合理的）
@@ -17,11 +17,23 @@ const systemGuidanceShownAt = new Map<string, number>();
 const SYSTEM_GUIDANCE = [
   '[系统提示 - 自动注入]',
   '本对话来自飞书机器人 multiAgentChat。飞书侧通过 AppleScript 观测此 tab 的输出，但 **alt-screen TUI 模式下飞书看不见你的实时屏幕**。',
+  '',
+  '🔴 首要原则：**两个渠道并行输出，两边都能看到**',
+  '- 用户可能同时在飞书 & pc shell 面前 → 响应必须在 shell TUI 里**先完整回答一遍**（自然对话），**然后**用 `agent lark send-text` 推**同样一份**摘要给飞书',
+  '- 不要**只**推飞书不在 TUI 里说；也不要**只**在 TUI 里说不推飞书',
+  '- 长内容（>2000 字）：TUI 里完整、飞书推浓缩摘要；绝不能相反',
+  '',
   '所以：',
-  '- 任务完成时**必须**调用 `agent lark send-text "结果摘要..."` 主动推送到飞书',
+  '- 任务完成时先在 TUI 完整回答，然后**必须**调用 `agent lark send-text "结果摘要..."` 主动推送到飞书',
   '- 长任务请每完成一步用 `agent lark send-text` 推送进度',
   '- 文件产出用 `agent lark send-file <path>` 推送文件本体',
-  '- **调 AskUserQuestion / 弹任何交互式选项前，必须先 `agent lark send-text` 把「问题原文 + 每个选项的完整说明」推给飞书**（TUI 里的选项框在飞书完全看不见，用户在手机端没上下文没法回答）',
+  '- **要用户从多选项里选（单选/多选）或让用户填一段文本，用 `agent lark ask` —— 弹飞书交互卡片，用户手指点选/回复，答案 JSON 从 stdout 回给你。用户不必手打命令。**',
+  '    单选：`agent lark ask single --title "选哪个？" --options "选项A,选项B,选项C"`',
+  '    多选：`agent lark ask multi  --title "勾选多个" --options "1,2,3"`',
+  '    输入：`agent lark ask input  --title "输入什么"`  （用户在飞书 chat 里直接回复文本即可）',
+  '    stdout 示例：`{"status":"answered","type":"single","index":1,"value":"选项B"}`；status 也可能是 cancelled / timeout',
+  '    退出码：0=answered，1=cancelled，2=timeout',
+  '- 不要调 AskUserQuestion 或在 TUI 里等键盘输入，用户手机端看不见 TUI —— **一定要用 `agent lark ask`**',
   '- 高风险操作（写数据库 / git push --force / rm -rf / 改 .env）先 `agent request-approval --title --body` 等批准',
   '- 不要直接调任何 webhook（功能弱、不支持文件）',
   '',
@@ -31,10 +43,10 @@ const SYSTEM_GUIDANCE = [
 const CLAUDE_TUI_REMINDER = [
   '',
   '---',
-  '⚠ 回到飞书 — 飞书看不见你的 TUI 屏幕。完成后必须 `agent lark send-text "<回复全文>"` 推送。要问用户任何选项/确认，先把问题+选项 send-text 一份到飞书（否则手机端看到的卡片只是 watcher 抓的残片，没上下文）。',
+  '⚠ 回到飞书 — 飞书看不见你的 TUI 屏幕。**先在 TUI 完整回答用户，然后再** `agent lark send-text "<同样一份摘要>"` 推到飞书（两个渠道并行，不能只推不答）。要用户从选项里选（单/多选）或填文本，**用 `agent lark ask single|multi|input`**（stdout 拿答案 JSON），不要用 AskUserQuestion 或在 TUI 里 wait 键盘。',
 ].join('\n');
-import { patchCard, sendCardReturnId } from './api.js';
-import { ackCard, batchProgressCard, browseCard, chainProgressCard, progressCard, receiptCard, type BatchTaskItem, type ChainStepItem } from './cards.js';
+import { patchCard, sendCardReturnId, sendImage } from './api.js';
+import { ackCard, askCard, batchProgressCard, browseCard, chainProgressCard, progressCard, receiptCard, type BatchTaskItem, type ChainStepItem } from './cards.js';
 import { readdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname, basename } from 'node:path';
@@ -1585,6 +1597,60 @@ end run
     return { toast: { type: 'success', content: `已删除 ${tplName}` } };
   }
 
+  if (action === 'ask.pick' || action === 'ask.toggle' || action === 'ask.submit' || action === 'ask.cancel') {
+    const askId = value['askId'] as string | undefined;
+    if (!askId) return { toast: { type: 'error', content: '缺 askId' } };
+    const req = asks.get(askId);
+    if (!req) {
+      return { toast: { type: 'error', content: 'ask 已完成或不存在' } };
+    }
+    const operator = data.operator?.open_id ?? 'unknown';
+    const by = `feishu:${operator}`;
+
+    if (action === 'ask.pick') {
+      const index = value['index'] as number | undefined;
+      if (typeof index !== 'number') return { toast: { type: 'error', content: '缺 index' } };
+      const picked = req.options[index] ?? '';
+      const updated = await asks.answer(askId, { kind: 'single', index, value: picked }, by);
+      if (updated?.cardMessageId) {
+        void patchCard(client, updated.cardMessageId, askCard(updated));
+      }
+      return { toast: { type: 'success', content: `已选：${picked}` } };
+    }
+
+    if (action === 'ask.toggle') {
+      const index = value['index'] as number | undefined;
+      if (typeof index !== 'number') return { toast: { type: 'error', content: '缺 index' } };
+      const updated = asks.toggle(askId, index);
+      if (updated?.cardMessageId) {
+        void patchCard(client, updated.cardMessageId, askCard(updated));
+      }
+      return {
+        toast: {
+          type: 'info',
+          content: updated ? `已选 ${updated.selection.length} 项` : '状态刷新',
+        },
+      };
+    }
+
+    if (action === 'ask.submit') {
+      const indices = [...req.selection];
+      const values = indices.map((i) => req.options[i] ?? '');
+      const updated = await asks.answer(askId, { kind: 'multi', indices, values }, by);
+      if (updated?.cardMessageId) {
+        void patchCard(client, updated.cardMessageId, askCard(updated));
+      }
+      return { toast: { type: 'success', content: `已提交（${indices.length} 项）` } };
+    }
+
+    // ask.cancel
+    const updated = await asks.cancel(askId, by);
+    if (updated?.cardMessageId) {
+      void patchCard(client, updated.cardMessageId, askCard(updated));
+    }
+    return { toast: { type: 'success', content: '已取消' } };
+  }
+
   if (action === 'approve' || action === 'reject') {
     const approvalId = value['approvalId'] as string | undefined;
     if (!approvalId) return { toast: { type: 'error', content: '缺 approvalId' } };
@@ -1641,7 +1707,92 @@ export function buildEventDispatcher(client: Lark.Client): Lark.EventDispatcher 
       const ctx = { messageId: message_id, chatId: chat_id };
       if (!text) return;
 
+      // 优先：input-type ask 等答案 → 消费此消息作为答案，短路后续路由
+      {
+        const pendingAskId = asks.getAwaitingInputAskId(chat_id);
+        if (pendingAskId) {
+          const askReq = asks.get(pendingAskId);
+          if (askReq) {
+            // /cancel 短路取消，其余当答案
+            if (text.trim() === '/cancel') {
+              (async () => {
+                const updated = await asks.cancel(pendingAskId, `feishu:${data.sender?.sender_id?.open_id ?? 'unknown'}`);
+                if (updated?.cardMessageId) {
+                  void patchCard(client, updated.cardMessageId, askCard(updated));
+                }
+                void sendText(client, chat_id, '⊘ 已取消 ask');
+              })();
+              return;
+            }
+            (async () => {
+              const updated = await asks.answer(
+                pendingAskId,
+                { kind: 'input', text },
+                `feishu:${data.sender?.sender_id?.open_id ?? 'unknown'}`,
+              );
+              if (updated?.cardMessageId) {
+                void patchCard(client, updated.cardMessageId, askCard(updated));
+              }
+            })();
+            return;
+          }
+        }
+      }
+
       if (isCommand(text)) {
+        // 特殊：/screen 抓屏、/keys 按键遥控 —— 需要 client + host-mac，直接在这里 fire-and-forget
+        const cmdName = text.trim().slice(1).split(/\s+/)[0]?.toLowerCase() ?? '';
+        if (cmdName === 'screen' || cmdName === 'scr') {
+          (async () => {
+            try {
+              const chat = await loadChat(chat_id);
+              const targetTty = (chat.recentReplyTty && chat.recentReplyAt !== undefined && (Date.now() - chat.recentReplyAt < RECENT_REPLY_TTL_MS))
+                ? chat.recentReplyTty
+                : chat.activeTty;
+              if (!targetTty) {
+                void sendText(client, chat_id, '❌ 没设 activeTty，先 /use @xxx');
+                return;
+              }
+              const path = await captureScreen(targetTty);
+              await sendImage(client, chat_id, path);
+              void sendText(client, chat_id, `📸 抓屏 ${targetTty} 已推`);
+            } catch (e) {
+              void sendText(client, chat_id, `❌ 抓屏失败：${(e as Error).message}`);
+            }
+          })();
+          return;
+        }
+        if (cmdName === 'keys' || cmdName === 'k') {
+          (async () => {
+            try {
+              const rest = text.trim().slice(cmdName.length + 1).trim();
+              if (!rest) {
+                void sendText(client, chat_id, '用法：/keys <按键序列>\n例：/keys 2d . ⏎    #下下 空 回\n     /keys ctrl+c\n键位：d/u/l/r=↓↑←→ .=空格 ⏎=回车 t=tab x=esc\n重复：3d 或 d*3；打字用引号 \'text\'');
+                return;
+              }
+              const chat = await loadChat(chat_id);
+              const targetTty = (chat.recentReplyTty && chat.recentReplyAt !== undefined && (Date.now() - chat.recentReplyAt < RECENT_REPLY_TTL_MS))
+                ? chat.recentReplyTty
+                : chat.activeTty;
+              if (!targetTty) {
+                void sendText(client, chat_id, '❌ 没设 activeTty，先 /use @xxx');
+                return;
+              }
+              await sendKeys(targetTty, rest);
+              // 300ms 后自动抓一张回推确认
+              setTimeout(async () => {
+                try {
+                  const path = await captureScreen(targetTty);
+                  await sendImage(client, chat_id, path);
+                } catch { /* silent */ }
+              }, 300);
+              void sendText(client, chat_id, `✓ 已发按键到 ${targetTty}：\`${rest}\`（300ms 后回一张确认图）`);
+            } catch (e) {
+              void sendText(client, chat_id, `❌ /keys 失败：${(e as Error).message}`);
+            }
+          })();
+          return;
+        }
         // fire-and-forget：立刻 ack，async 处理，避免飞书 3-5s 超时重发
         (async () => {
           try {

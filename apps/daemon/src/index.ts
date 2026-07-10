@@ -1,8 +1,8 @@
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { readFile, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, symlink, unlink, writeFile } from 'node:fs/promises';
 import { homedir, platform } from 'node:os';
-import { join, resolve } from 'node:path';
+import { delimiter, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startControlServer } from 'multiagent-framework';
 import { startLarkBot } from 'multiagent-im-lark';
@@ -113,15 +113,145 @@ async function installClaudeCodeHooks(): Promise<void> {
   }
 }
 
-function checkSkillInstalled(): void {
-  const skillFile = join(homedir(), '.claude', 'skills', 'multiagent-lark', 'SKILL.md');
-  if (existsSync(skillFile)) {
-    logger.info('multiagent-lark skill installed', { path: skillFile });
-  } else {
-    logger.warn(
-      'multiagent-lark skill NOT installed — 跑 `agent install-skill` 让所有 Mac 上的 Claude Code 都知道用 agent lark',
-    );
+/**
+ * 幂等把 skills/multiagent-lark/SKILL.md upsert 到 ~/.claude/skills/multiagent-lark/。
+ * 内容相同 → 跳过；不同 → 覆盖（用户改了源码后重启 daemon 自动同步）。
+ */
+async function ensureSkillInstalled(): Promise<void> {
+  const HERE = fileURLToPath(new URL('.', import.meta.url));
+  // apps/daemon/{src,dist}/index.js → 项目根 = 上溯 3 层
+  const projectRoot = resolve(HERE, '..', '..', '..');
+  const src = join(projectRoot, 'skills', 'multiagent-lark', 'SKILL.md');
+  if (!existsSync(src)) {
+    logger.warn('skill 源文件不存在，跳过自动装', { src });
+    return;
   }
+  const dstDir = join(homedir(), '.claude', 'skills', 'multiagent-lark');
+  const dstFile = join(dstDir, 'SKILL.md');
+  try {
+    const srcContent = await readFile(src, 'utf8');
+    let dstContent: string | null = null;
+    if (existsSync(dstFile)) {
+      try { dstContent = await readFile(dstFile, 'utf8'); } catch { /* ignore */ }
+    }
+    if (dstContent === srcContent) {
+      logger.info('multiagent-lark skill up-to-date', { path: dstFile });
+      return;
+    }
+    await mkdir(dstDir, { recursive: true });
+    await writeFile(dstFile, srcContent, 'utf8');
+    logger.info(dstContent === null ? 'multiagent-lark skill installed' : 'multiagent-lark skill updated', {
+      path: dstFile,
+      srcBytes: srcContent.length,
+    });
+  } catch (e) {
+    logger.warn('skill upsert failed', { err: (e as Error).message });
+  }
+}
+
+/**
+ * 检查 Node 版本。低于 22 直接 die —— ESM + tsx watch + fetch 都需要 22+。
+ */
+function assertNodeVersion(): void {
+  const raw = process.versions.node;
+  const major = Number(raw.split('.')[0]);
+  if (!Number.isFinite(major) || major < 22) {
+    logger.error(
+      `Node ${raw} 太老，本项目需要 ≥ 22。升级：brew upgrade node 或 nvm install 22 && nvm use 22`,
+    );
+    process.exit(1);
+  }
+  logger.info('node version ok', { version: raw });
+}
+
+/**
+ * .env 缺失 → 若 .env.example 存在则 cp 一份，然后 die 提示补 LARK_APP_ID/SECRET。
+ * .env 存在则啥都不做。
+ */
+async function ensureEnvFile(): Promise<void> {
+  const HERE = fileURLToPath(new URL('.', import.meta.url));
+  const projectRoot = resolve(HERE, '..', '..', '..');
+  const envPath = join(projectRoot, '.env');
+  const examplePath = join(projectRoot, '.env.example');
+  if (existsSync(envPath)) return;
+  if (!existsSync(examplePath)) {
+    logger.warn('.env 和 .env.example 都不存在，daemon 可能没法起 Lark bot');
+    return;
+  }
+  try {
+    await copyFile(examplePath, envPath);
+    logger.error(
+      `.env 不存在 → 已从 .env.example 复制模板到 ${envPath}\n` +
+      `请填 LARK_APP_ID 和 LARK_APP_SECRET（飞书开发者后台 → 凭证与基础信息）后重启 dev。`,
+    );
+    process.exit(1);
+  } catch (e) {
+    logger.warn('cp .env.example .env 失败', { err: (e as Error).message });
+  }
+}
+
+/**
+ * 无 sudo 把 bin/agent symlink 到 ~/.local/bin/agent。
+ * 已存在且指向同源 → 跳过；存在但指向别处 → 覆盖（unlink + symlink）。
+ * ~/.local/bin 不在 PATH → 打 warn，给一句 shell rc 添加提示。
+ */
+async function ensureAgentOnPath(): Promise<void> {
+  if (platform() !== 'darwin' && platform() !== 'linux') return;
+  const HERE = fileURLToPath(new URL('.', import.meta.url));
+  const projectRoot = resolve(HERE, '..', '..', '..');
+  const agentSrc = join(projectRoot, 'bin', 'agent');
+  if (!existsSync(agentSrc)) {
+    logger.warn('bin/agent 不存在', { agentSrc });
+    return;
+  }
+  const localBin = join(homedir(), '.local', 'bin');
+  const dst = join(localBin, 'agent');
+  try {
+    await mkdir(localBin, { recursive: true });
+    // 已 symlink 到正确路径？
+    if (existsSync(dst)) {
+      try {
+        const { readlink } = await import('node:fs/promises');
+        const cur = await readlink(dst);
+        if (cur === agentSrc) {
+          logger.info('agent CLI symlink up-to-date', { dst });
+          checkPath(localBin);
+          return;
+        }
+      } catch { /* 不是 symlink，是 regular file → 让路 */ }
+      await unlink(dst);
+    }
+    await symlink(agentSrc, dst);
+    logger.info('agent CLI symlinked', { src: agentSrc, dst });
+  } catch (e) {
+    logger.warn('symlink agent 失败', { err: (e as Error).message });
+    return;
+  }
+  checkPath(localBin);
+}
+
+function checkPath(dir: string): void {
+  const paths = (process.env['PATH'] ?? '').split(delimiter);
+  if (paths.includes(dir)) return;
+  logger.warn(
+    `${dir} 不在 PATH，任何 shell 里跑 "agent xxx" 会 command-not-found。加一行到 ~/.zshrc 或 ~/.bashrc：`,
+  );
+  logger.warn(`    export PATH="${dir}:$PATH"`);
+  logger.warn('（然后重启 shell 或 source rc）');
+}
+
+/**
+ * macOS 权限清单一次性提示：Accessibility / Screen Recording / Automation。
+ * 这些都是首次触发时会弹系统对话框的（不能代授），预先提示能让用户理解为什么弹权限。
+ */
+function emitMacPermissionHints(): void {
+  if (platform() !== 'darwin') return;
+  logger.info(
+    'macOS 权限一次性提示：首次触发时会弹系统对话框，点「允许」即可。位置：System Settings → Privacy & Security：',
+  );
+  logger.info('  · Accessibility：Terminal / iTerm / osascript（发按键 keystroke / key code）');
+  logger.info('  · Screen Recording：Terminal / iTerm（screencapture 抓 tab 窗口）');
+  logger.info('  · Automation：允许 Terminal / osascript 控制 Terminal.app / Google Chrome');
 }
 
 /**
@@ -171,6 +301,11 @@ function startCaffeinate(): void {
 }
 
 async function main() {
+  // ---- Preflight（都是幂等 / 快速，早失败 hint 给用户） ----
+  assertNodeVersion();
+  await ensureEnvFile();               // 缺 .env 时会 exit(1)
+  emitMacPermissionHints();
+
   // 先起 caffeinate 阻止 idle sleep（用 daemon.pid 追踪，daemon 挂了它自动退）
   startCaffeinate();
 
@@ -181,8 +316,9 @@ async function main() {
   attachWatcherToLark(lark.client);
   attachStageMemoryListener();
   startHealthCheck(lark.client);
-  checkSkillInstalled();
+  await ensureSkillInstalled();
   await installClaudeCodeHooks();
+  await ensureAgentOnPath();
 
   // 后台刷新目录索引（首次可能扫 15s，不阻塞主流程）
   void refreshDirIndex().catch((e) => {

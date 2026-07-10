@@ -1,4 +1,4 @@
-import type { ApprovalRequest } from 'multiagent-orchestrator';
+import type { ApprovalRequest, AskRequest } from 'multiagent-orchestrator';
 import { inferTabStatus, type TabStatusInfo } from 'multiagent-host-mac';
 import type { TerminalTab } from 'multiagent-host-mac';
 
@@ -1793,5 +1793,186 @@ export function ackCard(data: AckCardData) {
       title: { tag: 'plain_text', content: title },
     },
     elements: [{ tag: 'div', text: { tag: 'lark_md', content: data.body } }],
+  };
+}
+
+// ---- Ask cards (single / multi / input，供 `agent lark ask` 用) ----
+
+/**
+ * 渲染 ask 卡片，四态复用同一函数：
+ *   pending  → 按 type 出交互控件
+ *   answered → 绿卡 + 答案预览
+ *   cancelled/timeout → 灰卡
+ * multi 状态下 selection 决定每个按钮前面是 ☑ 还是 ☐。
+ */
+export function askCard(req: AskRequest) {
+  const isPending = req.status === 'pending';
+  const template =
+    req.status === 'pending' ? (req.type === 'input' ? 'blue' : 'yellow') :
+    req.status === 'answered' ? 'green' :
+    req.status === 'cancelled' ? 'grey' :
+    'grey';
+  const stateIcon =
+    req.status === 'pending' ? (req.type === 'input' ? '⌨️' : (req.type === 'multi' ? '☑' : '⭕')) :
+    req.status === 'answered' ? '✅' :
+    req.status === 'cancelled' ? '⊘' :
+    '⌛';
+  const typeLabel =
+    req.type === 'single' ? '单选' :
+    req.type === 'multi'  ? '多选' :
+    '输入';
+  const stateLabel =
+    req.status === 'pending' ? `需你${typeLabel} · 5 分钟超时` :
+    req.status === 'answered' ? '已回答' :
+    req.status === 'cancelled' ? '已取消' :
+    '已超时';
+  const headerTitle = `${stateIcon} ${req.title} · ${stateLabel}`;
+
+  const elements: unknown[] = [];
+
+  if (isPending) {
+    if (req.type === 'input') {
+      elements.push({
+        tag: 'div',
+        text: {
+          tag: 'lark_md',
+          content: `<font color='blue'>**在这个 chat 里直接回复文本消息即可**</font>\n（5 分钟没回复会自动超时）`,
+        },
+      });
+      elements.push({ tag: 'hr' });
+      elements.push({
+        tag: 'action',
+        actions: [
+          {
+            tag: 'button',
+            text: { tag: 'plain_text', content: '⊘ 取消' },
+            type: 'default',
+            value: { action: 'ask.cancel', askId: req.id },
+          },
+        ],
+      });
+    } else if (req.type === 'single') {
+      elements.push({
+        tag: 'div',
+        text: { tag: 'lark_md', content: `**点一个选项即可提交**` },
+      });
+      elements.push({ tag: 'hr' });
+      // 每 2 个按钮一行，避免手机上排版乱
+      const pairs: unknown[][] = [];
+      for (let i = 0; i < req.options.length; i += 2) {
+        const row: unknown[] = [];
+        for (let j = i; j < Math.min(i + 2, req.options.length); j++) {
+          row.push({
+            tag: 'button',
+            text: {
+              tag: 'plain_text',
+              content: `${j + 1}. ${truncate(req.options[j] ?? '', 40)}`,
+            },
+            type: 'primary',
+            value: { action: 'ask.pick', askId: req.id, index: j },
+          });
+        }
+        pairs.push(row);
+      }
+      for (const row of pairs) {
+        elements.push({ tag: 'action', actions: row });
+      }
+      elements.push({
+        tag: 'action',
+        actions: [
+          {
+            tag: 'button',
+            text: { tag: 'plain_text', content: '⊘ 取消' },
+            type: 'default',
+            value: { action: 'ask.cancel', askId: req.id },
+          },
+        ],
+      });
+    } else {
+      // multi
+      const selectedSet = new Set(req.selection);
+      elements.push({
+        tag: 'div',
+        text: {
+          tag: 'lark_md',
+          content: `**点选项切换勾选，最后点 [✅ 提交]**（已选 ${req.selection.length} 项）`,
+        },
+      });
+      elements.push({ tag: 'hr' });
+      for (let i = 0; i < req.options.length; i += 2) {
+        const row: unknown[] = [];
+        for (let j = i; j < Math.min(i + 2, req.options.length); j++) {
+          const on = selectedSet.has(j);
+          row.push({
+            tag: 'button',
+            text: {
+              tag: 'plain_text',
+              content: `${on ? '☑' : '☐'} ${j + 1}. ${truncate(req.options[j] ?? '', 40)}`,
+            },
+            type: on ? 'primary' : 'default',
+            value: { action: 'ask.toggle', askId: req.id, index: j },
+          });
+        }
+        elements.push({ tag: 'action', actions: row });
+      }
+      elements.push({ tag: 'hr' });
+      elements.push({
+        tag: 'action',
+        actions: [
+          {
+            tag: 'button',
+            text: { tag: 'plain_text', content: '✅ 提交' },
+            type: 'primary',
+            value: { action: 'ask.submit', askId: req.id },
+          },
+          {
+            tag: 'button',
+            text: { tag: 'plain_text', content: '⊘ 取消' },
+            type: 'default',
+            value: { action: 'ask.cancel', askId: req.id },
+          },
+        ],
+      });
+    }
+  } else {
+    // 已 resolve 状态：展示答案摘要
+    const byPart = req.resolvedBy ? ` by ${req.resolvedBy}` : '';
+    const elapsedMs = (req.resolvedAt ?? Date.now()) - req.createdAt;
+    const elapsed =
+      elapsedMs < 1000 ? `${elapsedMs}ms` :
+      elapsedMs < 60_000 ? `${(elapsedMs / 1000).toFixed(1)}s` :
+      `${Math.floor(elapsedMs / 60_000)}m${Math.floor((elapsedMs % 60_000) / 1000)}s`;
+
+    let ansLine = '';
+    if (req.answer?.kind === 'single') {
+      ansLine = `**选中**：${req.answer.index + 1}. ${req.answer.value}`;
+    } else if (req.answer?.kind === 'multi') {
+      if (req.answer.indices.length === 0) {
+        ansLine = `**选中**：（空）`;
+      } else {
+        const parts = req.answer.indices.map((i, k) => `${i + 1}. ${req.answer!.kind === 'multi' ? (req.answer as { values: string[] }).values[k] ?? '' : ''}`);
+        ansLine = `**选中**（${req.answer.indices.length}项）：\n- ${parts.join('\n- ')}`;
+      }
+    } else if (req.answer?.kind === 'input') {
+      ansLine = `**输入**：${truncate(req.answer.text, 200)}`;
+    } else if (req.status === 'cancelled') {
+      ansLine = `_已取消_`;
+    } else if (req.status === 'timeout') {
+      ansLine = `_已超时_`;
+    }
+    elements.push({ tag: 'div', text: { tag: 'lark_md', content: ansLine } });
+    elements.push({
+      tag: 'note',
+      elements: [{ tag: 'plain_text', content: `${stateLabel}${byPart} · 用时 ${elapsed}` }],
+    });
+  }
+
+  return {
+    config: { wide_screen_mode: true },
+    header: {
+      template,
+      title: { tag: 'plain_text', content: headerTitle },
+    },
+    elements,
   };
 }

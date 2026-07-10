@@ -15,8 +15,11 @@ import type {
   ApprovalRequestData,
   ApprovalResolveData,
   ChatGetData,
+  LarkAskData,
   LarkResolveChatData,
   LarkSendData,
+  TabScreenData,
+  TabKeysData,
   Request,
   Response,
   StageRecallData,
@@ -84,6 +87,8 @@ interface Flags {
   originCwd?: string;     // agent lark send-text --origin-cwd <cwd>：hook 传 Claude Code cwd，反查 fallback
   question: boolean;      // agent lark send-text --question：本次推送含待用户回答的问题，daemon 记 pendingAnswerTty
   optionsJson?: string;   // agent lark send-text --options-json '["是","否"]'：AskUserQuestion 选项 label
+  options?: string;       // agent lark ask --options "a,b,c" (逗号分隔简写)
+  timeoutMs?: number;     // agent lark ask --timeout <ms>
   positional: string[];
 }
 
@@ -161,6 +166,13 @@ function parseArgs(args: string[]): Flags {
       flags.originCwd = args[++i] ?? die('--origin-cwd 需要路径');
     } else if (a === '--options-json') {
       flags.optionsJson = args[++i] ?? die('--options-json 需要 JSON');
+    } else if (a === '--options') {
+      flags.options = args[++i] ?? die('--options 需要 csv');
+    } else if (a === '--timeout' || a === '--timeout-ms') {
+      const v = args[++i] ?? die('--timeout 需要毫秒数');
+      const n = Number(v);
+      if (!Number.isFinite(n) || n <= 0) die(`--timeout 非法：${v}`);
+      flags.timeoutMs = n;
     } else if (a === '--reason') {
       flags.reason = args[++i] ?? die('--reason 需要值');
     } else if (a === '--status') {
@@ -399,6 +411,47 @@ async function cmdClose(flags: Flags): Promise<void> {
   stdout.write(data.closed ? `⊘ closed ${tty}\n` : `tab not found: ${tty}\n`);
 }
 
+async function cmdScreen(flags: Flags): Promise<void> {
+  const tty = await resolveTargetTty(flags);
+  const push = flags.chat || !flags.plain;
+  let pushToChatId: string | undefined;
+  if (push) {
+    if (flags.chat) pushToChatId = flags.chat;
+    else {
+      // 自动反查
+      const guessed = await sendOnce<LarkResolveChatData>({
+        op: 'lark.resolve-chat',
+        ...(tty ? { tty } : {}),
+      });
+      if (guessed.chatId) pushToChatId = guessed.chatId;
+    }
+  }
+  const data = await sendOnce<TabScreenData>({
+    op: 'tab.screen',
+    tty,
+    ...(pushToChatId ? { pushToChatId } : {}),
+  });
+  stdout.write(`✓ 抓屏：${data.path}\n`);
+  if (data.pushed) {
+    stdout.write(`  → 已推 chat=${data.pushed.chatId}\n`);
+  } else if (pushToChatId) {
+    stdout.write(`  ⚠ 推送 chat=${pushToChatId} 失败或未生效\n`);
+  }
+}
+
+async function cmdKeys(flags: Flags): Promise<void> {
+  const tty = await resolveTargetTty(flags);
+  const seq = flags.positional.join(' ').trim();
+  if (!seq) die("agent keys [-t tty] '<按键序列>' 例：agent keys '2d . ⏎'");
+  const data = await sendOnce<TabKeysData>({
+    op: 'tab.keys',
+    tty,
+    sequence: seq,
+    ...(flags.timeoutMs ? { intervalMs: flags.timeoutMs } : {}),
+  });
+  stdout.write(`✓ 已注入按键到 ${data.tty}（约 ${data.steps} 个 token）\n`);
+}
+
 async function cmdChat(flags: Flags): Promise<void> {
   const chatId = flags.positional[0];
   if (!chatId) die('agent chat <chatId>');
@@ -484,7 +537,7 @@ async function cmdUninstallSkill(): Promise<void> {
 
 async function cmdLark(flags: Flags): Promise<void> {
   const sub = flags.positional[0];
-  if (!sub) die('agent lark <send-text|send-card|send-file|send-image|which-chat>');
+  if (!sub) die('agent lark <send-text|send-card|send-file|send-image|ask|which-chat>');
   const rest = flags.positional.slice(1);
   if (sub === 'which-chat') {
     const tty = getCurrentTty();
@@ -534,6 +587,14 @@ async function cmdLark(flags: Flags): Promise<void> {
       stdout.write(
         `✓ 文本已发到 ${chatId}${flags.plain ? ' (plain)' : ''}${flags.auto ? ' (auto)' : ''}\n`,
       );
+      // 手动 send-text 时把内容 preview 回显到 stderr —— 让 shell TUI 里的
+      // 用户/claude 都能"看见到底推了什么"。Stop hook 的 --auto 跳过（那本就是
+      // last_assistant_message，TUI 里已经显示过，再回显只会 noise）。
+      if (!flags.auto) {
+        const MAX = 800;
+        const preview = text.length > MAX ? text.slice(0, MAX) + '\n…(截断，共 ' + text.length + ' 字符)' : text;
+        stderr.write('─── 推送内容 ───\n' + preview + '\n────────────────\n');
+      }
     }
     return;
   }
@@ -588,6 +649,69 @@ async function cmdLark(flags: Flags): Promise<void> {
       `✓ 图片已发到 ${chatId}\n  ${JSON.stringify(data.details)}\n`,
     );
     return;
+  }
+  if (sub === 'ask') {
+    // agent lark ask <single|multi|input> --title '...' [--options 'a,b,c' | --options-json '[]']
+    //                                     [--timeout <ms>] [--chat <chatId>]
+    // 阻塞式：弹飞书交互卡片，用户点选/回复 → CLI stdout 打印 JSON 答案。
+    const type = (rest[0] ?? '').toLowerCase();
+    if (type !== 'single' && type !== 'multi' && type !== 'input') {
+      die("agent lark ask <single|multi|input> --title '...' [--options 'a,b,c']");
+    }
+    if (!flags.title) die('agent lark ask 需要 --title');
+    let options: string[] = [];
+    if (type !== 'input') {
+      if (flags.optionsJson) {
+        try {
+          const parsed = JSON.parse(flags.optionsJson);
+          if (Array.isArray(parsed) && parsed.every((x) => typeof x === 'string')) {
+            options = parsed;
+          } else {
+            die('--options-json 必须是字符串数组');
+          }
+        } catch (e) {
+          die(`--options-json 解析失败: ${(e as Error).message}`);
+        }
+      } else if (flags.options) {
+        options = flags.options.split(',').map((s) => s.trim()).filter((s) => s.length > 0);
+      }
+      if (options.length === 0) {
+        die(`${type} 类型需要 --options 或 --options-json`);
+      }
+    }
+    const chatId = await resolveTargetChatId(flags);
+    stderr.write(`⏳ 等待飞书答复… (chat=${chatId}, type=${type}${options.length ? `, options=${options.length}` : ''})\n`);
+    const reqPayload: Request = {
+      op: 'lark.ask',
+      chatId,
+      type: type as 'single' | 'multi' | 'input',
+      title: flags.title,
+      ...(options.length > 0 ? { options } : {}),
+      ...(flags.timeoutMs ? { timeoutMs: flags.timeoutMs } : {}),
+    };
+    const data = await sendOnce<LarkAskData>(reqPayload);
+    const req = data.request;
+    if (req.status === 'answered' && req.answer) {
+      // stdout 打 JSON，方便脚本 / claude 直接 pipe
+      const payload: Record<string, unknown> = { status: 'answered', type };
+      if (req.answer.kind === 'single') {
+        payload['index'] = req.answer.index;
+        payload['value'] = req.answer.value;
+      } else if (req.answer.kind === 'multi') {
+        payload['indices'] = req.answer.indices;
+        payload['values'] = req.answer.values;
+      } else if (req.answer.kind === 'input') {
+        payload['text'] = req.answer.text;
+      }
+      stdout.write(JSON.stringify(payload) + '\n');
+      exit(0);
+    } else if (req.status === 'cancelled') {
+      stdout.write(JSON.stringify({ status: 'cancelled' }) + '\n');
+      exit(1);
+    } else {
+      stdout.write(JSON.stringify({ status: 'timeout' }) + '\n');
+      exit(2);
+    }
   }
   die(`未知 lark 子命令：${sub}`);
 }
@@ -1118,6 +1242,11 @@ function printHelp() {
       '  agent open [path] [--new-window]    开新 tab，默认 front window，可选新 window',
       '  agent close <tty>                   关 tab（会关整 window，慎用）',
       '  agent recent-cwds                   最近用过的 cwd',
+      '  agent screen [-t tty] [--chat X]    抓 tab 所在窗口截图（含 alt-screen TUI）+ 自动推图到飞书',
+      '  agent keys [-t tty] \'<seq>\'         往 tab 发按键序列（osascript System Events）',
+      '     语法：d=↓ u=↑ l=← r=→ .=空格 ⏎=回车 t=tab x=esc',
+      '           修饰：ctrl+c cmd+k alt+f  连发：3d 或 d*3  打字：\'hello world\'',
+      '           例：agent keys \'2d . ⏎\'      # ↓↓ 空 回',
       '',
       '飞书外发（供 shell 里 agent 调用）：',
       '  agent lark send-text [--chat X] "..."    发文本（自动反查当前 tab 对应 chat）',
@@ -1125,6 +1254,11 @@ function printHelp() {
       '  agent lark send-file [--chat X] <path>   发文件（xlsx/pdf/zip/任意）',
       '  agent lark send-image [--chat X] <path>  发图片',
       '  agent lark which-chat                    看当前 tab 默认发哪个 chat',
+      '  agent lark ask <single|multi|input> --title "..." [--options "a,b,c"] [--timeout ms]',
+      '       弹飞书交互卡片，阻塞式拿答案（stdout JSON）；退出码 0/1/2 = 答完/取消/超时',
+      '       例：agent lark ask single --title "选一个" --options "A,B,C"',
+      '            agent lark ask multi  --title "勾几个" --options "1,2,3"',
+      '            agent lark ask input  --title "输入什么"   # 用户在 chat 回文本',
       '',
       '安装 Claude Code 全局 skill：',
       '  agent install-skill                      把 multiagent-lark 装到 ~/.claude/skills/',
@@ -1201,6 +1335,10 @@ async function main(): Promise<void> {
         return await cmdShow(flags);
       case 'close':
         return await cmdClose(flags);
+      case 'screen':
+        return await cmdScreen(flags);
+      case 'keys':
+        return await cmdKeys(flags);
       case 'chat':
         return await cmdChat(flags);
       case 'recent-cwds':
