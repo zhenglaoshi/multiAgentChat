@@ -1,46 +1,53 @@
 # 安装手册
 
+> 新 PC 首次跑通完整路径。daemon 现在会做大量自动化 —— 手动步骤压到最少：装依赖 → 填 .env → 跑 dev。
+
 ## 你需要拥有
 
 ### 硬件
-- 一台 **macOS** 电脑（AppleScript / Terminal.app 是本项目 host 层的底子；Linux/Windows 目前不支持）
+- **macOS** 电脑（AppleScript / Terminal.app 是 host 层的底子；Linux/Windows 不支持）
 - 稳定网络（会 WebSocket 长连到飞书服务器）
 
 ### 软件
 | 软件 | 版本 | 用途 |
 |---|---|---|
-| Node.js | ≥ 20 | 跑 daemon |
+| Node.js | **≥ 22** | 跑 daemon（低版本 daemon 会 die + 提示升级）|
 | pnpm | ≥ 9 | monorepo 包管理 |
-| Claude Code CLI | 最新 | Tab 里跑 subagent |
+| Claude Code CLI | 最新 | Tab 里跑 subagent + 官方 hooks 集成 |
 | macOS | 13+ | AppleScript API |
 | 飞书 | 手机 + 桌面 | IM |
-| 飞书自建应用 | 有 App ID + Secret | Bot 权限 |
+| 飞书自建应用 | 有 App ID + Secret | Bot 权限（下面第 2 步申请）|
 
-### macOS 权限
-**System Settings → Privacy & Security → Accessibility** 里加：
-- Terminal.app（或 iTerm.app 如果用）
-- osascript
-- 跑 dev 服务的进程（第一次跑起来会自动请求，允许即可）
+### macOS 权限（首次触发时系统会弹对话框，点「允许」即可，不用提前准备）
 
-**这些权限不加，AppleScript 控制 Terminal.app 会被拒绝，整个系统不工作。**
+daemon 启动时会打印一份权限清单提示。三项：
+
+| 权限 | 用途 | 触发场景 |
+|---|---|---|
+| **Accessibility** | osascript 发按键 keystroke / key code | 首次 `forceEnter` / `/keys` |
+| **Screen Recording** | screencapture 抓 tab 窗口 | 首次 `/screen` |
+| **Automation** | osascript 控制 Terminal.app / Chrome | 首次 AppleScript 调 tab |
+
+位置：**System Settings → Privacy & Security → 对应权限项**。任何一项拒绝 = 相关功能失效。
 
 ---
 
 ## 第 1 步：装依赖
 
 ```bash
-# Node 20+，用 nvm 装
+# Node 22+，用 nvm 装
 curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/master/install.sh | bash
-nvm install 20 && nvm use 20
+nvm install 22 && nvm use 22
 
 # pnpm（避开 corepack 签名坑）
 npm install -g pnpm
 
-# Claude Code CLI（官方安装脚本，或 npm 全局装）
-# 参见 https://code.claude.com
+# Claude Code CLI（官方）
+brew install anthropic/tap/claude-code
+# 或 npm 全局装，见 https://code.claude.com
 ```
 
-**如果 pnpm 装了但报错 `Cannot find matching keyid`**（corepack 签名验证问题）：
+**如果 pnpm 报 `Cannot find matching keyid`**（corepack 签名验证问题）：
 ```bash
 rm -f $(which pnpm) $(which pnpx)
 npm install -g pnpm
@@ -50,25 +57,25 @@ npm install -g pnpm
 
 ## 第 2 步：申请飞书自建应用
 
-1. 打开 [飞书开放平台](https://open.feishu.cn/)
-2. 创建应用 → 选择"自建应用"
+1. 打开 [飞书开放平台](https://open.feishu.cn/)（国内）或 [Lark Suite](https://open.larksuite.com/)（海外）
+2. 「开发者后台」→ 创建应用 → 「自建应用」
 3. 应用能力：
-   - 添加"机器人"能力
-   - 事件与回调 → 订阅方式 → **使用长连接接收事件/回调**（**关键**，否则回调走 HTTPS webhook）
+   - 「机器人」启用
+   - **左侧「事件与回调」→ 订阅方式 → 「长连接」**（**关键**，否则回调走 HTTPS webhook）
    - 订阅事件：
      - `im.message.receive_v1`（接收消息）
      - `card.action.trigger`（卡片按钮回调）
-4. 权限：
+4. 「权限管理」加权限：
    - `im:message`
-   - `im:message.send_as_bot`
+   - `im:message:send_as_bot`
    - `im:resource`（文件/图片上传）
    - `im:chat`
    - `im:chat.member.user.read`
-5. 发布版本 → 提交审核（企业管理员批）
-6. 记下：
+5. 「版本管理与发布」→ 创建版本 → 提交发布（个人测试企业一般秒过；企业环境要管理员批）
+6. 「凭证与基础信息」抄下：
    - `App ID`（形如 `cli_xxxxxxxxxxxx`）
    - `App Secret`
-7. 把机器人拉进你要用的 chat / 群
+7. 拉一个测试群，@机器人 加入群
 
 ---
 
@@ -80,69 +87,91 @@ cd multiAgentChat
 pnpm install
 ```
 
-**pnpm-lock.yaml 应该会自动生成**。如果没生成，你的 `~/.npmrc` 可能有 `package-lock=false`：
-```bash
-# 项目里加一个 .npmrc（已有）
-cat .npmrc
-# 应该看到 lockfile=true
-```
+**pnpm-lock.yaml 应该自动生成**。如没生成，你的 `~/.npmrc` 可能有 `package-lock=false` —— 项目自带 `.npmrc` 覆盖就够。
 
 ---
 
-## 第 4 步：填 .env
-
-```bash
-cp .env.example .env
-# 编辑 .env，填：
-# LARK_APP_ID=cli_xxxxxxxxxxxx
-# LARK_APP_SECRET=xxxxxxxxx
-```
-
-**⚠️ 千万不要 commit .env（.gitignore 已排除）**。
-
----
-
-## 第 5 步：装 skill（让 claude 知道用 agent CLI）
-
-```bash
-./bin/agent install-skill
-```
-
-这会把 `skills/multiagent-lark/SKILL.md` 拷贝到 `~/.claude/skills/`。以后你所有 Claude Code session 启动时都会自动加载。
-
-不装的话，主 claude 不知道 `agent lark send-text` 命令的存在，任务结果推不回飞书。
-
----
-
-## 第 6 步：起 daemon
+## 第 4 步：跑一次 dev（会自动帮你 bootstrap）
 
 ```bash
 pnpm dev
 ```
 
-看到这些说明起来了：
+**如果 `.env` 缺失**：daemon 会自动从 `.env.example` 复制一份到 `.env` 然后 die + 提示补密钥：
 ```
+[ERROR] .env 不存在 → 已从 .env.example 复制模板到 <path>/.env
+请填 LARK_APP_ID 和 LARK_APP_SECRET（飞书开发者后台 → 凭证与基础信息）后重启 dev。
+```
+
+编辑 `.env` 填两个字段：
+```
+LARK_APP_ID=cli_xxxxxxxxxxxx
+LARK_APP_SECRET=xxxxxxxxx
+```
+
+**⚠️ `.env` 已 gitignore，别 commit**。
+
+---
+
+## 第 5 步：再跑 dev，daemon 自动完成剩余安装
+
+```bash
+pnpm dev
+```
+
+daemon 启动时**自动**做 5 件事：
+
+| # | 动作 | 说明 |
+|---|---|---|
+| 1 | **assertNodeVersion** | Node < 22 直接 die + 引导升级 |
+| 2 | **emitMacPermissionHints** | 打印上表三项权限提示（第一次触发才需要）|
+| 3 | **ensureSkillInstalled** | 把 `skills/multiagent-lark/SKILL.md` upsert 到 `~/.claude/skills/multiagent-lark/`（源码有更新时自动同步）|
+| 4 | **installClaudeCodeHooks** | 往 `~/.claude/settings.json` 里加 Stop + PreToolUse hooks（幂等）|
+| 5 | **ensureAgentOnPath** | `bin/agent` 无 sudo symlink 到 `~/.local/bin/agent` |
+
+期望启动日志：
+```
+[INFO] node version ok { version: '22.x.x' }
+[INFO] macOS 权限一次性提示：...
+[INFO] caffeinate started { childPid: xxx }
 [INFO] lark bot started (WS long-connection)
-[INFO] control server listening { socket: '/Users/.../agent.sock' }
-[INFO] tab watcher started { pollMs: 3000 }
-[INFO] stage memory listener attached
-[INFO] health check started
+[INFO] control server listening { socket: '~/.multiagent-chat/agent.sock' }
+[INFO] tab watcher started { pollMs: 2000 }
+[INFO] multiagent-lark skill up-to-date (或 installed / updated)
+[INFO] Claude Code hooks upserted { ... }
+[INFO] agent CLI symlink up-to-date (或 symlinked)
+[WARN] /Users/xxx/.local/bin 不在 PATH ...   ← 见下一步
 [INFO] [ws] ws client ready
 ```
 
-**关掉这个终端 = daemon 挂掉**。生产上用 `nohup pnpm start &` 或 pm2。
+**关掉 dev tab = daemon 挂**。要一直跑：
+- 简单：nohup `pnpm dev &`
+- 生产：pm2 / launchd LaunchAgent
+
+---
+
+## 第 6 步：把 `~/.local/bin` 加到 PATH（一次性）
+
+daemon 帮你 symlink 到 `~/.local/bin/agent`，但如果你 shell 里 `~/.local/bin` 不在 PATH，跑 `agent xxx` 会 command-not-found。
+
+```bash
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
+```
+
+（bash 用户改 `~/.bashrc`。fish 用户 `fish_add_path ~/.local/bin`）
 
 ---
 
 ## 第 7 步：验证
 
 ```bash
-./bin/agent doctor
+agent doctor
 ```
 
 期望：
 ```
-✅ [critical]   Node ≥ 20
+✅ [critical]   Node ≥ 22
 ✅ [critical]   macOS: darwin
 ✅ [critical]   .env 完整
 ✅ [critical]   AppleScript 权限
@@ -153,7 +182,7 @@ pnpm dev
 🟢 整体：健康
 ```
 
-任何 critical fail 都要按 💡 hint 修完再往下。
+critical fail 都要按 💡 hint 修完再往下。
 
 ---
 
@@ -164,31 +193,31 @@ pnpm dev
 /dashboard
 ```
 
-应该收到一张卡，列出你 Mac 上所有 Terminal tab。
+应该收到一张卡，列出 Mac 上所有 Terminal tab。
 
-如果没收到：
-- 机器人被拉进你所在 chat 了吗？
-- 飞书应用发布了吗？
+没收到？
+- 机器人被拉进本 chat 了吗？
+- 飞书应用「事件与回调」订阅方式是「长连接」吗？
 - `agent doctor` 里 lark client 是不是 pass？
+- daemon log 有没有报 auth 错？
 
 派个真任务：
 ```
 @ttys001 ls -la
 ```
-（替换 `ttys001` 为你实际的 tab tty，或用 tab 的 cwd basename）
+（替换 `ttys001` 为你实际的 tab tty，或用 tab 的 cwd basename 也可）
 
 ---
 
 ## 防休眠说明
 
-daemon 启动时**自动**跑 `caffeinate` 阻止 Mac idle sleep。你不用配。
+daemon 启动时**自动** spawn `caffeinate -i -m -w <daemon-pid>`，阻止 macOS idle sleep。daemon 挂 caffeinate 自动退。不用配置。
 
-**但**：MacBook 合盖 macOS 强制断电，任何软件无解。如果你 remote 用得多：
-- 外接电源 + 外显 + 外键鼠 → macOS clamshell mode，合盖不睡
-- 或用 iMac / Mac mini
+`caffeinate` 阻 **idle sleep**（Mac 闲置一段时间自动睡）但**阻不了合盖睡眠**（kernel/固件层，任何软件方案都无解）。合盖也想不睡的三条路见 [features.md 第 10 节](features.md#10-防休眠sleep-prevention)。
 
-关闭防休眠：`AGENT_NO_CAFFEINATE=1 pnpm dev`  
-AC 下也阻 system sleep：`AGENT_CAFFEINATE_SYSTEM_SLEEP=1 pnpm dev`
+env vars：
+- `AGENT_NO_CAFFEINATE=1` → 关闭 daemon 自动 caffeinate
+- `AGENT_CAFFEINATE_SYSTEM_SLEEP=1` → 加 `-s` 参数（AC 电源下真阻 system sleep）
 
 ---
 
@@ -196,20 +225,38 @@ AC 下也阻 system sleep：`AGENT_CAFFEINATE_SYSTEM_SLEEP=1 pnpm dev`
 
 | 坑 | 症状 | 解 |
 |---|---|---|
-| Accessibility 没开 | `osascript: -1743` 或 `not allowed` | 见"macOS 权限"节 |
-| `.env` 忘填 | daemon 起来后 lark bot 报 auth error | `agent doctor` 会指出 |
-| skill 没装 | tab 里 claude 跑完不推消息回飞书 | `./bin/agent install-skill` |
-| 飞书没配长连接 | 消息收不到 | 开放平台 → 事件与回调 → 长连接 |
-| pnpm 签名错 | `Cannot find matching keyid` | 删掉旧的 shim，`npm install -g pnpm` |
-| Terminal.app 没开 | 派消息到 tab 时报 tab 不存在 | 先手动开一个 Terminal，跑 `claude` |
+| Accessibility 没开 | `osascript: -1743` 或 `not allowed` | 见「macOS 权限」节，System Settings 里授 |
+| Screen Recording 没开 | `/screen` 抓屏返回空 | 同上，Screen Recording 分类 |
+| `.env` 没填 | daemon 起来后 lark auth error | daemon 会自动 cp 模板，编辑填密钥重跑 |
+| skill 没同步 | tab 里 claude 不知道 `agent lark send-text` | 重启 daemon（会 upsert）；或手动 `agent install-skill` |
+| 飞书没配长连接 | 消息收不到 | 开发者后台 → 事件与回调 → 长连接 |
+| pnpm 签名错 | `Cannot find matching keyid` | 删掉旧 shim，`npm install -g pnpm` |
+| Terminal.app 没开 | 派消息到 tab 时报「tab 不存在」 | 先手动开 Terminal 跑 `claude`；或飞书 `/new` |
+| `agent` command-not-found | 别的 shell 里跑 agent 报错 | 加 `~/.local/bin` 到 PATH（见 Step 6）|
+| Chrome AppleScript -1712 | Chrome 首次 AppleScript 调用超时 | System Settings → Privacy → Automation 里给 Terminal 授权控制 Chrome |
 
-更多问题：[troubleshooting.md](troubleshooting.md)
+更多：[troubleshooting.md](troubleshooting.md)
+
+---
+
+## 一次性 vs 长期维护
+
+**一次性**（首次装完就不用再管）：
+- Node / pnpm / Claude Code CLI 安装
+- 飞书应用申请 + 权限 + 发布
+- `.env` 填密钥
+- 授 macOS 三项权限
+- PATH 加 `~/.local/bin`
+
+**每次更新代码**（`git pull` 后）：
+- `pnpm install`（若 lock 变了）
+- 重启 dev（daemon 会自动 upsert 新版 SKILL / hooks / symlink）
 
 ---
 
 ## 下一步
 
 - 学怎么用：[commands.md](commands.md)
-- 深入功能：[features.md](features.md)
+- 完整功能：[features.md](features.md)
 - SOP 编排：[sop.md](sop.md)
 - 出问题：[troubleshooting.md](troubleshooting.md)

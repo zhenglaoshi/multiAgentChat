@@ -4,6 +4,7 @@
     { "path": "./packages/orchestrator" },
     { "path": "./packages/host-mac" },
     { "path": "./packages/im-lark" },
+    { "path": "./packages/im-wecom" },
     { "path": "./packages/framework" },
     { "path": "./apps/daemon" }
   ]

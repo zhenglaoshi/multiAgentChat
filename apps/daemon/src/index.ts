@@ -6,6 +6,7 @@ import { delimiter, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startControlServer } from 'multiagent-framework';
 import { startLarkBot } from 'multiagent-im-lark';
+import { loadWeComConfig, WeComTransport } from 'multiagent-im-wecom';
 import { logger } from 'multiagent-orchestrator';
 import { startHealthCheck } from 'multiagent-im-lark';
 import { attachWatcherToLark } from 'multiagent-im-lark';
@@ -319,6 +320,41 @@ async function main() {
   await ensureSkillInstalled();
   await installClaudeCodeHooks();
   await ensureAgentOnPath();
+
+  // ---- 企微 transport（可选）：仅在 .env 里配了 WECOM_* 时 attach ----
+  const wecomCfg = loadWeComConfig();
+  if (wecomCfg) {
+    try {
+      const wecom = new WeComTransport(wecomCfg);
+      await wecom.start();
+      // TODO Day 5：把 wecom.events.on('message' / 'cardAction') 接进 dispatch 流
+      // 目前只 attach receiver + REST 发消息 API 可用；收消息还没自动派发到 tab
+      wecom.events.on('message', (ev) => {
+        logger.info('wecom message received (dispatch WIP)', {
+          chatId: ev.chatId,
+          senderId: ev.senderId,
+          textLen: ev.text.length,
+        });
+      });
+      wecom.events.on('cardAction', (ev) => {
+        logger.info('wecom cardAction received (dispatch WIP)', {
+          chatId: ev.chatId,
+          action: ev.action,
+        });
+      });
+      logger.info('wecom transport attached', {
+        corpId: wecomCfg.corpId,
+        agentId: wecomCfg.agentId,
+        port: wecomCfg.callbackHttpPort,
+      });
+    } catch (e) {
+      logger.warn('wecom transport start failed（daemon 继续跑，只是企微不可用）', {
+        err: (e as Error).message,
+      });
+    }
+  } else {
+    logger.info('wecom transport 未 attach（缺 WECOM_CORP_ID/AGENT_ID/SECRET/TOKEN/AES_KEY 任一）');
+  }
 
   // 后台刷新目录索引（首次可能扫 15s，不阻塞主流程）
   void refreshDirIndex().catch((e) => {

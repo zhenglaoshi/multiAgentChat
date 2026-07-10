@@ -35,6 +35,9 @@ importers:
       multiagent-im-lark:
         specifier: workspace:*
         version: link:../../packages/im-lark
+      multiagent-im-wecom:
+        specifier: workspace:*
+        version: link:../../packages/im-wecom
       multiagent-orchestrator:
         specifier: workspace:*
         version: link:../../packages/orchestrator
@@ -68,6 +71,15 @@ importers:
       multiagent-host-mac:
         specifier: workspace:*
         version: link:../host-mac
+      multiagent-orchestrator:
+        specifier: workspace:*
+        version: link:../orchestrator
+
+  packages/im-wecom:
+    dependencies:
+      multiagent-framework:
+        specifier: workspace:*
+        version: link:../framework
       multiagent-orchestrator:
         specifier: workspace:*
         version: link:../orchestrator

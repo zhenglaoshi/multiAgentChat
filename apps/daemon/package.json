@@ -18,6 +18,7 @@
     "multiagent-orchestrator": "workspace:*",
     "multiagent-host-mac": "workspace:*",
     "multiagent-im-lark": "workspace:*",
+    "multiagent-im-wecom": "workspace:*",
     "multiagent-framework": "workspace:*"
   }
 }

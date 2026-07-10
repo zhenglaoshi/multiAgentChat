@@ -1,0 +1,22 @@
+{
+  "name": "multiagent-im-wecom",
+  "version": "0.0.1",
+  "private": true,
+  "description": "企业微信 (WeCom / WeChat Work) IM transport for multiAgentChat. Implements IMTransport interface with HTTP-webhook event receiver + REST send API + template_card render.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "multiagent-framework": "workspace:*",
+    "multiagent-orchestrator": "workspace:*"
+  }
+}

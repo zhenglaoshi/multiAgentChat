@@ -8,8 +8,9 @@
 
 ### 能力
 - 飞书消息 → Mac Terminal tab（AppleScript 控制）
-- Mac Terminal 输出 → 飞书卡片（3s 轮询采集 + 主动推送）
+- Mac Terminal 输出 → 飞书卡片（1-2s 轮询采集 + 主动推送 + adaptive 节流）
 - 支持 alt-screen TUI 程序（Claude Code 用 `\r` 重绘 → 用**字符长度**变化而非行数检测）
+- **双渠道并行输出**：任务响应同时在 pc shell TUI 和飞书露出（SYSTEM_GUIDANCE 强制引导 claude 不能只推不答）
 
 ### 什么时候用
 - 你在电脑前不方便切 Terminal → 手机发命令
@@ -294,6 +295,148 @@ agent doctor
   - 加 SOP 模板：`/template save` 或 `~/.multiagent-chat/presets/*.json`
 
 见 **[architecture.md](architecture.md)** + **[../CONTRIBUTING.md](../CONTRIBUTING.md)**。
+
+---
+
+## 14. 交互式选择 · `agent lark ask`
+
+### 能力
+用户在飞书**手指点选**回答问题，claude 从 stdout 拿 JSON 答案。三种类型：
+- **single** —— radio 单选，按钮阵列
+- **multi** —— checkbox 多选，toggle 后点提交
+- **input** —— 用户在 chat 里直接回复文本（也支持 `/cancel`）
+
+### 用法
+```bash
+# claude session 里
+answer=$(agent lark ask single \
+  --title "选一个方案" \
+  --options "A. 快速,B. 稳妥,C. 稳妥再稳妥")
+# → {"status":"answered","type":"single","index":1,"value":"B. 稳妥"}
+echo "$answer" | jq -r '.index'
+
+# 多选
+answer=$(agent lark ask multi \
+  --title "跑哪些 stage？" \
+  --options "requirement,architect,coder,tester")
+# → {"status":"answered","type":"multi","indices":[0,2],"values":["requirement","coder"]}
+
+# 输入
+answer=$(agent lark ask input --title "输入 commit message")
+# → {"status":"answered","type":"input","text":"fix: xxx"}
+```
+
+### 退出码
+- 0 = `answered`
+- 1 = `cancelled`
+- 2 = `timeout`（默认 5min，可 `--timeout <ms>`）
+
+### 什么时候用
+- 主 claude 想让用户"从 N 个选项里挑"或"填一段文本"
+- 替代 `AskUserQuestion`（AskUserQuestion 在 TUI 里弹选项框，手机端飞书完全看不见）
+- SKILL / SYSTEM_GUIDANCE 强制引导 claude 在选择场景优先用它
+
+### 底层
+`AskManager`（`packages/orchestrator/src/ask/`）+ 飞书交互卡片（`askCard`）+ card_action.trigger 路由 + input 类型时监听下条文本消息 = 完整闭环。
+
+---
+
+## 15. 抓屏 & 按键遥控（TUI 场景兜底）
+
+### `/screen` · agent screen
+抓 Terminal.app 指定 tab 所在窗口的截图（**含 alt-screen TUI 内容**，是 alt-screen 下飞书唯一能"看到"屏幕的通道），推图到飞书。
+
+```bash
+# CLI
+agent screen [-t ttys003]     # -t 可省，自动反查
+
+# 飞书斜杠
+/screen                        # 抓当前 sticky tab
+```
+
+底层：AppleScript 拿 window bounds + `screencapture -R x,y,w,h` + `sendImage`。首次要授 Screen Recording 权限。
+
+### `/keys` · agent keys
+往目标 tab 发按键序列（osascript System Events），做为非 claude TUI 的**兜底**遥控。
+
+键位：`d`=↓ `u`=↑ `l`=← `r`=→ `.`=空格 `⏎`=回车 `t`=tab `x`=esc  
+中文别名：上/下/左/右/空/回
+
+修饰：`ctrl+c` `cmd+k` `alt+f` `shift+tab`  
+连发：`3d` 或 `d*3`  
+打字（原样发字符）：`'hello world'`
+
+```bash
+# CLI
+agent keys '2d . ⏎'                    # ↓↓ 空 回
+agent keys ctrl+c
+agent keys "'hello' ⏎"
+
+# 飞书斜杠
+/keys 2d . ⏎
+/keys ctrl+c
+```
+
+飞书 `/keys` 每次执行后 300ms 自动补一张 `/screen` 截图回推确认。
+
+### 什么时候用
+- Claude 内置多选 UI（比如 `/agents` 界面）飞书看不见 → /screen 看现状 + /keys 遥控
+- 非 claude TUI（`npm init` / `gum choose`）用户不方便切 tab → 手机 /keys 兜底
+- 兜底原则：能用 `agent lark ask` 就优先用它（用户点选比手打按键序列友好）；用不了才走 /screen + /keys
+
+---
+
+## 16. 长任务进度卡降噪（三层组合）
+
+30 分钟 build 类长任务本来会累积 500+ 次卡片 patch，视觉上一直变。三层治法：
+
+### 层 1 · Adaptive Backoff（默认自动生效，无需操作）
+patch 间隔随任务时长自动拉长：
+- 前 30s → 3.5s（短任务体验不变）
+- 30s-2min → 15s
+- 2-5min → 30s
+- 5min+ → 60s
+
+`isFinal` 完成时永远 patch。
+
+### 层 2 · `/quiet on/off/status`（每 chat 全局静默）
+```
+/quiet on         # 该 chat 所有 pending 只发首次 + 最终，中间全不 patch
+/quiet off        # 恢复实时（走层 1 的自适应节流）
+/quiet status     # 看当前状态
+```
+
+场景：你专心其他事情、后台跑 build 长任务，不想被中间进度打扰。
+
+### 层 3 · 单张卡「🔇 静默此任务」按钮
+每张 running 状态的进度卡底部一个按钮：
+- 未静默：`[🔇 静默此任务]`，点后该 pending 中间不 patch，只在完成时更新
+- 已静默：按钮变 `[🔊 恢复实时]`，卡片副标题多一行「🔇 已静默 · 完成时才更新」
+
+`pending.quietUntilDone` 独立于 chat.quietMode，两者是 OR 关系。
+
+### 使用建议
+- 一般：默认层 1 自动降噪就够
+- 专注模式：层 2 一次开关全局静默
+- 只有一个任务吵：层 3 单卡按钮
+
+---
+
+## 17. 首次启动自动化（新 PC 上手最短路径）
+
+daemon 启动时**自动**做的事，让新 PC 首次跑通只需要 3 步（装依赖 → 填 `.env` → 跑 dev）：
+
+| # | 动作 | 目标 |
+|---|---|---|
+| 1 | `assertNodeVersion` | Node < 22 die + 引导升级 |
+| 2 | `ensureEnvFile` | `.env` 缺失自动 `cp .env.example .env` + die 提示补密钥 |
+| 3 | `emitMacPermissionHints` | 一次性打印 Accessibility / Screen Recording / Automation 权限提示 |
+| 4 | `caffeinate` | 阻止 idle sleep |
+| 5 | `ensureSkillInstalled` | upsert `skills/multiagent-lark/SKILL.md` 到 `~/.claude/skills/`（源码更新自动同步）|
+| 6 | `installClaudeCodeHooks` | 往 `~/.claude/settings.json` 加 Stop + PreToolUse hooks（幂等）|
+| 7 | `ensureAgentOnPath` | `bin/agent` 无 sudo symlink 到 `~/.local/bin/agent` |
+
+用户唯一手动做：加 `~/.local/bin` 到 PATH（一次性 `echo 'export PATH=...' >> ~/.zshrc`）。
 
 ---
 
