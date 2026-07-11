@@ -550,8 +550,8 @@ export interface ProgressCardData {
   /** 完整 prompt（用于「↻ 重发」按钮，只有 feishu 来源任务才有） */
   rerunPrompt?: string;
   rerunTargetLabel?: string;
-  /** 本地任务（非飞书发起）—— 卡片标题加 🏠 标识 */
-  source?: 'feishu' | 'local';
+  /** 任务来源 —— 'local' 时卡片标题加 🏠 标识；wecom 在此侧不渲染，daemon 另派 */
+  source?: 'feishu' | 'local' | 'wecom';
   /** pending.sentAt，作为按钮 value 里的唯一 key 找回 pending */
   sentAt?: number;
   /** 单卡静默模式：显示"已静默"提示 + 按钮变成"🔊 恢复实时" */

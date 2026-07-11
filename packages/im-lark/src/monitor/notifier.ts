@@ -333,6 +333,11 @@ export function attachWatcherToLark(larkClient: Lark.Client): void {
         );
       } else {
         // 单任务/独立卡路径
+        // 企微 pending 由 daemon 侧另一个 taskOutput 监听器处理（wecom transport
+        // 发文本收尾卡，简化模式：不 patch 只在 isFinal 发一份最终摘要）。
+        // 这里直接短路避免调 lark api 报错。
+        if (pending.im === 'wecom') return;
+
         let isActiveForChat = false;
         let quietMode = false;
         try {

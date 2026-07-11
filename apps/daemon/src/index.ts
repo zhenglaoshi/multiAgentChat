@@ -12,8 +12,17 @@ import { startHealthCheck } from 'multiagent-im-lark';
 import { attachWatcherToLark } from 'multiagent-im-lark';
 import { installWsWatchdog } from 'multiagent-im-lark';
 import { attachStageMemoryListener } from 'multiagent-orchestrator';
-import { listTabs, refreshDirIndex, send as terminalSend, forceEnter } from 'multiagent-host-mac';
+import { getHistory, listTabs, refreshDirIndex, send as terminalSend, forceEnter } from 'multiagent-host-mac';
 import type { IMMessageEvent } from 'multiagent-framework';
+import {
+  loadChat,
+  saveChat,
+  pendingTracker,
+  watcher,
+  RECENT_REPLY_TTL_MS,
+  type PendingOutput,
+} from 'multiagent-im-lark';
+import { sanitizeTerminalOutput } from 'multiagent-im-lark';
 
 /**
  * Upsert Claude Code hooks 到 ~/.claude/settings.json。
@@ -303,20 +312,21 @@ function startCaffeinate(): void {
 }
 
 /**
- * 极简版企微 → Terminal tab 派发（v1）。
+ * 企微 → Terminal tab 派发（Day 6+ 版）
  *
- * 目前实现：
- *   - 解析 "@target text" 或纯文本
- *   - @target 支持：tty (ttys003 / /dev/ttys003) / tab 标题 / cwd basename
- *   - 无 @ 时提示需要 @target（企微 v1 不支持 sticky/active tty 状态，简单粗暴）
- *   - AppleScript send 到 tab；如果是 claude TUI 还 forceEnter
- *   - 派发结果通过 wecom.sendText 回执给用户
+ * 特性：
+ *   - 解析 "@target text"；无 @ 时用 chat state fallback（recentReplyTty → activeTty）
+ *   - target 匹配：tty / 短 tty / 标题 / cwd basename
+ *   - AppleScript send + claude TUI forceEnter
+ *   - **建 pending**（im='wecom'），watcher 跟踪；isFinal 时 daemon 侧另一个
+ *     监听器（见下 `attachWeComFinalListener`）用 wecom transport 发收尾摘要
+ *   - **更新 chat state**：activeTty + recentReplyTty，实现 sticky 对话
+ *   - 首次注入回执一条简短文本，告诉用户 "命令收到 + tab"
  *
- * 不做（Day 6+）：
- *   - 进度卡 (template_card render + patch)
- *   - pending tracker（企微 patch 靠重发，UX 不同）
- *   - Stop hook auto-push
- *   - /watch, /quiet 等 slash 命令
+ * 不做（Day 7+）：
+ *   - 进度卡 patch（企微不支持任意 body 更新，用简化"初始 ack + 最终摘要"两条模式）
+ *   - /slash 命令解析（用户发 /help 之类）
+ *   - 群聊 target
  */
 async function dispatchWeComMessage(
   wecom: WeComTransport,
@@ -325,33 +335,67 @@ async function dispatchWeComMessage(
   const text = ev.text.trim();
   if (!text) return;
 
-  // 解析 @target
-  const m = /^@(\S+)\s+([\s\S]+)$/.exec(text);
-  if (!m) {
-    await wecom.sendText(
-      ev.chatId,
-      '❓ 需要 `@target 命令` 格式（企微 v1 暂不支持 sticky/active tty）\n例：@ttys003 ls -la',
-    );
-    return;
-  }
-  const target = (m[1] ?? '').toLowerCase();
-  const cmd = m[2] ?? '';
-
+  const chatState = await loadChat(ev.chatId);
   const tabs = await listTabs();
-  const tab = tabs.find((t) => {
-    const ttyShort = t.tty.replace(/^\/dev\//, '').toLowerCase();
-    if (ttyShort === target || t.tty.toLowerCase() === target) return true;
-    if (t.title.toLowerCase().includes(target)) return true;
-    if (t.cwd && t.cwd.toLowerCase().endsWith('/' + target)) return true;
-    return false;
-  });
-  if (!tab) {
-    await wecom.sendText(
-      ev.chatId,
-      `❌ 找不到 target=${target}。可用 tab：\n` +
-        tabs.slice(0, 8).map((t) => `- ${t.tty.replace(/^\/dev\//, '')}${t.cwd ? ` (${t.cwd})` : ''}`).join('\n'),
-    );
-    return;
+
+  // 解析 @target；无 @ 时用 chat state fallback
+  let target = '';
+  let cmd = text;
+  const m = /^@(\S+)\s+([\s\S]+)$/.exec(text);
+  if (m) {
+    target = (m[1] ?? '').toLowerCase();
+    cmd = m[2] ?? '';
+  }
+
+  let tab: (typeof tabs)[number] | undefined;
+  if (target) {
+    tab = tabs.find((t) => {
+      const ttyShort = t.tty.replace(/^\/dev\//, '').toLowerCase();
+      if (ttyShort === target || t.tty.toLowerCase() === target) return true;
+      if (t.title.toLowerCase().includes(target)) return true;
+      if (t.cwd && t.cwd.toLowerCase().endsWith('/' + target)) return true;
+      return false;
+    });
+    if (!tab) {
+      await wecom.sendText(
+        ev.chatId,
+        `❌ 找不到 target=${target}。可用 tab：\n` +
+          tabs.slice(0, 8).map((t) => `- ${t.tty.replace(/^\/dev\//, '')}${t.cwd ? ` (${t.cwd})` : ''}`).join('\n'),
+      );
+      return;
+    }
+  } else {
+    // 无 @：优先 recentReplyTty（5min sticky），退回 activeTty
+    const now = Date.now();
+    const stickyOk =
+      chatState.recentReplyTty &&
+      chatState.recentReplyAt !== undefined &&
+      now - chatState.recentReplyAt < RECENT_REPLY_TTL_MS;
+    const fallbackTty = stickyOk ? chatState.recentReplyTty : chatState.activeTty;
+    if (!fallbackTty) {
+      await wecom.sendText(
+        ev.chatId,
+        '❓ 无 @target 也没设 activeTty。\n用 `@ttysXXX 命令` 首次派发，之后 5 分钟内裸文本会自动到该 tab。',
+      );
+      return;
+    }
+    tab = tabs.find((t) => t.tty === fallbackTty);
+    if (!tab) {
+      await wecom.sendText(
+        ev.chatId,
+        `❌ 上次的 tab ${fallbackTty} 已关闭。用 @ttysXXX 明示 target。`,
+      );
+      return;
+    }
+  }
+
+  // 拿 beforeCharLen baseline
+  let beforeCharLen: number | undefined;
+  try {
+    const h = await getHistory(tab.tty);
+    beforeCharLen = h.length;
+  } catch {
+    /* ignore */
   }
 
   const result = await terminalSend(tab.tty, cmd);
@@ -359,14 +403,83 @@ async function dispatchWeComMessage(
     await wecom.sendText(ev.chatId, `❌ send 失败：${result.reason ?? '(无原因)'}`);
     return;
   }
-  // 如果是 claude TUI，do script 加 \n 会被理解成换行；显式发一次 Return
   if (tab.hasTUI) {
     await new Promise((r) => setTimeout(r, 400));
     await forceEnter(tab.tty);
   }
+
+  // 更新 chat state：activeTty + recentReplyTty
+  const now = Date.now();
+  chatState.activeTty = tab.tty;
+  chatState.recentReplyTty = tab.tty;
+  chatState.recentReplyAt = now;
+  chatState.lastActiveAt = now;
+  await saveChat(chatState);
+
+  // 建 pending —— watcher 会跟踪，isFinal 时 attachWeComFinalListener 发摘要
+  if (result.before !== undefined) {
+    const p: PendingOutput = {
+      tty: tab.tty,
+      chatId: ev.chatId,
+      sentAt: now,
+      beforeLen: result.before,
+      lastPushedLen: result.before,
+      taskDescription: cmd.slice(0, 80),
+      originalPrompt: cmd,
+      source: 'wecom',
+      im: 'wecom',
+    };
+    if (tab.cwd) p.cwd = tab.cwd;
+    if (target) p.targetLabel = target;
+    if (beforeCharLen !== undefined) {
+      p.beforeCharLen = beforeCharLen;
+      p.lastSeenCharLen = beforeCharLen;
+    }
+    pendingTracker.add(p);
+  }
+
   await wecom.sendText(
     ev.chatId,
-    `✓ 已注入到 ${tab.tty.replace(/^\/dev\//, '')}${tab.cwd ? ` (${tab.cwd})` : ''}\n命令：${cmd.slice(0, 100)}`,
+    `✓ 已注入到 ${tab.tty.replace(/^\/dev\//, '')}${tab.cwd ? ` (${tab.cwd})` : ''}\n命令：${cmd.slice(0, 100)}\n（跑完会自动收到摘要；后续 5 分钟内裸文本无需 @target）`,
+  );
+}
+
+/**
+ * 监听 watcher.taskOutput —— 只处理 pending.im === 'wecom'，在 isFinal 时把
+ * 任务摘要用 wecom transport 发到源 chat。中间不 patch（企微 body update 有限，
+ * 用"初始 ack + 最终摘要"简化模式）。
+ */
+function attachWeComFinalListener(wecom: WeComTransport): void {
+  watcher.events.on(
+    'taskOutput',
+    async ({
+      pending,
+      isFinal,
+      taskOnlyTail,
+      outputTail,
+    }: {
+      pending: PendingOutput;
+      isFinal: boolean;
+      taskOnlyTail: string;
+      outputTail: string;
+    }) => {
+      if (pending.im !== 'wecom') return;
+      if (!isFinal) return;
+      try {
+        const clean = sanitizeTerminalOutput(taskOnlyTail || outputTail || '').trimEnd();
+        const tailForCard =
+          clean.length === 0
+            ? '(任务已完成，无新输出)'
+            : clean.length > 1500
+              ? clean.slice(-1500) + '\n…(截断到最后 1500 字)'
+              : clean;
+        const shortTty = pending.tty.replace(/^\/dev\//, '');
+        const msg = `✓ ${shortTty} 任务完成\n命令：${pending.taskDescription}\n\n${tailForCard}`;
+        await wecom.sendText(pending.chatId, msg);
+      } catch (e) {
+        logger.warn('wecom final push failed', { err: (e as Error).message });
+      }
+    },
   );
 }
 
@@ -391,7 +504,6 @@ async function main() {
     try {
       wecom = new WeComTransport(wecomCfg);
       await wecom.start();
-      // 收到企微 text 消息 → 用 host-mac 反查 tty + send 到 tab（v1 极简版：不发进度卡）
       wecom.events.on('message', async (ev) => {
         logger.info('wecom message received', {
           chatId: ev.chatId,
@@ -413,6 +525,8 @@ async function main() {
           action: ev.action,
         });
       });
+      // watcher 检测 tab 完成时用 wecom transport 发摘要（简化模式：initial ack + final only）
+      attachWeComFinalListener(wecom);
       logger.info('wecom transport attached', {
         corpId: wecomCfg.corpId,
         agentId: wecomCfg.agentId,

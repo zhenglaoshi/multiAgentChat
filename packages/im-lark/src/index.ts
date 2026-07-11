@@ -14,6 +14,7 @@ export * from './monitor/detector.js';
 export * from './monitor/health-check.js';
 export * from './monitor/notifier.js';
 export * from './monitor/pending.js';
+export * from './monitor/sanitize.js';
 export * from './monitor/watcher.js';
 export * from './monitor/ws-watchdog.js';
 

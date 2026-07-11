@@ -14,7 +14,9 @@ export interface PendingOutput {
   taskDescription: string;     // 最初 prompt 摘要
   originalPrompt?: string;     // 完整 prompt（用于「重发」）
   targetLabel?: string;        // @target 字符串（如果是 @ 触发）
-  source?: 'feishu' | 'local'; // 任务来源：飞书发起 / 本地用户输入
+  source?: 'feishu' | 'local' | 'wecom'; // 任务来源：飞书发起 / 本地用户输入 / 企微发起
+  /** IM kind：'lark' | 'wecom' | 'local'。notifier 里 dispatch 到对应 transport 发消息。 */
+  im?: 'lark' | 'wecom' | 'local';
 
   // 实时进度卡片（patch 而非新发消息）
   progressMessageId?: string;  // 进度卡片的 message_id (单任务 / 非批量)

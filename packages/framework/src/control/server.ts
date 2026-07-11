@@ -306,6 +306,36 @@ async function handleLarkSendText(
   sock: Socket,
   req: Extract<Request, { op: 'lark.send-text' }>,
 ) {
+  // chatId 前缀 wecom: 时路由到企微 transport（Stop hook 用 op=lark.send-text，
+  // 但目标 chatId 可能是 wecom:user:xxx —— 由 pendingTracker 的 wecom 任务反查得来）
+  if (req.chatId.startsWith('wecom:')) {
+    if (!wecomTransport) {
+      sendErr(sock, 'chatId 前缀是 wecom: 但 wecom transport 未 attach（缺 WECOM_* env）');
+      sock.end();
+      return;
+    }
+    try {
+      const chat = await loadChat(req.chatId);
+      // --auto 也 gate（跟飞书对齐）；用户 --plain 视作强制发（复用 lark 语义）
+      if (req.auto && !chat.watchAllTabs) {
+        logger.info('wecom auto-push gated', {
+          chatId: req.chatId,
+          reason: 'watchAllTabs !== true',
+          textLen: req.text.length,
+        });
+        sendOk<LarkSendData>(sock, { details: { gated: true } });
+        sock.end();
+        return;
+      }
+      await wecomTransport.sendText(req.chatId, req.text);
+      sendOk<LarkSendData>(sock, { details: { via: 'wecom' } });
+    } catch (e) {
+      sendErr(sock, `wecom send-text failed: ${(e as Error).message}`);
+    }
+    sock.end();
+    return;
+  }
+
   const client = requireLark(sock);
   if (!client) return;
   try {

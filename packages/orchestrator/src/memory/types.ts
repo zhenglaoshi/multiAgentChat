@@ -16,5 +16,5 @@ export interface TaskMemory {
   startedAt: number;
   endedAt: number;
   durationMs: number;
-  source: 'feishu' | 'local';
+  source: 'feishu' | 'local' | 'wecom';
 }

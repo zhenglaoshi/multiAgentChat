@@ -393,6 +393,100 @@ async function runCaffeinate(): Promise<DoctorResult> {
   };
 }
 
+/**
+ * 企业微信 transport 健康检查。缺 env 不算 fail，只是 skip（因为企微是可选 IM）。
+ * 有 env 时试拉一次 access_token 验证凭证。
+ */
+async function runWeCom(): Promise<DoctorResult[]> {
+  const corpId = process.env['WECOM_CORP_ID'];
+  const agentId = process.env['WECOM_AGENT_ID'];
+  const secret = process.env['WECOM_SECRET'];
+  const token = process.env['WECOM_TOKEN'];
+  const aesKey = process.env['WECOM_AES_KEY'];
+  const port = Number(process.env['WECOM_CALLBACK_HTTP_PORT'] ?? '3939');
+  const callbackUrl = process.env['WECOM_CALLBACK_URL'];
+
+  const has = { corpId: !!corpId, agentId: !!agentId, secret: !!secret, token: !!token, aesKey: !!aesKey };
+  const allSet = has.corpId && has.agentId && has.secret && has.token && has.aesKey;
+
+  const results: DoctorResult[] = [];
+
+  if (!allSet) {
+    const missing = Object.entries(has).filter(([, v]) => !v).map(([k]) => k);
+    results.push({
+      name: '企业微信 transport',
+      severity: 'optional',
+      status: 'skip',
+      message: `未 attach（缺 ${missing.join('/')} 中的一项或多项）`,
+      hint: '若要启用企微，看 docs/wecom-bot-setup.md',
+    });
+    return results;
+  }
+
+  // 尝试拉 token 验证凭证
+  try {
+    const url = `https://qyapi.weixin.qq.com/cgi-bin/gettoken?corpid=${encodeURIComponent(corpId!)}&corpsecret=${encodeURIComponent(secret!)}`;
+    const resp = await fetch(url);
+    const data = (await resp.json()) as { errcode?: number; errmsg?: string; access_token?: string };
+    if (data.errcode === 0 && data.access_token) {
+      results.push({
+        name: '企业微信 access_token',
+        severity: 'important',
+        status: 'pass',
+        message: `凭证有效（corpId=${corpId!.slice(0, 6)}…, agentId=${agentId}）`,
+      });
+    } else {
+      results.push({
+        name: '企业微信 access_token',
+        severity: 'important',
+        status: 'fail',
+        message: `errcode=${data.errcode} errmsg=${data.errmsg}`,
+        hint: '检查 WECOM_CORP_ID / WECOM_SECRET；确认应用「可见范围」包含你自己',
+      });
+    }
+  } catch (e) {
+    results.push({
+      name: '企业微信 access_token',
+      severity: 'important',
+      status: 'fail',
+      message: `获取失败: ${(e as Error).message}`,
+      hint: '检查网络 / 凭证；企微 API 白名单？',
+    });
+  }
+
+  // callback URL 可达性（optional）
+  if (callbackUrl) {
+    try {
+      const resp = await fetch(callbackUrl, { method: 'GET' });
+      // 无 signature 时 daemon 应返回 400/401，这算"能访问到"
+      const ok = resp.status === 400 || resp.status === 401 || resp.status === 200;
+      results.push({
+        name: '企业微信 tunnel URL',
+        severity: 'optional',
+        status: ok ? 'pass' : 'warn',
+        message: `${callbackUrl} → HTTP ${resp.status}`,
+      });
+    } catch (e) {
+      results.push({
+        name: '企业微信 tunnel URL',
+        severity: 'optional',
+        status: 'warn',
+        message: `${callbackUrl} 访问失败: ${(e as Error).message}`,
+        hint: 'tunnel（cloudflared/ngrok）是否还在跑？',
+      });
+    }
+  }
+
+  results.push({
+    name: '企业微信 receiver port',
+    severity: 'optional',
+    status: 'pass',
+    message: `准备监听 ${port}（daemon 起来后 event server 会占用）`,
+  });
+
+  return results;
+}
+
 export interface DoctorReport {
   results: DoctorResult[];
   summary: { pass: number; warn: number; fail: number; skip: number };
@@ -418,6 +512,7 @@ export async function runDoctor(opts: { repoRoot?: string } = {}): Promise<Docto
   results.push(await runSubagents());
   results.push(await runPresets());
   results.push(await runData(repoRoot));
+  results.push(...(await runWeCom()));
   const summary = { pass: 0, warn: 0, fail: 0, skip: 0 };
   for (const r of results) summary[r.status]++;
   let overall: DoctorReport['overall'];
