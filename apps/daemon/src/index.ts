@@ -12,9 +12,21 @@ import { startHealthCheck } from 'multiagent-im-lark';
 import { attachWatcherToLark } from 'multiagent-im-lark';
 import { installWsWatchdog } from 'multiagent-im-lark';
 import { attachStageMemoryListener } from 'multiagent-orchestrator';
-import { getHistory, listTabs, refreshDirIndex, send as terminalSend, forceEnter } from 'multiagent-host-mac';
+import {
+  captureScreen,
+  getHistory,
+  listTabs,
+  refreshDirIndex,
+  send as terminalSend,
+  sendKeys,
+  forceEnter,
+} from 'multiagent-host-mac';
 import type { IMMessageEvent } from 'multiagent-framework';
 import {
+  handleCommand,
+  isCommand,
+  isForwardSlash,
+  stripForwardSlash,
   loadChat,
   saveChat,
   pendingTracker,
@@ -335,6 +347,18 @@ async function dispatchWeComMessage(
   const text = ev.text.trim();
   if (!text) return;
 
+  // `//foo` 显式转发到 activeTty（去一个 /）—— 跟飞书对齐
+  if (isForwardSlash(text)) {
+    const forwardText = stripForwardSlash(text);
+    return dispatchWeComPlainToTab(wecom, ev, forwardText);
+  }
+
+  // slash 命令：先尝试内置 /screen /keys（这两个要 host-mac 直接调），
+  // 再走通用 handleCommand（复用 mchat 命令库，只支持 text-kind ReplyAction）
+  if (isCommand(text)) {
+    return dispatchWeComSlash(wecom, ev, text);
+  }
+
   const chatState = await loadChat(ev.chatId);
   const tabs = await listTabs();
 
@@ -442,6 +466,151 @@ async function dispatchWeComMessage(
     ev.chatId,
     `✓ 已注入到 ${tab.tty.replace(/^\/dev\//, '')}${tab.cwd ? ` (${tab.cwd})` : ''}\n命令：${cmd.slice(0, 100)}\n（跑完会自动收到摘要；后续 5 分钟内裸文本无需 @target）`,
   );
+}
+
+/**
+ * 拿"当前对话的目标 tty"：优先 5min sticky（recentReplyTty），退回 activeTty。
+ */
+function getStickyTty(chatState: {
+  recentReplyTty?: string;
+  recentReplyAt?: number;
+  activeTty?: string;
+}): string | undefined {
+  const now = Date.now();
+  const stickyOk =
+    chatState.recentReplyTty &&
+    chatState.recentReplyAt !== undefined &&
+    now - chatState.recentReplyAt < RECENT_REPLY_TTL_MS;
+  return stickyOk ? chatState.recentReplyTty : chatState.activeTty;
+}
+
+/**
+ * `//foo` 显式转发：把 text 当普通文本发到 activeTty，不解析 @target。
+ */
+async function dispatchWeComPlainToTab(
+  wecom: WeComTransport,
+  ev: IMMessageEvent,
+  text: string,
+): Promise<void> {
+  const chatState = await loadChat(ev.chatId);
+  const tty = getStickyTty(chatState);
+  if (!tty) {
+    await wecom.sendText(ev.chatId, '❓ 无 activeTty，先 `@ttysXXX 命令` 首次派发建 sticky');
+    return;
+  }
+  const tabs = await listTabs();
+  const tab = tabs.find((t) => t.tty === tty);
+  if (!tab) {
+    await wecom.sendText(ev.chatId, `❌ tab ${tty} 已关`);
+    return;
+  }
+  const result = await terminalSend(tab.tty, text);
+  if (!result.ok) {
+    await wecom.sendText(ev.chatId, `❌ send 失败：${result.reason ?? ''}`);
+    return;
+  }
+  if (tab.hasTUI) {
+    await new Promise((r) => setTimeout(r, 400));
+    await forceEnter(tab.tty);
+  }
+  const now = Date.now();
+  chatState.recentReplyTty = tab.tty;
+  chatState.recentReplyAt = now;
+  chatState.lastActiveAt = now;
+  await saveChat(chatState);
+  await wecom.sendText(
+    ev.chatId,
+    `✓ 已转发到 ${tab.tty.replace(/^\/dev\//, '')}`,
+  );
+}
+
+/**
+ * 企微收到 `/foo` 时的分发：
+ *   - `/screen` `/scr` → 抓 sticky tab 的窗口截图 + sendImage
+ *   - `/keys` `/k <seq>` → 按键序列发到 sticky tab + 300ms 后自动 send 一张截图
+ *   - 其他 → 复用 handleCommand（仅支持 text-kind ReplyAction；card/execute 报错）
+ */
+async function dispatchWeComSlash(
+  wecom: WeComTransport,
+  ev: IMMessageEvent,
+  text: string,
+): Promise<void> {
+  const chat_id = ev.chatId;
+  const cmdName = text.trim().slice(1).split(/\s+/)[0]?.toLowerCase() ?? '';
+
+  if (cmdName === 'screen' || cmdName === 'scr') {
+    const chatState = await loadChat(chat_id);
+    const tty = getStickyTty(chatState);
+    if (!tty) {
+      await wecom.sendText(chat_id, '❌ 无 activeTty，先 `@ttysXXX xxx` 首次派发');
+      return;
+    }
+    try {
+      const path = await captureScreen(tty);
+      await wecom.sendImage(chat_id, path);
+      await wecom.sendText(chat_id, `📸 抓屏 ${tty.replace(/^\/dev\//, '')} 已推`);
+    } catch (e) {
+      await wecom.sendText(chat_id, `❌ 抓屏失败：${(e as Error).message}`);
+    }
+    return;
+  }
+
+  if (cmdName === 'keys' || cmdName === 'k') {
+    const rest = text.trim().slice(cmdName.length + 1).trim();
+    if (!rest) {
+      await wecom.sendText(
+        chat_id,
+        '用法：/keys <按键序列>\n例：/keys 2d . ⏎    #下下 空 回\n     /keys ctrl+c\n键位：d/u/l/r=↓↑←→ .=空格 ⏎=回车 t=tab x=esc',
+      );
+      return;
+    }
+    const chatState = await loadChat(chat_id);
+    const tty = getStickyTty(chatState);
+    if (!tty) {
+      await wecom.sendText(chat_id, '❌ 无 activeTty，先 `@ttysXXX xxx` 首次派发');
+      return;
+    }
+    try {
+      await sendKeys(tty, rest);
+      setTimeout(async () => {
+        try {
+          const path = await captureScreen(tty);
+          await wecom.sendImage(chat_id, path);
+        } catch {
+          /* silent */
+        }
+      }, 300);
+      await wecom.sendText(
+        chat_id,
+        `✓ 已发按键到 ${tty.replace(/^\/dev\//, '')}：\`${rest}\`（300ms 后回图确认）`,
+      );
+    } catch (e) {
+      await wecom.sendText(chat_id, `❌ /keys 失败：${(e as Error).message}`);
+    }
+    return;
+  }
+
+  // 通用：走 handleCommand 复用 mchat 命令库
+  try {
+    const action = await handleCommand(chat_id, text);
+    if (action.kind === 'text') {
+      await wecom.sendText(chat_id, action.text);
+    } else if (action.kind === 'card') {
+      await wecom.sendText(
+        chat_id,
+        `此命令 (/${cmdName}) 返回卡片，企微暂不支持渲染。可在飞书里执行，或用 /help /watch /quiet /use /where /recall /approvals 等纯文本命令。`,
+      );
+    } else if (action.kind === 'execute') {
+      // 展开的 prompt 当作普通派发
+      await dispatchWeComMessage(wecom, { ...ev, text: action.text });
+    } else if (action.kind === 'forward-slash-to-tab') {
+      await dispatchWeComPlainToTab(wecom, ev, action.text);
+    } else {
+      await wecom.sendText(chat_id, `命令 /${cmdName} 类型 ${action.kind} 企微暂不支持`);
+    }
+  } catch (e) {
+    await wecom.sendText(chat_id, `命令执行异常：${(e as Error).message}`);
+  }
 }
 
 /**
