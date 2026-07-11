@@ -123,7 +123,8 @@ export function stripForwardSlash(text: string): string {
  * 同名命令，白名单里那条要移除或改约定。
  */
 const CLAUDE_CODE_NATIVE_SLASH = new Set([
-  'help',                // Claude Code 有 /help，mchat 也有 —— **冲突时优先 mchat**（因为它已 alias 到 mchat help）
+  // 注意：`/help` 不在白名单 —— mchat 自己有 /help 优先响应，
+  // 想看 Claude Code 的 help 用 `//help` 强制转发到 tab
   'config', 'model', 'clear', 'agents', 'skills', 'permissions',
   'cost', 'doctor', 'compact', 'export', 'memory', 'resume',
   'review', 'vim', 'ide', 'mcp', 'add-dir', 'allowed-tools',
@@ -202,6 +203,8 @@ function fmtAgoSec(ts: number): string {
 }
 
 const HELP_TEXT = [
+  '**这是 multiAgentChat 的 /help**，跟 Claude Code 内建 `/help` 不一样。想看 Claude Code 内建 → 发 `//help`（前面加多一个 /）',
+  '',
   '可用命令（短 alias 加粗）：',
   '  **/d**  /dashboard            概览：active tab + pending 任务 + 最近完成',
   '  **/s**  /shells               列所有 Terminal tab（可点切换）',
