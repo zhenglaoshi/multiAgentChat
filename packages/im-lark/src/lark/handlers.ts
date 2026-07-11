@@ -63,7 +63,7 @@ interface ChainInfo {
   chainId: string;
   chainStepIndex: number;
 }
-import { handleCommand, isCommand, type ReplyAction, type SopActionData } from './commands.js';
+import { handleCommand, isCommand, isForwardSlash, stripForwardSlash, type ReplyAction, type SopActionData } from './commands.js';
 import { replyText, sendText } from './reply.js';
 import { createTask, generateTaskId, listTasks, markTaskAborted, setTaskProgressMessageId } from 'multiagent-orchestrator';
 import { buildSopWrapperPrompt } from 'multiagent-orchestrator';
@@ -243,6 +243,14 @@ async function executeReply(
     await dispatchGenSubagent(client, ctx, action.desc);
   } else if (action.kind === 'tweak-subagent') {
     await dispatchTweakSubagent(client, ctx, action.name, action.feedback, action.currentDef);
+  } else if (action.kind === 'forward-slash-to-tab') {
+    // Claude Code 内建 slash 命令（/help /config /model 等），mchat 不认，转发到 activeTty
+    logger.info('slash forwarded (native)', {
+      chatId: ctx.chatId,
+      preview: action.text.slice(0, 40),
+      reason: action.reason,
+    });
+    await sendToActiveTab(client, ctx, action.text);
   }
 }
 
@@ -1788,6 +1796,20 @@ export function buildEventDispatcher(client: Lark.Client): Lark.EventDispatcher 
             return;
           }
         }
+      }
+
+      // `//foo` 显式转发到 activeTty —— 剥掉一个 `/`，当普通文本发给 tab
+      if (isForwardSlash(text)) {
+        const forwardText = stripForwardSlash(text);
+        logger.info('slash forwarded to activeTty', {
+          chat_id,
+          preview: forwardText.slice(0, 40),
+        });
+        sendToActiveTab(client, ctx, forwardText).catch((e) => {
+          logger.error('sendToActiveTab (forward-slash) failed', e);
+          void sendText(client, chat_id, `❌ // 转发失败：${(e as Error).message}`);
+        });
+        return;
       }
 
       if (isCommand(text)) {

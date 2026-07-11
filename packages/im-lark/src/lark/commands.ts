@@ -64,6 +64,13 @@ export type ReplyAction =
       sop?: SopActionData;       // SOP 模式：framework 会建 task + 包 SOP wrapper 再发到 tab
     }
   | {
+      /** 未匹配 mchat 命令但是 Claude Code 内建 slash（/help / /config etc.）
+       *  → 上层把原文本当普通消息发到 activeTty，让 claude session 自己处理。 */
+      kind: 'forward-slash-to-tab';
+      text: string;
+      reason: 'claude-native';
+    }
+  | {
       kind: 'gen-subagent';
       desc: string;              // 用户描述的域
     }
@@ -91,7 +98,43 @@ export interface SopActionData {
 }
 
 export function isCommand(text: string): boolean {
+  // `//foo` 是"显式转发到 activeTty"语法，不算 daemon 命令
+  if (text.startsWith('//')) return false;
   return text.startsWith('/');
+}
+
+/**
+ * 用户显式转发语法：`//foo` → 剥掉一层 `/` 当普通文本发到 activeTty。
+ * 用于避免和 mchat 内建 slash 命令冲突（如 claude 内置 /help、用户 skill 命令等）。
+ */
+export function isForwardSlash(text: string): boolean {
+  return text.startsWith('//');
+}
+export function stripForwardSlash(text: string): string {
+  return text.startsWith('//') ? text.slice(1) : text;
+}
+
+/**
+ * Claude Code 内置常见 slash 命令白名单 —— 收到这些时不算 mchat 未知命令，静默
+ * 转发到 activeTty 让 claude session 自己处理。列表参考官方文档，可能不全，随
+ * Claude Code 更新可扩展。
+ *
+ * 注意：这些命令名跟 mchat 内建**不冲突**（我们已避开）。如果哪天 mchat 加了
+ * 同名命令，白名单里那条要移除或改约定。
+ */
+const CLAUDE_CODE_NATIVE_SLASH = new Set([
+  'help',                // Claude Code 有 /help，mchat 也有 —— **冲突时优先 mchat**（因为它已 alias 到 mchat help）
+  'config', 'model', 'clear', 'agents', 'skills', 'permissions',
+  'cost', 'doctor', 'compact', 'export', 'memory', 'resume',
+  'review', 'vim', 'ide', 'mcp', 'add-dir', 'allowed-tools',
+  'init', 'todo', 'status', 'logout', 'login', 'bug', 'release-notes',
+  'security-review', 'pr-comments',
+  // 也顺手过一些常见 skill 命令名（用户装 skill 后 skill 有自己的 slash 触发）
+  'loop', 'schedule', 'goal', 'ultrathink',
+]);
+
+export function isClaudeNativeSlash(name: string): boolean {
+  return CLAUDE_CODE_NATIVE_SLASH.has(name.toLowerCase());
 }
 
 const ALIAS: Record<string, string> = {
@@ -199,6 +242,10 @@ const HELP_TEXT = [
   '  **/quiet on/off**              静默模式：长任务只发首次+完成，中间不刷进度卡',
   '                                 （关闭状态下走自适应节流：3.5s→15s→30s→60s 随任务时长）',
   '  /help                         本帮助',
+  '',
+  '**转发到 tab（Claude Code / skill 命令）**',
+  '  `/help` `/config` `/model` `/agents` `/skills` 等 Claude Code 内建 → 自动转发到 active tab',
+  '  `//foo` → 强制转发（前面加多一个 /），任何未识别 slash 命令都能这样发到 tab',
   '',
   '**普通文本** → 默认发到 active tab',
   '**@target text** → 发到指定 tab（不切 active）',
@@ -1561,8 +1608,19 @@ export async function handleCommand(
     };
   }
 
+  // ---- 未匹配 mchat 命令 ----
+  // 若是 Claude Code 常见内建 slash（/help /config /model ...）→ 转发到 activeTty
+  // 让 tab 里的 claude 自己响应
+  if (isClaudeNativeSlash(name)) {
+    return {
+      kind: 'forward-slash-to-tab',
+      text: text,  // 保留原 `/foo bar` 完整文本
+      reason: 'claude-native',
+    };
+  }
+  // 其他 → 报错 + 提示 // 转发语法
   return {
     kind: 'text',
-    text: `未知命令：/${name}\n发送 /help 看可用命令。`,
+    text: `未知命令：/${name}\n\n如果这是 tab 里 claude 的 skill / 插件命令，用 \`//${name}\` 强制转发到 active tab（前面加一个 /）。\n查 mchat 命令：/help`,
   };
 }
