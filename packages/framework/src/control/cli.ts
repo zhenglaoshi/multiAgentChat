@@ -729,7 +729,7 @@ async function resolveWeComChatId(flags: Flags): Promise<string> {
 
 async function cmdWeCom(flags: Flags): Promise<void> {
   const sub = flags.positional[0];
-  if (!sub) die('agent wecom <send-text|send-file|send-image|which-chat>');
+  if (!sub) die('agent wecom <send-text|send-file|send-image|ask|which-chat>');
   const rest = flags.positional.slice(1);
 
   if (sub === 'which-chat') {
@@ -790,6 +790,67 @@ async function cmdWeCom(flags: Flags): Promise<void> {
     });
     stdout.write(`✓ 图片已发到 ${chatId}（msgid=${data.messageId || '-'}）\n`);
     return;
+  }
+
+  if (sub === 'ask') {
+    // agent wecom ask <single|multi|input> --title '...' [--options '...'] [--timeout ms]
+    // 语义跟 agent lark ask 一致；企微侧走 button_interaction 卡（multi 目前降级 unsupported）
+    const type = (rest[0] ?? '').toLowerCase();
+    if (type !== 'single' && type !== 'multi' && type !== 'input') {
+      die("agent wecom ask <single|multi|input> --title '...' [--options 'a,b,c']");
+    }
+    if (!flags.title) die('agent wecom ask 需要 --title');
+    let options: string[] = [];
+    if (type !== 'input') {
+      if (flags.optionsJson) {
+        try {
+          const parsed = JSON.parse(flags.optionsJson);
+          if (Array.isArray(parsed) && parsed.every((x) => typeof x === 'string')) {
+            options = parsed;
+          } else {
+            die('--options-json 必须是字符串数组');
+          }
+        } catch (e) {
+          die(`--options-json 解析失败: ${(e as Error).message}`);
+        }
+      } else if (flags.options) {
+        options = flags.options.split(',').map((s) => s.trim()).filter((s) => s.length > 0);
+      }
+      if (options.length === 0) die(`${type} 类型需要 --options 或 --options-json`);
+    }
+    const chatId = await resolveWeComChatId(flags);
+    stderr.write(
+      `⏳ 等待企微答复… (chat=${chatId}, type=${type}${options.length ? `, options=${options.length}` : ''})\n`,
+    );
+    const data = await sendOnce<import('./protocol.js').WeComAskData>({
+      op: 'wecom.ask',
+      chatId,
+      type: type as 'single' | 'multi' | 'input',
+      title: flags.title,
+      ...(options.length > 0 ? { options } : {}),
+      ...(flags.timeoutMs ? { timeoutMs: flags.timeoutMs } : {}),
+    });
+    const req = data.request;
+    if (req.status === 'answered' && req.answer) {
+      const payload: Record<string, unknown> = { status: 'answered', type };
+      if (req.answer.kind === 'single') {
+        payload['index'] = req.answer.index;
+        payload['value'] = req.answer.value;
+      } else if (req.answer.kind === 'multi') {
+        payload['indices'] = req.answer.indices;
+        payload['values'] = req.answer.values;
+      } else if (req.answer.kind === 'input') {
+        payload['text'] = req.answer.text;
+      }
+      stdout.write(JSON.stringify(payload) + '\n');
+      exit(0);
+    } else if (req.status === 'cancelled') {
+      stdout.write(JSON.stringify({ status: 'cancelled' }) + '\n');
+      exit(1);
+    } else {
+      stdout.write(JSON.stringify({ status: 'timeout' }) + '\n');
+      exit(2);
+    }
   }
 
   die(`未知 wecom 子命令：${sub}`);

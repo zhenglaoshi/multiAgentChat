@@ -681,6 +681,43 @@ async function handleLarkAsk(
   sock.end();
 }
 
+async function handleWeComAsk(
+  sock: Socket,
+  req: Extract<Request, { op: 'wecom.ask' }>,
+) {
+  try {
+    if (!wecomTransport) {
+      sendErr(sock, '企微 transport 未 attach —— 检查 .env 里的 WECOM_* 5 项');
+      sock.end();
+      return;
+    }
+    let chatId = req.chatId;
+    if (!chatId) {
+      const def = process.env['WECOM_DEFAULT_TO_USER'];
+      if (!def) {
+        sendErr(sock, '无法反查企微 chat（缺 WECOM_DEFAULT_TO_USER 或 --chat）');
+        sock.end();
+        return;
+      }
+      chatId = `wecom:user:${def}`;
+    }
+    const createInput: Parameters<typeof asks.create>[0] = {
+      chatId,
+      type: req.type,
+      title: req.title,
+      options: req.options ?? [],
+    };
+    if (typeof req.timeoutMs === 'number') createInput.timeoutMs = req.timeoutMs;
+    const { result } = await asks.create(createInput);
+    const final = await result;
+    // 复用 LarkAskData 结构（只是 typed differently in protocol）
+    sendOk<import('./protocol.js').WeComAskData>(sock, { request: final });
+  } catch (e) {
+    sendErr(sock, (e as Error).message);
+  }
+  sock.end();
+}
+
 // ---- Task ops (SOP) ----
 
 const DEFAULT_GATE_TIMEOUT_MS = 30 * 60 * 1000;
@@ -1327,6 +1364,8 @@ async function dispatch(sock: Socket, req: Request): Promise<void> {
       return handleWeComSendImage(sock, req);
     case 'wecom.resolve-chat':
       return handleWeComResolveChat(sock, req);
+    case 'wecom.ask':
+      return handleWeComAsk(sock, req);
     case 'task.create':
       return handleTaskCreate(sock, req);
     case 'task.get':

@@ -196,6 +196,15 @@ export interface WeComResolveChatOp {
   tty?: string;
 }
 
+export interface WeComAskOp {
+  op: 'wecom.ask';
+  chatId?: string;
+  type: AskType;
+  title: string;
+  options?: string[];
+  timeoutMs?: number;
+}
+
 export interface WeComSendData {
   messageId: string;
   details?: Record<string, unknown>;
@@ -204,6 +213,10 @@ export interface WeComSendData {
 export interface WeComResolveChatData {
   chatId: string | null;
   source: 'default-user' | 'none';
+}
+
+export interface WeComAskData {
+  request: AskRequest;
 }
 
 // ---- Ask op（弹飞书交互卡片，阻塞式拿答案） ----
@@ -357,6 +370,7 @@ export type Request =
   | WeComSendFileOp
   | WeComSendImageOp
   | WeComResolveChatOp
+  | WeComAskOp
   | TaskCreateOp
   | TaskGetOp
   | TaskListOp

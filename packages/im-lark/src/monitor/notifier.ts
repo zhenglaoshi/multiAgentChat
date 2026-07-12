@@ -545,8 +545,11 @@ export function attachWatcherToLark(larkClient: Lark.Client): void {
   });
 
   // ---- Ask 生命周期：created → 发交互卡片；resolved → patch（兜底 timeout 场景） ----
+  // 只处理 chatId 前缀是 lark: 或**无前缀（历史兼容）**的 —— wecom: 前缀由 daemon
+  // 侧独立监听 asks.events 处理（wecom transport render 不同）。
   asks.events.on('created', async (req: AskRequest) => {
     if (!client) return;
+    if (req.chatId.startsWith('wecom:')) return;
     try {
       const messageId = await sendCardReturnId(client, req.chatId, askCard(req));
       asks.setCardMessageId(req.id, messageId);
@@ -562,7 +565,8 @@ export function attachWatcherToLark(larkClient: Lark.Client): void {
 
   asks.events.on('resolved', async (req: AskRequest) => {
     if (!client) return;
-    if (!req.cardMessageId) return;   // 已在 handleCardAction 里 patch 过或超时前根本没发出去
+    if (req.chatId.startsWith('wecom:')) return;
+    if (!req.cardMessageId) return;
     try {
       await patchCard(client, req.cardMessageId, askCard(req));
     } catch (e) {

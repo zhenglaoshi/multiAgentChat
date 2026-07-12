@@ -6,7 +6,9 @@ import { delimiter, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startControlServer } from 'multiagent-framework';
 import { startLarkBot } from 'multiagent-im-lark';
-import { loadWeComConfig, WeComTransport } from 'multiagent-im-wecom';
+import { loadWeComConfig, WeComTransport, renderWeComCard } from 'multiagent-im-wecom';
+import { asks, type AskRequest } from 'multiagent-orchestrator';
+import type { CardSpec } from 'multiagent-framework';
 import { logger } from 'multiagent-orchestrator';
 import { startHealthCheck } from 'multiagent-im-lark';
 import { attachWatcherToLark } from 'multiagent-im-lark';
@@ -347,6 +349,20 @@ async function dispatchWeComMessage(
   const text = ev.text.trim();
   if (!text) return;
 
+  // 优先：input-type ask 等答案 → 消费此消息为答案（跟飞书对齐语义）
+  const pendingAskId = asks.getAwaitingInputAskId(ev.chatId);
+  if (pendingAskId) {
+    const askReq = asks.get(pendingAskId);
+    if (askReq) {
+      if (text === '/cancel') {
+        await asks.cancel(pendingAskId, `wecom:${ev.senderId}`);
+      } else {
+        await asks.answer(pendingAskId, { kind: 'input', text }, `wecom:${ev.senderId}`);
+      }
+      return;
+    }
+  }
+
   // `//foo` 显式转发到 activeTty（去一个 /）—— 跟飞书对齐
   if (isForwardSlash(text)) {
     const forwardText = stripForwardSlash(text);
@@ -652,6 +668,136 @@ function attachWeComFinalListener(wecom: WeComTransport): void {
   );
 }
 
+/**
+ * AskRequest → wecom CardSpec，然后走 renderWeComCard。
+ * ask card 只有 single / input 类型能真正走交互；multi 走降级卡（renderMultiUnsupportedCard）。
+ */
+function askToCardSpec(req: AskRequest): CardSpec {
+  if (req.type === 'input') {
+    return {
+      kind: 'ask',
+      title: req.title,
+      template: 'blue',
+      options: [],  // 空 → renderer 走 renderAskInputCard
+      inputHint: '（回复本消息发送答案；发 /cancel 取消）',
+    };
+  }
+  if (req.type === 'multi') {
+    // 交给 renderer 显示 unsupported（selectedIndices 存在 → renderer 认为是 multi）
+    return {
+      kind: 'ask',
+      title: req.title,
+      template: 'yellow',
+      options: req.options,
+      selectedIndices: req.selection,
+    };
+  }
+  // single —— 每个 option 一个按钮 + 取消按钮
+  const actions: Array<{ label: string; type: 'primary' | 'default' | 'danger'; value: Record<string, unknown> }> = req.options.map((opt, i) => ({
+    label: `${i + 1}. ${opt}`,
+    type: 'primary',
+    value: { action: 'ask.pick', askId: req.id, index: i },
+  }));
+  actions.push({
+    label: '⊘ 取消',
+    type: 'default',
+    value: { action: 'ask.cancel', askId: req.id },
+  });
+  return {
+    kind: 'ask',
+    title: req.title,
+    template: 'yellow',
+    body: '点一个选项即可提交',
+    actions,
+  };
+}
+
+/**
+ * 企微侧 ask 生命周期。跟 lark notifier 里的 asks.events 监听器平行运行。
+ * created → 发企微交互卡；resolved → 发一条 "已回答/已取消/已超时" 文本（企微
+ * body update 有限，不 patch 卡）
+ */
+function attachWeComAskListener(wecom: WeComTransport): void {
+  asks.events.on('created', async (req: AskRequest) => {
+    if (!req.chatId.startsWith('wecom:')) return;
+    try {
+      const spec = askToCardSpec(req);
+      const card = renderWeComCard(spec);
+      const r = await wecom.sendCard(req.chatId, spec);
+      asks.setCardMessageId(req.id, r.messageId);
+      logger.info('wecom ask card sent', { id: req.id, type: req.type });
+      void card; // 已经通过 sendCard 里的 render 送出，此处无需再用
+    } catch (e) {
+      logger.warn('wecom ask card send failed', {
+        id: req.id,
+        err: (e as Error).message,
+      });
+    }
+  });
+
+  asks.events.on('resolved', async (req: AskRequest) => {
+    if (!req.chatId.startsWith('wecom:')) return;
+    try {
+      let msg = '';
+      if (req.status === 'answered' && req.answer) {
+        if (req.answer.kind === 'single') {
+          msg = `✅ 已选：${req.answer.index + 1}. ${req.answer.value}`;
+        } else if (req.answer.kind === 'input') {
+          msg = `✅ 已回复：${req.answer.text.slice(0, 200)}`;
+        } else if (req.answer.kind === 'multi') {
+          msg = `✅ 已选（${req.answer.indices.length}项）：${req.answer.values.join(' / ')}`;
+        }
+      } else if (req.status === 'cancelled') {
+        msg = `⊘ 已取消：${req.title}`;
+      } else if (req.status === 'timeout') {
+        msg = `⌛ 已超时：${req.title}`;
+      }
+      if (msg) await wecom.sendText(req.chatId, msg);
+    } catch (e) {
+      logger.warn('wecom ask resolved push failed', {
+        id: req.id,
+        err: (e as Error).message,
+      });
+    }
+  });
+}
+
+/**
+ * 企微卡片按钮点击 → 路由到对应 handler。目前支持：
+ *   - ask.pick （single 选一个）
+ *   - ask.cancel（取消 ask）
+ */
+function attachWeComCardActionRouter(wecom: WeComTransport): void {
+  wecom.events.on('cardAction', async (ev) => {
+    const action = ev.action;
+    const value = ev.value;
+    if (action === 'ask.pick') {
+      const askId = value['askId'] as string | undefined;
+      const index = value['index'] as number | undefined;
+      if (!askId || typeof index !== 'number') return;
+      const req = asks.get(askId);
+      if (!req) {
+        void wecom.sendText(ev.chatId, `⚠️ ask ${askId} 已完成或不存在`);
+        return;
+      }
+      const picked = req.options[index] ?? '';
+      await asks.answer(
+        askId,
+        { kind: 'single', index, value: picked },
+        `wecom:${ev.operatorId}`,
+      );
+      return;
+    }
+    if (action === 'ask.cancel') {
+      const askId = value['askId'] as string | undefined;
+      if (!askId) return;
+      await asks.cancel(askId, `wecom:${ev.operatorId}`);
+      return;
+    }
+    logger.info('wecom cardAction unhandled', { action, value });
+  });
+}
+
 async function main() {
   // ---- Preflight（都是幂等 / 快速，早失败 hint 给用户） ----
   assertNodeVersion();
@@ -696,6 +842,10 @@ async function main() {
       });
       // watcher 检测 tab 完成时用 wecom transport 发摘要（简化模式：initial ack + final only）
       attachWeComFinalListener(wecom);
+      // ask 生命周期：created → 发企微交互卡；resolved → 文本通知（结果 by via lark ask CLI）
+      attachWeComAskListener(wecom);
+      // 按钮点击 → 路由到 AskManager（ask.pick / ask.cancel）
+      attachWeComCardActionRouter(wecom);
       logger.info('wecom transport attached', {
         corpId: wecomCfg.corpId,
         agentId: wecomCfg.agentId,

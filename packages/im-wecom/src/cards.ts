@@ -4,19 +4,17 @@ import type { CardSpec, CardTemplate } from 'multiagent-framework';
  * CardSpec → 企业微信 template_card 消息 payload。
  *
  * 企微的 template_card 类型（type 字段）：
- *   - text_notice —— 简单文本 + 按钮，最像我们的 progressCard / approvalCard / ackCard
- *   - news_notice —— 图文卡片，含大图
- *   - button_interaction —— 按钮交互（点击回调）
- *   - vote_interaction —— 单选投票，最像我们的 ask single
- *   - multiple_interaction —— 下拉多选，最像我们的 ask multi（但企微客户端渲染受限）
+ *   - text_notice —— 显示型（button_list 可选，但 button 点击只能跳 URL，不能触发 event）
+ *   - button_interaction —— **交互按钮**卡片，button_list 里的按钮 click 会通过
+ *       template_card_event 事件把 EventKey 推回 daemon。是我们所有交互卡的基座。
+ *   - news_notice —— 图文卡片
+ *   - vote_interaction / multiple_interaction —— 内建单选/多选，但 XML 事件格式
+ *     跟 button_interaction 不同（SelectedItems 结构），需要额外 parse。**当前实现
+ *     不用这两个**，改用 button_interaction + 按钮阵列来对齐飞书的按钮式 ask 卡。
  *
  * 参考：https://developer.work.weixin.qq.com/document/path/90236
  */
 
-/**
- * 企微 template_card 主色板（jump_list.button_style / horizontal_content_list 里各字段
- * 有 style enum 但主色需靠文案 emoji 表达）。我们用 title emoji 前缀区分紧急度。
- */
 function iconForTemplate(t: CardTemplate | undefined, kind: string): string {
   if (kind === 'approval') return t === 'green' ? '✅' : t === 'red' ? '❌' : '🚨';
   if (kind === 'progress') return t === 'green' ? '✓' : t === 'red' ? '✗' : '⏳';
@@ -25,154 +23,134 @@ function iconForTemplate(t: CardTemplate | undefined, kind: string): string {
   return '📌';
 }
 
+function truncate(s: string, n: number): string {
+  return s.length <= n ? s : s.slice(0, n - 1) + '…';
+}
+
 /**
- * text_notice 通用渲染：适合 progress / approval / ack。
- * button 数量 <=6（企微限制）。
+ * text_notice 卡 —— 纯展示。actions 里若有 URL 跳转会走 card_action.url；
+ * 但按钮点击 event 不会推。仅适合 ack / receipt / progress-final 之类的展示卡。
  */
 export function renderTextNoticeCard(spec: CardSpec): Record<string, unknown> {
   const icon = iconForTemplate(spec.template, spec.kind);
-  const header = `${icon} ${spec.title}`;
+  const header = truncate(`${icon} ${spec.title}`, 26);
 
   const bodyLines: string[] = [];
-  if (spec.body) {
-    // 企微 markdown 支持子集：粗体/斜体/删除线/link，不支持 code fence 语言
-    bodyLines.push(spec.body);
-  }
-  if (spec.outputTail) {
-    bodyLines.push('```\n' + spec.outputTail + '\n```');
-  }
+  if (spec.body) bodyLines.push(spec.body);
+  if (spec.outputTail) bodyLines.push('```\n' + spec.outputTail + '\n```');
   if (spec.metaLines && spec.metaLines.length > 0) {
-    bodyLines.push(spec.metaLines.map((l) => `<span style="color:#888">${l}</span>`).join('\n'));
+    bodyLines.push(spec.metaLines.join(' · '));
   }
   const description = bodyLines.join('\n\n');
 
-  const buttons = (spec.actions ?? []).slice(0, 6).map((a) => ({
-    text: a.label.slice(0, 12),   // 企微按钮 label 12 字符上限
-    style: a.type === 'primary' ? 1 : a.type === 'danger' ? 4 : 2,
-    key: encodeButtonKey(a.value),
-  }));
-
   const card: Record<string, unknown> = {
     card_type: 'text_notice',
-    main_title: {
-      title: header,
-      desc: '',
-    },
+    main_title: { title: header, desc: '' },
     sub_title_text: '',
     horizontal_content_list: [],
   };
   if (description) {
-    (card['emphasis_content'] as unknown) = { title: description.slice(0, 300) };
-  }
-  if (buttons.length > 0) {
-    card['button_selection'] = undefined;
-    card['card_action'] = {
-      type: 1,
-      url: '',
-    };
-    card['jump_list'] = [];
-    card['button_list'] = buttons;
+    card['emphasis_content'] = { title: truncate(description, 300) };
   }
   return card;
 }
 
 /**
- * ask single —— 用 vote_interaction 卡（企微原生的"单选投票"）。用户点选后企微
- * 回调事件 EventKey 里带 selection key，daemon 解析后 resolve ask。
+ * button_interaction 卡 —— 每个 action 一个可点击按钮。点击后企微推
+ * template_card_event，daemon 通过 EventKey (base64 编码的 value JSON)
+ * 反解出 { action, ... } 后走对应 handler。
+ *
+ * 用于：ask single 单选、approval 卡的两个按钮、progress 卡的静默/取消按钮。
  */
-export function renderVoteCard(spec: CardSpec): Record<string, unknown> {
-  const options = spec.options ?? [];
-  const icon = iconForTemplate(spec.template, 'ask');
-  return {
-    card_type: 'vote_interaction',
-    source: { desc: 'multiAgentChat', desc_color: 0 },
-    main_title: {
-      title: `${icon} ${spec.title}`.slice(0, 26),
-      desc: spec.body?.slice(0, 60) ?? '',
-    },
-    checkbox: {
-      question_key: encodeButtonKey({ askKind: 'single' }),
-      option_list: options.slice(0, 20).map((opt, i) => ({
-        id: `opt-${i}`,
-        text: opt.slice(0, 20),
-        is_checked: false,
-      })),
-      mode: 0,   // 0=单选
-    },
-    submit_button: {
-      text: '提交',
-      key: encodeButtonKey({ askKind: 'single-submit' }),
-    },
-  };
-}
+export function renderButtonInteractionCard(spec: CardSpec): Record<string, unknown> {
+  const icon = iconForTemplate(spec.template, spec.kind);
+  const header = truncate(`${icon} ${spec.title}`, 26);
 
-export function renderMultiSelectCard(spec: CardSpec): Record<string, unknown> {
-  const options = spec.options ?? [];
-  const selected = new Set(spec.selectedIndices ?? []);
-  const icon = iconForTemplate(spec.template, 'ask');
+  const bodyLines: string[] = [];
+  if (spec.body) bodyLines.push(spec.body);
+  if (spec.outputTail) bodyLines.push('```\n' + spec.outputTail + '\n```');
+  if (spec.metaLines && spec.metaLines.length > 0) {
+    bodyLines.push(spec.metaLines.join(' · '));
+  }
+  const description = bodyLines.join('\n\n');
+
+  // 企微 button 数量上限 6，label 12 字。多余的截断/丢弃并加提示。
+  const actions = spec.actions ?? [];
+  const buttonList = actions.slice(0, 6).map((a) => ({
+    text: truncate(a.label, 12),
+    style: a.type === 'primary' ? 1 : a.type === 'danger' ? 4 : 2,
+    key: encodeButtonKey(a.value),
+  }));
+  if (actions.length > 6) {
+    bodyLines.push(`_（另有 ${actions.length - 6} 个选项被截断；企微 button 上限 6）_`);
+  }
+
   return {
-    card_type: 'multiple_interaction',
-    source: { desc: 'multiAgentChat', desc_color: 0 },
-    main_title: {
-      title: `${icon} ${spec.title}`.slice(0, 26),
-      desc: spec.body?.slice(0, 60) ?? '',
-    },
-    select_list: options.slice(0, 30).map((opt, i) => ({
-      question_key: `q-${i}`,
-      title: opt.slice(0, 20),
-      selected_id: selected.has(i) ? 'yes' : 'no',
-      option_list: [
-        { id: 'yes', text: '选' },
-        { id: 'no', text: '不选' },
-      ],
-    })),
-    submit_button: {
-      text: '提交',
-      key: encodeButtonKey({ askKind: 'multi-submit' }),
-    },
+    card_type: 'button_interaction',
+    main_title: { title: header, desc: '' },
+    sub_title_text: '',
+    horizontal_content_list: [],
+    ...(description ? { emphasis_content: { title: truncate(description, 300) } } : {}),
+    button_list: buttonList,
   };
 }
 
 /**
- * ask input —— text_notice + 提示语，用户直接在 chat 里回文本，daemon 侧监听。
+ * ask input —— text_notice 提示语，用户直接在 chat 里回文本。
  */
 export function renderAskInputCard(spec: CardSpec): Record<string, unknown> {
   const icon = iconForTemplate(spec.template, 'ask');
   return {
     card_type: 'text_notice',
     main_title: {
-      title: `${icon} ${spec.title}`.slice(0, 26),
+      title: truncate(`${icon} ${spec.title}`, 26),
       desc: '在这个 chat 里直接回复文本消息即可（5 分钟超时；回 /cancel 取消）',
     },
     emphasis_content: {
-      title: spec.inputHint ?? '(请回复文本)',
+      title: truncate(spec.inputHint ?? '(请回复文本)', 200),
     },
   };
 }
 
 /**
- * CardSpec 分发到具体 render 函数。返回 wecom 消息 body 的 template_card 字段。
+ * ask multi —— **v1 不支持**（企微 multiple_interaction 事件格式复杂）。
+ * 后续用 button_interaction + toggle state 实现（每次点击 update_template_card
+ * 把按钮 style 改为 primary 表示选中，最后 submit 按钮触发 resolve）。
+ * 目前遇到 multi ask 就走这个：只提示 unsupported，用户可以在飞书里选。
+ */
+export function renderMultiUnsupportedCard(spec: CardSpec): Record<string, unknown> {
+  return renderTextNoticeCard({
+    ...spec,
+    body: `⚠️ 企微暂不支持多选卡片（Day 9 才补）\n请在飞书里选，或用 /cancel 后改成飞书发起。\n\n本次问题：${spec.title}\n可选项：${(spec.options ?? []).map((o, i) => `${i + 1}. ${o}`).join(' / ')}`,
+  });
+}
+
+/**
+ * CardSpec → 具体 render。ask 三种 + 其他 kind 都在这里 dispatch。
  */
 export function renderWeComCard(spec: CardSpec): Record<string, unknown> {
   if (spec.kind === 'ask') {
-    // 根据 options 数量判断 single/multi/input
     const optsCount = spec.options?.length ?? 0;
+    // input：无 options
     if (optsCount === 0) return renderAskInputCard(spec);
-    // multi 卡看 selectedIndices 存在（即使为空数组也代表 multi 类型）
+    // multi：selectedIndices 存在（哪怕空数组）
     const isMulti = spec.selectedIndices !== undefined;
-    return isMulti ? renderMultiSelectCard(spec) : renderVoteCard(spec);
+    if (isMulti) return renderMultiUnsupportedCard(spec);
+    // single：走 button_interaction
+    return renderButtonInteractionCard(spec);
   }
+  // approval / ack 若有 actions → button_interaction；否则 text_notice
+  if (spec.actions && spec.actions.length > 0) return renderButtonInteractionCard(spec);
   return renderTextNoticeCard(spec);
 }
 
 /**
- * 按钮 key 编码 —— 企微 button.key 上限 128 字符，装原始 value 需要序列化 + 短 hash。
- * 我们直接 JSON.stringify + base64；超长截断（保留 key 字段名 + 关键 id）。
+ * 按钮 key 编码 —— 企微 button.key 上限 128 字符。value JSON base64 后若超长，
+ * 只保留关键字段（action / askId / index / tty / sentAt / approvalId）。
  */
 export function encodeButtonKey(value: Record<string, unknown>): string {
   const raw = JSON.stringify(value);
   if (raw.length <= 100) return Buffer.from(raw, 'utf8').toString('base64');
-  // 太长时保留 action + askId/tty 之类
   const compact: Record<string, unknown> = {};
   for (const k of ['action', 'askId', 'index', 'tty', 'sentAt', 'approvalId']) {
     if (value[k] !== undefined) compact[k] = value[k];
