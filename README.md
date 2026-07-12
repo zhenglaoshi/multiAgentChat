@@ -1,231 +1,295 @@
 # multiAgentChat
 
-> 本地多 claude 终端 ⇄ 飞书 IM 的桥，从手机/远程异步调度自己 Mac 上多个 Claude Code tab 完成并发任务
+> 本地跑的桥：**飞书 / 企业微信 ⇄ Mac Terminal.app** —— 从手机远程异步调度自己 Mac 上多个 Claude Code tab 完成并发任务。
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Status](https://img.shields.io/badge/status-beta-yellow.svg)](#当前状态)
 [![Platform](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](#平台)
-
-## 📖 文档索引
-
-看你的角色：
-- **首次访问** → 本 README（一句话 + 5 min 上手）
-- **完整安装** → [docs/installation.md](docs/installation.md)
-- **命令速查** → [docs/commands.md](docs/commands.md)
-- **能干啥** → [docs/features.md](docs/features.md)
-- **SOP 编排** → [docs/sop.md](docs/sop.md)
-- **出问题** → [docs/troubleshooting.md](docs/troubleshooting.md)
-- **改代码** → [docs/architecture.md](docs/architecture.md) + [CONTRIBUTING.md](CONTRIBUTING.md)
-- **全部文档** → [docs/README.md](docs/README.md)
+[![Node](https://img.shields.io/badge/node-%E2%89%A522-brightgreen.svg)](#平台)
+[![IM](https://img.shields.io/badge/im-Lark%20%2B%20WeCom-blue.svg)](#im-平台支持)
 
 ---
 
-## 这是什么
+## 一句话
 
-multiAgentChat 是一个**本地运行、单用户使用**的桥：
+出门在外 / 在会议室 / 躺床上，手机飞书或企微给你的 Mac 发命令，Mac 上 N 个 Claude Code tab 并行干活，结果实时推回你手机。
 
-- 你在 Mac 上正常用 Terminal.app + Claude Code，每个 tab 一个 claude session
-- 跑 `npm run dev` 起本地 daemon
-- 在飞书机器人对话框里发命令：
-  - `@ttys001 跑测试` → 命令送到 ttys001 这个 tab 的 claude
-  - `/dashboard` → 看 Mac 上所有 tab 的实时状态
-  - `/run --sop 实现 ping 命令` → 起一个多 stage SOP 任务（架构 → 编码 → 测试），关键节点给手机推审批卡
-- Claude 的输出实时推送回飞书（含 alt-screen TUI 模式下不可见的内容）
+## 优势 · 为什么用这个
 
-### 跟其它工具的区别
+| 你想要的 | multiAgentChat 提供 |
+|---|---|
+| **不换端** | 复用你已在用的 IM（飞书 / 企微）+ Terminal.app + Claude Code —— 零学习曲线 |
+| **完全本地** | 单 daemon 本地跑，你的数据不出你 Mac；无云服务、无中转、无订阅费 |
+| **多 tab 并行** | 一个 Mac 上开 N 个 Claude tab（各自 cwd/context/session），飞书里 `@target` 精准路由；`>>` 链式；多行 batch |
+| **异步不阻塞** | 派完任务合上 MacBook 走人（合盖防睡设好），任务完成推回飞书 |
+| **手机友好交互** | `agent lark ask` 弹交互卡片（radio/checkbox/input），用户手指点选/回复，AI 从 stdout 拿答案 —— 不用手打 |
+| **可编排** | 声明式 SOP：多 stage / gate（人工审批）/ 失败回环 / artifact 传递 —— 复杂任务不失控 |
+| **双 IM 并行** | 飞书 + 企微同时挂着，各自独立 chat state 互不干扰；接第 3 个 IM 靠 IMTransport 抽象接口 |
 
-| 维度 | multiAgentChat | cc-connect | Anthropic Remote Control |
-|---|---|---|---|
-| 工作模式 | **Terminal-first**：观察你已开的 claude tab | Messaging-first：spawn 子进程跑 claude | 1:1 直连本地 claude |
-| 多 agent | ✅ 多 tab 真并行 + cwd 路由 | ✅ session 模型 | ❌ 单 session |
-| 编排 / SOP | ✅ 多 stage / gate / artifact / failure loop | ❌ | ❌ |
-| 平台 | 飞书（计划：企业微信） | 13 个 IM | Claude 官方 app |
-| Host | macOS Terminal.app | spawn 进程 | 本地 claude |
-
-定位：**远程异步多 agent 编排**——你不在 Mac 前时，看着、调度、审批、回滚。
+**跟其它远控方案的差异**：
+| 维度 | multiAgentChat | cc-connect | Anthropic Remote Control | VNC / SSH |
+|---|---|---|---|---|
+| 工作模式 | Terminal-first：观察你已开的 Claude tab | Messaging-first：spawn 子进程 | 1:1 直连本地 claude | 全桌面远控 |
+| 多 agent | ✅ 多 tab 真并行 + cwd 路由 | ✅ session 模型 | ❌ 单 session | 靠人手切 |
+| SOP 编排 | ✅ 多 stage / gate / artifact / loop | ❌ | ❌ | ❌ |
+| 手机 UX | 自然语言 + 卡片点选，AI 帮你干 | 手打命令 | 手打 | 戳小按钮累 |
+| 本地部署 | ✅ 数据不出 Mac | ✅ | ✅ | ✅ |
+| IM 平台 | 飞书 P0 · 企微 P0 beta（99% 对齐） | 13 个 IM | 官方 app | — |
 
 ---
+
+## IM 平台支持
+
+| IM | 状态 | 说明 |
+|---|---|---|
+| **飞书 / Lark** | ✅ P0 stable | 参考实现；所有能力最先在这里落地 |
+| **企业微信 (WeCom)** | ✅ P0 beta（99% 对齐） | 基本能力全在（`@target` 派发 / sticky 对话 / ask / approval / /screen /keys / Stop hook / doctor / 群聊 target）；差在：SOP stageProgressCard 企微版 render / 进度卡实时 patch（企微 template_card body update 不支持） |
+| 钉钉 / Slack / Telegram | 🚧 roadmap | IMTransport 抽象层已就位，接第 3 个 IM 现在只是"照葫芦画瓢"|
+
+**双 IM 可以同时挂**，各自独立 chat state，互不干扰。
 
 ## 当前状态
 
-**Beta**。已能日常使用，但接口随时会变。
+**Beta** — 已能日常使用，但接口可能会变。
 
-- ✅ 飞书入站（命令 + @target + chain + batch）
-- ✅ AppleScript 控制 Terminal.app（含 claude TUI forceEnter 适配）
-- ✅ 实时进度卡 patch + dashboard
-- ✅ 审批流（含 SOP gate + design.md 预览）
-- ✅ SOP 任务编排（task / stage / gate / 失败回环 / artifact handoff）
-- ✅ Memory + recall（task 级 + stage 级）
-- ✅ Unix socket CLI（任何 shell 可调）
-- ✅ WS 长连接 watchdog（自杀重启）
-- 🚧 monorepo 拆包（计划中）
-- 🚧 第二平台（企业微信，计划中）
+- ✅ 飞书入站（命令 + `@target` + `>>` chain + 多行 batch）
+- ✅ 企业微信入站（同上 · 走 cloudflared tunnel 打通 webhook）
+- ✅ AppleScript 控制 Terminal.app（含 Claude Code TUI forceEnter 适配 alt-screen）
+- ✅ 实时进度卡 patch + 长任务自适应节流 3.5s→60s + `/quiet` 静默模式 + 单卡 🔇 按钮
+- ✅ `agent lark ask` / `agent wecom ask`（single/multi/input 三种交互卡）
+- ✅ SOP 任务编排（stage / gate 审批 / 失败回环 / artifact handoff / memory 召回）
+- ✅ 高风险审批工作流（`agent request-approval`）
+- ✅ `/screen` 抓 alt-screen 截图 · `/keys` 按键遥控 · `//foo` 显式转发
+- ✅ Stop hook 双 IM 通吃（Claude turn 完成自动推给源 chat）
+- ✅ 首次启动自动化 5 项（Node ≥22 assert · .env 自动 cp · skill/hooks upsert · agent CLI symlink · macOS 权限提示）
 
 ---
 
 ## 平台
 
-- **运行平台**：macOS（依赖 AppleScript / Terminal.app）
-- **IM 平台**：飞书 / Lark（计划接入企业微信）
-- **Node**：≥ 20
-- **Claude Code**：建议最新版
+- **运行平台**：macOS 13+（依赖 AppleScript / Terminal.app）
+- **Node**：≥ 22（daemon 启动会 assert）
+- **Claude Code**：最新版
+- **IM**：飞书 P0 / 企微 P0 beta（选一或都装）
 
 ---
 
-## 快速上手（5 分钟）
+## 快速上手（3 步）
 
-### 1. 安装
+### Step 1 · 装依赖
+```bash
+brew install node pnpm anthropic/tap/claude-code
+
+git clone <this-repo> multiAgentChat && cd multiAgentChat
+pnpm install
+```
+
+### Step 2 · 拿 IM 凭证 + 填 .env
+```bash
+pnpm dev   # 首次跑 .env 缺失会自动 cp .env.example 并 die + 提示
+```
+
+编辑生成的 `.env`，填**至少一组** IM 凭证（**飞书 + 企微二选一或都填**）：
+
+<details>
+<summary>飞书凭证（推荐入门）</summary>
+
+到 [飞书开放平台](https://open.feishu.cn/) 创建自建应用 → 拿 App ID + App Secret → 「事件与回调」订阅方式改「长连接」，权限加 `im:message` 等。详见 [docs/installation.md](docs/installation.md) 第 2 步。
+
+```env
+LARK_APP_ID=cli_xxxxxxxxxxxxxxxx
+LARK_APP_SECRET=xxxxxxxxxxxxxxxx
+```
+</details>
+
+<details>
+<summary>企业微信凭证（需要内网穿透）</summary>
+
+企微是 webhook 模式，需要 `cloudflared tunnel` 或类似把内网 :3939 暴露公网。详见 [docs/wecom-bot-setup.md](docs/wecom-bot-setup.md) 完整 11 步指南。
+
+```env
+WECOM_CORP_ID=wwxxxxxxxxxxxxxxxx
+WECOM_AGENT_ID=1000002
+WECOM_SECRET=xxxxxxxxxxxxxxxx
+WECOM_TOKEN=xxxxxxxxxxxxxxxx
+WECOM_AES_KEY=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+WECOM_CALLBACK_HTTP_PORT=3939
+WECOM_DEFAULT_TO_USER=@all
+```
+</details>
+
+### Step 3 · 跑 dev
+```bash
+pnpm dev
+```
+
+daemon 启动时**自动**：
+- ✅ Node 版本 assert
+- ✅ 装 `multiagent-lark` skill 到 `~/.claude/skills/`
+- ✅ 装 Claude Code Stop / PreToolUse hooks
+- ✅ Symlink `bin/agent` 到 `~/.local/bin/agent`（记得 `~/.local/bin` 加 PATH）
+- ✅ 起 caffeinate 阻止 idle sleep
+- ✅ 打印 macOS 三项权限提示（Accessibility / Screen Recording / Automation）
+
+期望看到：
+```
+[INFO] node version ok { version: '22.x' }
+[INFO] lark bot started (WS long-connection)     ← 飞书就绪
+[INFO] wecom transport attached { corpId, ... }   ← 企微就绪（若配了）
+[INFO] control server listening
+[INFO] tab watcher started
+```
+
+### Step 4 · 验证 + 发第一条消息
 
 ```bash
-git clone <repo-url> multiAgentChat
-cd multiAgentChat
-npm install
+agent doctor   # 12 项健康检查
 ```
 
-### 2. 配 .env
+在飞书或企微里给机器人发：
+```
+/dashboard         # 概览 Mac 所有 tab
+@ttys001 ls -la    # 派命令到 ttys001 那个 tab（先 agent tabs 看你有哪些）
+```
 
+---
+
+## 核心功能 20 秒概览
+
+### 💬 双向桥
+- 飞书 / 企微 消息 → Mac Terminal tab（AppleScript 控制）
+- Claude 的响应实时推回 IM（含 alt-screen TUI 模式下不可见的内容）
+- 双渠道并行：pc shell 里 claude 完整答，同时 `agent lark send-text` 推同样一份到 IM
+
+### 🎯 多 tab 并行
+- 一个 Mac N 个 Terminal tab，各自独立 claude session + cwd + context
+- IM 里 `@target text` 精准派发（target = tty / cwd 目录名 / 标题）
+- `@a X >> @b Y` 链式；多行 `@a X\n@b Y` 批量并发
+- **Sticky 对话**：首次 `@ttys003` 后 5min 内裸文本自动路由到该 tab
+
+### 🧭 智能交互（不用手打命令）
 ```bash
-cp .env.example .env
-# 编辑 .env 填：
-#   LARK_APP_ID=cli_xxx
-#   LARK_APP_SECRET=xxx
+# claude session 里
+answer=$(agent lark ask single --title "选一个方案" --options "A. 快,B. 稳,C. 稳稳")
+# → 手机弹交互卡，你手指点 → stdout 拿到 {"status":"answered","index":1,"value":"B. 稳"}
+```
+- `single`（radio）· `multi`（checkbox）· `input`（用户回文本）
+- 企微上 multi 走"回复数字勾选"模式（如 "1,3,5"）
+- **完全替代 AskUserQuestion**，避免用户手机端看不见 TUI 选项框
+
+### 🎬 长任务降噪三层
+1. **默认**：Adaptive backoff（前 30s 3.5s，之后 15s → 30s → 60s 随时长）
+2. **/quiet on/off**：全局静默模式，只发首次 + 完成，中间不刷卡
+3. **单卡 🔇 按钮**：只静默某一个吵的 pending
+
+### 📸 兜底通道（非 claude TUI）
+- `/screen` → 抓 tab 所在窗口截图（含 alt-screen TUI）推图到 IM
+- `/keys '2d . ⏎'` → 通用按键遥控（osascript System Events）
+- `//foo` → 强制转发到 activeTty（对付 skill / 插件命令）
+
+### 🧬 SOP 编排（差异化能力）
+声明式多 stage 工作流 + gate 审批 + 失败回环 + artifact 传递：
+```
+/run --sop 实现登录功能
+# 默认 6 stage：Explore → requirement-analyzer → architect → coder → tester → regression-checker
+# architect stage 结束时推审批卡（含 design.md 前 40 行预览），批准后继续
 ```
 
-申请飞书自建机器人：[飞书开放平台](https://open.feishu.cn/) → 创建应用 → 机器人 → 启用 → 配置 WebSocket 长连接。
-
-### 3. 装 skill 让 claude 知道用 agent CLI
-
+### 🛑 高风险审批
 ```bash
-node -e "import('./bin/agent.js').then(() => {})" # bootstrap
-./bin/agent install-skill
+agent request-approval --title "DROP TABLE prod.users" --body "..."
+# 阻塞，飞书弹卡片；批准 → exit 0，拒绝 → exit 1，5min 超时 → exit 2
 ```
 
-把 `multiagent-lark` skill 装到 `~/.claude/skills/`，所有 Mac 上的 Claude Code session 启动时会自动加载，知道用 `agent lark send-text` 推送结果回飞书。
+### 🤖 Subagent 系统
+- Claude Code 内置 subagent 直接可用（Explore / Plan / 等）
+- 自定义：`~/.claude/agents/*.md` 或项目本地
+- LLM 自动生成：`/subagent gen 视频剪辑：ffmpeg + 字幕 + 缩略图`
 
-### 4. 起服务
-
-```bash
-npm run dev
-```
-
-`tsx watch` 模式：代码改了自动 reload。生产用 `npm start`。
-
-### 5. macOS 权限
-
-打开 **System Settings → Privacy & Security → Accessibility**，把以下加进去：
-- Terminal.app（或你常用的终端）
-- iTerm.app（如果用）
-- 跑 dev 服务的进程
-- `osascript`
-
-否则 AppleScript 控制不了 Terminal。
-
-### 6. 第一条命令
-
-在飞书机器人里：
-
-```
-/dashboard
-```
-
-应该看到 Mac 上所有 Terminal tab 的状态。
-
-```
-@ttys001 跑 npm test
-```
-
-会把 "跑 npm test" 派到 ttys001 这个 tab 的 claude，claude 跑完结果推回飞书。
+### 💾 双层 Memory + 自动 recall
+- Task 级：任务完成时落盘 prompt / output / files
+- Stage 级：SOP 每 stage 完成时落盘
+- 派新任务时自动检索并注入到 prompt（cwd 精确匹配 + 关键词 + 时间衰减）
 
 ---
 
 ## 命令速查
 
-### 飞书命令
+**IM 侧**（飞书 / 企微通吃）：
 
-| 命令 | 作用 |
+| 分类 | 命令 |
 |---|---|
-| `@<target> <text>` | 派发到指定 tab（target 支持 ttys001 / cwd basename / title） |
-| `@a X >> @b Y` | 链式：先派 a，完成后派 b |
-| `/dashboard` 或 `/d` | Mac tab + 任务全局状态卡 |
-| `/shells` 或 `/s` | tab 列表卡，按钮可切 active |
-| `/use <tty>` | 把这个 chat 的 active tab 设为指定 tty |
-| `/new [path]` | 在 Mac 上开新 tab |
-| `/watch on` 或 `/watch off` | 是否实时推送非飞书发起的 shell 活动 |
-| `/template` | 列任务模板 |
-| `/template save <name> [--stages a,b] [--gates after-a] <prompt>` | 保存模板 |
-| `/run <name> [k=v]` | 跑模板 |
-| `/run --sop [--stages a,b] [@target] <prompt>` | 临时 SOP（无模板） |
-| `/run plan topic=...` | 跑内置 /plan 模板（轻量 explore + architect） |
-| `/task` 或 `/task <id>` | 看 SOP 任务列表 / 详情 |
-| `/task abort [<id>] [hard]` | 中止 SOP（不带 id 自动找当前 chat 进行中） |
-| `/task here` | 列本会话进行中的 SOP |
-| `/subagent` 或 `/sa` | 列所有可用 subagent（用户 + 项目本地） |
-| `/subagent <name>` | 详情 + system prompt 前 800 字 |
-| `/subagent delete <name>` | 删掉某个 subagent |
-| `/subagent gen <描述>` | LLM 为该域自动生成 3-5 subagent + 组合 template |
-| `/approvals` | 待审批 + 历史 |
-| `/recall <keyword>` | 查 task memory |
-| `/history` | 看最近完成的任务 |
-| `/help` | 完整列表 |
+| 概览 | `/d /dashboard` `/s /shells` `/w /where` |
+| Tab | `/n /new [path\|@alias\|kw]` `/u /use <tty>` `/h /history` `/pin` `/dirindex refresh` |
+| 编排 | `/t /template` `/run [--sop] ...` `/task` `/tk` `/c /chain` `/sa /subagent` |
+| 交互 | `/screen` `/keys '<seq>'` `//foo`（强制转发） |
+| 观测 | `/a /approvals` `/audit` `/r /recall` `/watch on/off` `/quiet on/off` |
+| 派发 | `@target text` · `@a X >> @b Y` · 多行批量 |
 
-### Mac shell CLI（`agent` 命令）
-
-任何 Mac shell 里都能用（包括 claude 自己调）：
-
+**shell 侧**（`agent` CLI，Claude tab / 你自己都能用）：
 ```bash
-agent tabs                      # 看所有 Mac Terminal tab
-agent send -t /dev/ttys001 "..." # 发文本到指定 tab
-agent show -t /dev/ttys001 -n 60 # 看 tab 历史 tail
-agent open ~/code/foo            # 开新 tab cd 到 foo
-agent lark send-text "..."       # 推文本到飞书（自动找当前 tab 对应 chat）
-agent lark send-file <path>      # 推文件
-agent lark send-image <path>     # 推图片
-agent request-approval --title T --body B  # 等飞书审批（阻塞）
-agent task list                   # 看 SOP 任务
-agent task here                   # 本 tty 上进行中的 SOP
-agent task show <task-id>
-agent task stage --task-id X --name <stage> --start/--end/--fail/--skip
-agent task abort <task-id> [--hard] [--reason "..."]
-agent stage-recall [--name X] [--cwd Y] [kw1 kw2 ...]
-agent subagent list / show <name> / delete <name>   # 管理自定义 subagent
-agent subagent add <name> --body "..."               # 手工创建（body 也可 stdin）
-agent install-skill / uninstall-skill
-agent help                        # 完整命令清单
+agent tabs / show / send / open / close    # tab 管理
+agent lark  send-text/-file/-image/-card/which-chat/ask   # 飞书外发
+agent wecom send-text/-file/-image/ask/which-chat         # 企微外发
+agent request-approval --title T --body B                 # 阻塞式审批
+agent task list/here/show/stage/abort                      # SOP 任务
+agent subagent list/show/add/delete/gen-submit             # subagent 管理
+agent stage-recall [--name X] [kw ...]                     # 历史召回
+agent doctor                                                # 健康检查
 ```
 
-**Subagent 生成用飞书**：`/subagent gen 视频剪辑：ffmpeg + 字幕 + 缩略图` 会自动派任务给 active tab 的 claude 生成 3-5 个 subagent + 组合 template。
+完整清单：[docs/commands.md](docs/commands.md) · 飞书 slash 菜单配置：[docs/feishu-bot-setup.md](docs/feishu-bot-setup.md)
+
+---
+
+## 📖 文档索引
+
+| 你的角色 | 文档 |
+|---|---|
+| 首次访问 | 本 README |
+| 完整安装 | [docs/installation.md](docs/installation.md) |
+| 飞书应用配置 | [docs/feishu-bot-setup.md](docs/feishu-bot-setup.md) |
+| **企微应用配置**（含 cloudflared tunnel）| [docs/wecom-bot-setup.md](docs/wecom-bot-setup.md) |
+| 完整功能清单 | [docs/features.md](docs/features.md) |
+| 命令速查 | [docs/commands.md](docs/commands.md) |
+| SOP 编排 | [docs/sop.md](docs/sop.md) |
+| 排错 | [docs/troubleshooting.md](docs/troubleshooting.md) |
+| 改代码 | [docs/architecture.md](docs/architecture.md) + [CONTRIBUTING.md](CONTRIBUTING.md) |
+| 全部文档 | [docs/README.md](docs/README.md) |
 
 ---
 
 ## 架构
 
 ```
-                  飞书云 (WS)
-                       ↕
-             ┌─────────────────────┐
-             │  Node daemon (tsx)  │
-             │                     │
-             │  lark/  ←→  monitor/│
-             │     ↓        ↑      │
-             │  terminal/ (AppleScript)
-             │     ↕               │
-             │  Terminal.app (your tabs)
-             │                     │
-             │  control/ (Unix socket)
-             │     ↑               │
-             └─────│───────────────┘
-                   │
-            [agent CLI in any shell]
-                   ↕
-            [data/ JSON persistence]
+                      飞书云 (WS)        企微云 (webhook)
+                          ↕                  ↕
+                   ┌────────────┐   ┌────────────────────┐
+                   │ Lark       │   │  cloudflared       │
+                   │ transport  │   │  → 内嵌 HTTP :3939 │
+                   └─────┬──────┘   └──────┬─────────────┘
+                         │                 │
+                         │  IMTransport 抽象接口
+                         │                 │
+                     ┌───▼─────────────────▼───┐
+                     │   Node daemon (tsx)      │
+                     │   handlers · watcher · notifier
+                     │   AskManager · ApprovalManager · TaskStore
+                     └───────┬──────────────────┘
+                             │
+                        AppleScript
+                             ↕
+                     Terminal.app tabs（你的 claude sessions）
+                             │
+                     ┌───────▼──────────┐
+                     │ agent CLI ↔      │
+                     │ ~/.multiagent-chat/agent.sock
+                     └──────────────────┘
+                             │
+                     ./data/ JSON 持久化
 ```
 
-详细架构（含 SOP 状态机、依赖方向、迁移路径）：[docs/architecture.md](docs/architecture.md)
-
-数据流：
-- 飞书消息 → `lark/handlers` → 路由到 tab via `terminal/tabs.send` + AppleScript
-- claude 输出 → `monitor/watcher` (3s tick) → `notifier` → 飞书卡 patch
-- SOP 任务 → `tasks/store` 状态机 → 飞书 stageProgressCard 实时更新
+细节：[docs/architecture.md](docs/architecture.md)
 
 ---
 
@@ -233,12 +297,12 @@ agent help                        # 完整命令清单
 
 ```
 ~/.multiagent-chat/
-  ├─ agent.sock         # Unix socket (server)
+  ├─ agent.sock         # Unix socket（server）
   ├─ cli-state.json     # CLI 默认 tab
   └─ presets/           # 任务模板
 
 ./data/                  # 项目内
-  ├─ chats/<id>.json     # 飞书会话状态
+  ├─ chats/<id>.json     # 飞书/企微 会话状态（activeTty/quietMode/watchAllTabs 等）
   ├─ memories/<id>.json  # task-level memory
   ├─ stage-memories/<id>.json  # stage-level memory
   ├─ tasks/<id>.json     # SOP 任务状态机
@@ -250,54 +314,22 @@ agent help                        # 完整命令清单
 ## 开发
 
 ```bash
-npm run dev        # tsx watch + 自动 reload
-npm run typecheck  # tsc --noEmit
-npm run build      # tsc → dist/
-npm start          # 跑 build 后的版本
+pnpm dev          # tsx watch + 自动 reload
+pnpm typecheck    # tsc -b --pretty
 ```
 
-文件改了之后 `tsx watch` 自动重启，但 `.env` 改了要 kill + 重启。
-
----
-
-## SOP（Standard Operating Procedure）— 重头戏
-
-SOP 是 multiAgentChat 的核心差异化能力：把"丢个 prompt 让 claude 自由发挥"升级成"声明式多 stage 工作流 + 关键节点人工审批 + 失败自动回环"。
-
-**最小例子**：
-
-```
-/run --sop 实现 ping 命令
-```
-
-默认走 6 stage（Explore → requirement-analyzer → architect → coder → tester → regression-checker），架构 stage 完成时停下来推审批卡给你（含 design.md 前 40 行预览），你批准后继续。
-
-**自定义 stage**：
-
-```
-/run --sop --stages explore,architect --gates after-architect 帮我分析 X
-```
-
-或者保存模板：
-
-```
-/template save plan --stages explore,architect --gates after-architect 帮我分析 {topic}
-/run plan topic="X 的可行性"
-```
-
-详见 [docs/sop.md](docs/sop.md)
+文件改了 `tsx watch` 自动重启；`.env` 改了要 kill + 重启。
 
 ---
 
 ## Roadmap
 
-- [ ] Phase 1: monorepo 拆包（pnpm workspaces）
-- [ ] Phase 2: orchestrator 包独立（纯逻辑层）
-- [ ] Phase 3: bridge / IM transport / host controller 接口抽象
-- [ ] Phase 4: 企业微信 transport 验证抽象
-- [ ] Phase 5: 调度 / DAG 编排 / token usage tracking
-
-完整规划见 [docs/tasks/task-mr198nfa-4u7k/design.md](docs/tasks/task-mr198nfa-4u7k/design.md)
+- ✅ Phase 1: monorepo 拆包（pnpm workspaces）
+- ✅ Phase 2: orchestrator 包独立
+- ✅ Phase 3: IMTransport 抽象接口
+- ✅ Phase 4: 企业微信 transport（99% 对齐飞书）
+- 🚧 Phase 5: 钉钉 / Slack / Telegram transport（IMTransport 已就位）
+- 🚧 Phase 6: DAG 编排 / token usage tracking / cost dashboard
 
 ---
 

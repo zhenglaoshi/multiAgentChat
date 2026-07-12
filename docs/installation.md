@@ -55,7 +55,23 @@ npm install -g pnpm
 
 ---
 
-## 第 2 步：申请飞书自建应用
+## 第 2 步：选一个 IM（或都装）
+
+daemon 支持飞书 + 企微两个 IM transport 并行。**至少配一个**，两个都配也行（各自独立 chat state 互不干扰）。
+
+| 选择 | 推荐场景 | 前置 |
+|---|---|---|
+| **只装飞书**（最简） | 个人 / 团队用飞书 | 只要 App ID / Secret，无需公网 URL（WS 长连接） |
+| **只装企微** | 团队用企微不用飞书 | 除应用凭证外还要 `cloudflared tunnel` 或类似暴露 :3939 到公网 |
+| **两个都装** | 混合场景（自己用飞书 / 团队用企微） | 上面两条条件全都要 |
+
+**每一路的详细步骤见下面章节**：
+- 飞书 → 第 2A 节（本节紧接下面）
+- 企微 → 第 2B 节 + [docs/wecom-bot-setup.md](wecom-bot-setup.md)（完整 11 步指南）
+
+---
+
+## 第 2A 步：申请飞书自建应用
 
 1. 打开 [飞书开放平台](https://open.feishu.cn/)（国内）或 [Lark Suite](https://open.larksuite.com/)（海外）
 2. 「开发者后台」→ 创建应用 → 「自建应用」
@@ -76,6 +92,24 @@ npm install -g pnpm
    - `App ID`（形如 `cli_xxxxxxxxxxxx`）
    - `App Secret`
 7. 拉一个测试群，@机器人 加入群
+
+**只装飞书？直接跳到 [第 3 步](#第-3-步克隆--装依赖)。**
+
+---
+
+## 第 2B 步：申请企业微信自建应用（可选）
+
+**要装企微就看**，只飞书跳过本节。
+
+1. 打开 [企业微信管理后台](https://work.weixin.qq.com/) → 扫码登录
+2. 「我的企业 → 企业信息」拿 **CorpID**
+3. 「应用管理 → 应用」创建自建应用 → 拿 **AgentID + Secret**（Secret 只显示一次抄好）
+4. 装 `cloudflared`：`brew install cloudflare/cloudflare/cloudflared`
+5. 起 tunnel：`cloudflared tunnel --url http://localhost:3939` → 拿公网 URL
+6. 生成 **Token**：`openssl rand -hex 16`
+7. 应用「接收消息 → 设置 API 接收」填 URL / Token / 生成 **EncodingAESKey**（**先别保存**，等 daemon 起来后再校验）
+
+完整流程（含 URL 校验、可见范围、常见踩坑）：**[docs/wecom-bot-setup.md](wecom-bot-setup.md)**
 
 ---
 
@@ -103,10 +137,22 @@ pnpm dev
 请填 LARK_APP_ID 和 LARK_APP_SECRET（飞书开发者后台 → 凭证与基础信息）后重启 dev。
 ```
 
-编辑 `.env` 填两个字段：
-```
-LARK_APP_ID=cli_xxxxxxxxxxxx
-LARK_APP_SECRET=xxxxxxxxx
+编辑 `.env` 填**至少一个 IM** 的凭证（两个都填也行）：
+
+```env
+# ============= 飞书（可选，第 2A 步拿的）=============
+LARK_APP_ID=cli_xxxxxxxxxxxxxxxx
+LARK_APP_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+# ============= 企业微信（可选，第 2B 步拿的）=============
+# 5 项都填齐才 attach；缺一项就静默跳过（不影响飞书）
+# WECOM_CORP_ID=wwxxxxxxxxxxxxxxxx
+# WECOM_AGENT_ID=1000002
+# WECOM_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+# WECOM_TOKEN=xxxxxxxxxxxxxxxx
+# WECOM_AES_KEY=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+# WECOM_CALLBACK_HTTP_PORT=3939
+# WECOM_DEFAULT_TO_USER=@all
 ```
 
 **⚠️ `.env` 已 gitignore，别 commit**。

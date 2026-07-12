@@ -4,6 +4,39 @@
 
 ---
 
+## 🧭 能力矩阵（飞书 vs 企微）
+
+多数能力两边都对齐了；少数受企微 API 限制降级。
+
+| 能力 | 飞书 | 企微 | 说明 |
+|---|:-:|:-:|---|
+| `@target` 派发 | ✅ | ✅ | tty / 短 tty / 标题 / cwd basename 都能识别 |
+| Sticky 对话（5min） | ✅ | ✅ | 首次 `@` 后裸文本自动路由到该 tab |
+| `>>` 链式派发 | ✅ | ⚠️ 走 mchat 通用 handleCommand | |
+| 多行批量派发 | ✅ | ⚠️ 未特化 | |
+| 群聊 target | ✅ | ✅ | `wecom:chat:xxx` 走 `/appchat/send` |
+| 实时进度卡 patch | ✅ | ⚠️ simplified initial+final | 企微 body 不支持任意 update |
+| Adaptive backoff | ✅ | ⚠️ 由简化模式代替 | |
+| `/quiet on/off` 静默 | ✅ | ✅ | chat state 复用 |
+| 单卡 🔇 按钮 | ✅ | ⚠️ 简化模式已不 patch | |
+| `agent ask single` | ✅ | ✅ | 企微用 button_interaction |
+| `agent ask multi` | ✅ | ✅ | 企微降级为"回复数字勾选" |
+| `agent ask input` | ✅ | ✅ | 用户 chat 回文本，daemon 拦截 |
+| `agent request-approval` | ✅ | ✅ | 企微 button_interaction 卡 |
+| `/screen` 抓屏 | ✅ | ✅ | 含 alt-screen TUI 内容 |
+| `/keys '<seq>'` 按键遥控 | ✅ | ✅ | 复用 host-mac.sendKeys |
+| `//foo` 强制转发 | ✅ | ✅ | 剥一个 / 后发到 activeTty |
+| Claude 内建 slash 白名单转发 | ✅ | ✅ | `/help /config /agents ...` 自动转发 |
+| Stop hook auto-push | ✅ | ✅ | daemon 按 chatId 前缀路由 |
+| `/watch on/off` 本地任务监听 | ✅ | ✅ | chat state 复用 |
+| SOP 编排（task/gate/loop） | ✅ | ⚠️ 底层复用，stageProgressCard 只飞书 render | |
+| Doctor 检测 | ✅ | ✅ | agent doctor 里加了 wecom section |
+| `/dashboard` / `/tabs` 等 card 命令 | ✅ | ⚠️ 企微仅 text-kind，提示"卡片去飞书看" | |
+
+**核心 IM 桥接能力（99%）在企微都对齐**，只有几个卡片渲染类的 UX 项因企微 API 硬限制走了降级方案。
+
+---
+
 ## 1. 飞书 ⇄ Mac Terminal 双向桥
 
 ### 能力
@@ -440,27 +473,39 @@ daemon 启动时**自动**做的事，让新 PC 首次跑通只需要 3 步（�
 
 ---
 
-## 18. 企业微信（WeCom）· 第二个 IM · beta
+## 18. 企业微信（WeCom）· 第二个 IM · 99% 对齐
 
-### 能力
-- `packages/im-wecom` · WeCom transport 实现（AES 加解密 / 内嵌 HTTP receiver / template_card 渲染）
-- daemon attach：`.env` 里配了 WECOM_* 5 项就起（不配就静默跳过，飞书完全不受影响）
-- **CLI**：`agent wecom send-text / send-file / send-image / which-chat`（parallel `agent lark`）
-- **收消息 → 派发到 tab**：企微里发 `@ttys003 命令`，daemon 反查 tab + AppleScript 注入 + 回执文本
+企微跟飞书能力 **99% 一致**（顶部能力矩阵表列全了差异）。只有 SOP stageProgressCard render 和进度卡实时 patch 因企微 template_card body 不支持任意 update 走了简化路径。
 
-### 与飞书的差异（v1 版本已知限制）
-- 卡片交互能力受限：`ask multi` 走 `multiple_interaction` 卡，用户体验不如飞书 checkbox
-- `patchCard` 靠重发（企微不支持任意 body 更新）
-- 群聊 target `wecom:chat:xxx` 未接（v1 只支持 1v1 应用消息 + `WECOM_DEFAULT_TO_USER` 兜底）
-- 收消息端**无 sticky/active tty**：必须 `@target text` 显式指定，不像飞书能自动路由到 activeTty
-- 没有：`/watch`、`/quiet`、进度卡自适应节流、Stop hook auto-push、pending 追踪、审批卡片、`agent wecom ask`
+### 完整能力清单
+- ✅ **AES 加解密 + 签名验证**（WXBizMsgCrypt Node 版）+ URL 校验
+- ✅ **内嵌 HTTP receiver**（原生 http，无外部依赖 · 默认 :3939）
+- ✅ **daemon attach 静默检测**：`.env` 有 WECOM_* 5 项就起；缺就不 attach，飞书完全不受影响
+- ✅ **CLI**：`agent wecom send-text/-file/-image/ask/which-chat`（对齐 `agent lark`）
+- ✅ **`@target` 派发 + Sticky 对话**（5min 内裸文本自动路由到该 tab）
+- ✅ **无 @ 时 chat state fallback**：recentReplyTty → activeTty
+- ✅ **Pending 跟踪**：watcher 接管 wecom pending，isFinal 时自动推摘要
+- ✅ **Stop hook auto-push**：daemon handleLarkSendText 按 chatId 前缀 `wecom:` 自动路由
+- ✅ **ask 三种类型**：single 用 button_interaction；multi 走"回复数字勾选"；input 拦截下条文本
+- ✅ **approval 卡**：`agent request-approval` 触发 → 企微 button_interaction（✅批准 / ❌拒绝）+ 5min 超时
+- ✅ **`/screen /keys /watch /quiet /help /use /where /recall` 等 slash 命令**（走 handleCommand 通用 dispatch）
+- ✅ **`//foo` 强制转发**（跟飞书对齐）
+- ✅ **群聊 target `wecom:chat:xxx`**（走 `/appchat/send` API）
+- ✅ **cardAction 事件路由**：button.key 解码 → AskManager / ApprovalManager
+- ✅ **agent doctor** 加 wecom section（token 有效性 / endpoint / tunnel URL）
+
+### 与飞书的已知差异
+- **卡片交互 UX 有降级**：企微 `multiple_interaction` 事件解析复杂，multi ask 改用"回复数字"（1,3,5）代替真 checkbox
+- **进度卡不实时 patch**：企微 template_card body 不支持任意更新；用简化"初始 ack + isFinal 摘要"模式
+- **部分 card 类 slash 命令**（`/dashboard /tabs /new`）目前只飞书能渲染成卡；企微收到 text-kind 提示"卡片去飞书看"
+- **SOP stageProgressCard** 只飞书 render（企微 render 未做，低价值）
 
 ### 什么时候用
-- iHealth / 团队用企微不用飞书
-- 想在飞书 + 企微双端同时挂机器人（各自独立 chat state）
+- 团队用企微不用飞书
+- 想双 IM 并行（飞书私聊 + 企微群，各自独立 chat state）
 
 ### 配置
-详见 [wecom-bot-setup.md](wecom-bot-setup.md)：企业自建应用申请 + cloudflared tunnel + 5 个 env vars。
+详见 [wecom-bot-setup.md](wecom-bot-setup.md) 完整 11 步指南：企业自建应用申请 + cloudflared tunnel + 5 个 env vars + 后台配 URL 校验。
 
 ---
 
