@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { startControlServer } from 'multiagent-framework';
 import { startLarkBot } from 'multiagent-im-lark';
 import { loadWeComConfig, WeComTransport, renderWeComCard } from 'multiagent-im-wecom';
-import { asks, type AskRequest } from 'multiagent-orchestrator';
+import { approvals, asks, type ApprovalRequest, type AskRequest } from 'multiagent-orchestrator';
 import type { CardSpec } from 'multiagent-framework';
 import { logger } from 'multiagent-orchestrator';
 import { startHealthCheck } from 'multiagent-im-lark';
@@ -349,13 +349,34 @@ async function dispatchWeComMessage(
   const text = ev.text.trim();
   if (!text) return;
 
-  // 优先：input-type ask 等答案 → 消费此消息为答案（跟飞书对齐语义）
+  // 优先：input / (wecom-multi) ask 等答案 → 消费此消息为答案
   const pendingAskId = asks.getAwaitingInputAskId(ev.chatId);
   if (pendingAskId) {
     const askReq = asks.get(pendingAskId);
     if (askReq) {
       if (text === '/cancel') {
         await asks.cancel(pendingAskId, `wecom:${ev.senderId}`);
+      } else if (askReq.type === 'multi') {
+        // 解析 "1,3,5" / "1 3 5" / "1、3、5" / "1；3；5" 等分隔符
+        const indices = text
+          .split(/[\s,，、;；]+/)
+          .map((s) => parseInt(s.trim(), 10))
+          .filter((n) => Number.isFinite(n) && n >= 1 && n <= askReq.options.length)
+          .map((n) => n - 1);   // 1-indexed → 0-indexed
+        const uniqueIndices = [...new Set(indices)].sort((a, b) => a - b);
+        if (uniqueIndices.length === 0) {
+          await wecom.sendText(
+            ev.chatId,
+            `❓ 没解析出有效选项号（1-${askReq.options.length}）。回复例："1,3" 或 "2 4 5"；发 /cancel 取消。`,
+          );
+          return;
+        }
+        const values = uniqueIndices.map((i) => askReq.options[i] ?? '');
+        await asks.answer(
+          pendingAskId,
+          { kind: 'multi', indices: uniqueIndices, values },
+          `wecom:${ev.senderId}`,
+        );
       } else {
         await asks.answer(pendingAskId, { kind: 'input', text }, `wecom:${ev.senderId}`);
       }
@@ -764,8 +785,8 @@ function attachWeComAskListener(wecom: WeComTransport): void {
 
 /**
  * 企微卡片按钮点击 → 路由到对应 handler。目前支持：
- *   - ask.pick （single 选一个）
- *   - ask.cancel（取消 ask）
+ *   - ask.pick / ask.cancel（AskManager）
+ *   - approve / reject（ApprovalManager）
  */
 function attachWeComCardActionRouter(wecom: WeComTransport): void {
   wecom.events.on('cardAction', async (ev) => {
@@ -794,7 +815,75 @@ function attachWeComCardActionRouter(wecom: WeComTransport): void {
       await asks.cancel(askId, `wecom:${ev.operatorId}`);
       return;
     }
+    if (action === 'approve' || action === 'reject') {
+      const approvalId = value['approvalId'] as string | undefined;
+      if (!approvalId) return;
+      const decision = action === 'approve' ? 'approved' : 'rejected';
+      const r = await approvals.resolve(approvalId, decision, `wecom:${ev.operatorId}`);
+      if (!r) {
+        void wecom.sendText(ev.chatId, `⚠️ 审批 ${approvalId} 不存在或已完成`);
+      }
+      return;
+    }
     logger.info('wecom cardAction unhandled', { action, value });
+  });
+}
+
+/**
+ * 企微侧 approval 生命周期。跟 lark notifier 里的 approvals.events 平行运行。
+ * created → 发企微 button_interaction 审批卡；resolved → 发一条 "✅ 已批准 by X" / "❌ 已拒绝" 文本
+ */
+function attachWeComApprovalListener(wecom: WeComTransport): void {
+  approvals.events.on('created', async (req: ApprovalRequest) => {
+    if (!req.chatId || !req.chatId.startsWith('wecom:')) return;
+    try {
+      const spec: CardSpec = {
+        kind: 'approval',
+        title: `🚨 需审批 · ${req.title.slice(0, 80)}`,
+        template: 'yellow',
+        body: req.body.slice(0, 500),
+        metaLines: [`5 min 超时`, `id: ${req.id.slice(0, 20)}`],
+        actions: [
+          {
+            label: '✅ 批准',
+            type: 'primary',
+            value: { action: 'approve', approvalId: req.id },
+          },
+          {
+            label: '❌ 拒绝',
+            type: 'danger',
+            value: { action: 'reject', approvalId: req.id },
+          },
+        ],
+      };
+      const r = await wecom.sendCard(req.chatId, spec);
+      approvals.setCardMessageId(req.id, r.messageId);
+      logger.info('wecom approval card sent', { id: req.id });
+    } catch (e) {
+      logger.warn('wecom approval card send failed', {
+        id: req.id,
+        err: (e as Error).message,
+      });
+    }
+  });
+
+  approvals.events.on('resolved', async (req: ApprovalRequest) => {
+    if (!req.chatId || !req.chatId.startsWith('wecom:')) return;
+    try {
+      const by = req.resolvedBy ? ` by ${req.resolvedBy}` : '';
+      const msg =
+        req.status === 'approved'
+          ? `✅ 已批准${by}：${req.title}`
+          : req.status === 'rejected'
+            ? `❌ 已拒绝${by}：${req.title}`
+            : `⌛ 已超时（自动拒绝）：${req.title}`;
+      await wecom.sendText(req.chatId, msg);
+    } catch (e) {
+      logger.warn('wecom approval resolved push failed', {
+        id: req.id,
+        err: (e as Error).message,
+      });
+    }
   });
 }
 
@@ -844,7 +933,9 @@ async function main() {
       attachWeComFinalListener(wecom);
       // ask 生命周期：created → 发企微交互卡；resolved → 文本通知（结果 by via lark ask CLI）
       attachWeComAskListener(wecom);
-      // 按钮点击 → 路由到 AskManager（ask.pick / ask.cancel）
+      // approval 生命周期：created → 发企微审批卡；resolved → 文本通知
+      attachWeComApprovalListener(wecom);
+      // 按钮点击 → 路由到 AskManager / ApprovalManager
       attachWeComCardActionRouter(wecom);
       logger.info('wecom transport attached', {
         corpId: wecomCfg.corpId,

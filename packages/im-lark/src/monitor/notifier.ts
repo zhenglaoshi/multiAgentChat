@@ -503,6 +503,8 @@ export function attachWatcherToLark(larkClient: Lark.Client): void {
       logger.warn('approval has no chatId, skipping push', { id: req.id });
       return;
     }
+    // wecom: 前缀由 daemon 侧 attachWeComApprovalListener 处理
+    if (req.chatId.startsWith('wecom:')) return;
     try {
       const messageId = await sendCardReturnId(
         client,
@@ -526,6 +528,7 @@ export function attachWatcherToLark(larkClient: Lark.Client): void {
 
   approvals.events.on('resolved', async (req: ApprovalRequest) => {
     if (!client) return;
+    if (req.chatId?.startsWith('wecom:')) return;
     if (!req.cardMessageId) {
       logger.warn('approval resolved but no cardMessageId', { id: req.id });
       return;

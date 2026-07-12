@@ -113,15 +113,17 @@ export function renderAskInputCard(spec: CardSpec): Record<string, unknown> {
 }
 
 /**
- * ask multi —— **v1 不支持**（企微 multiple_interaction 事件格式复杂）。
- * 后续用 button_interaction + toggle state 实现（每次点击 update_template_card
- * 把按钮 style 改为 primary 表示选中，最后 submit 按钮触发 resolve）。
- * 目前遇到 multi ask 就走这个：只提示 unsupported，用户可以在飞书里选。
+ * ask multi —— 企微没有真 checkbox toggle 卡（update_template_card 只能改按钮
+ * text，不能改 body）。改用"文本回复数字"模式：卡片展示选项列表，让用户在
+ * chat 里回复 "1,3,5" 类。daemon 侧拦截解析（asks.getAwaitingInputAskId 复用
+ * 到 wecom 的 multi 类型）。
  */
-export function renderMultiUnsupportedCard(spec: CardSpec): Record<string, unknown> {
+export function renderMultiViaTextCard(spec: CardSpec): Record<string, unknown> {
+  const options = spec.options ?? [];
+  const numberedList = options.map((o, i) => `${i + 1}. ${o}`).join('\n');
   return renderTextNoticeCard({
     ...spec,
-    body: `⚠️ 企微暂不支持多选卡片（Day 9 才补）\n请在飞书里选，或用 /cancel 后改成飞书发起。\n\n本次问题：${spec.title}\n可选项：${(spec.options ?? []).map((o, i) => `${i + 1}. ${o}`).join(' / ')}`,
+    body: `☑ **回复数字勾选多个**（如 "1,3,5" 或 "2 4"）\n\n${numberedList}\n\n发 \`/cancel\` 取消。5 min 超时。`,
   });
 }
 
@@ -135,7 +137,7 @@ export function renderWeComCard(spec: CardSpec): Record<string, unknown> {
     if (optsCount === 0) return renderAskInputCard(spec);
     // multi：selectedIndices 存在（哪怕空数组）
     const isMulti = spec.selectedIndices !== undefined;
-    if (isMulti) return renderMultiUnsupportedCard(spec);
+    if (isMulti) return renderMultiViaTextCard(spec);
     // single：走 button_interaction
     return renderButtonInteractionCard(spec);
   }

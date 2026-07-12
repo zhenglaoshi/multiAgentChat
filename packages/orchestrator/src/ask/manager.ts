@@ -46,6 +46,10 @@ export class AskManager {
     if (input.type === 'input') {
       this.awaitingInputByChat.set(input.chatId, id);
     }
+    // wecom multi 走"文本回复数字"模式（企微 template_card 不支持真 checkbox toggle）
+    if (input.type === 'multi' && input.chatId.startsWith('wecom:')) {
+      this.awaitingInputByChat.set(input.chatId, id);
+    }
     logger.info('ask created', { id, type: req.type, chatId: req.chatId, options: req.options.length });
     this.events.emit('created', req);
 
@@ -133,7 +137,7 @@ export class AskManager {
       r.resolveP(req);
       this.resolvers.delete(req.id);
     }
-    if (req.type === 'input' && this.awaitingInputByChat.get(req.chatId) === req.id) {
+    if (this.awaitingInputByChat.get(req.chatId) === req.id) {
       this.awaitingInputByChat.delete(req.chatId);
     }
     this.active.delete(req.id);

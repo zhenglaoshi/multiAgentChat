@@ -12,7 +12,7 @@ import type {
 import { withKindPrefix } from 'multiagent-framework';
 import type { WeComConfig } from './config.js';
 import { TokenManager } from './auth.js';
-import { guessMediaType, sendAppMessage, uploadMedia, type WeComApiOpts } from './api.js';
+import { guessMediaType, sendAppChat, sendAppMessage, uploadMedia, type WeComApiOpts } from './api.js';
 import { WeComEventServer, pluckXml } from './event-server.js';
 import { decodeButtonKey, renderWeComCard } from './cards.js';
 
@@ -86,21 +86,38 @@ export class WeComTransport implements IMTransport {
     text: string,
     _opts?: SendTextOptions,
   ): Promise<SendResult> {
-    const touser = this.resolveTargetUser(chatId);
+    const target = this.resolveTarget(chatId);
+    const content = text.slice(0, 2000);
+    if (target.kind === 'chat') {
+      await sendAppChat(this.apiOpts, {
+        chatid: target.id,
+        msgtype: 'text',
+        text: { content },
+      });
+      return { messageId: '' };
+    }
     const r = await sendAppMessage(this.apiOpts, {
-      touser,
+      touser: target.id,
       msgtype: 'text',
       agentid: Number(this.cfg.agentId),
-      text: { content: text.slice(0, 2000) },   // 企微文本 2000 字符上限
+      text: { content },
     });
     return { messageId: r.msgid, raw: r };
   }
 
   async sendCard(chatId: string, card: CardSpec): Promise<SendResult> {
-    const touser = this.resolveTargetUser(chatId);
+    const target = this.resolveTarget(chatId);
     const template = renderWeComCard(card);
+    if (target.kind === 'chat') {
+      await sendAppChat(this.apiOpts, {
+        chatid: target.id,
+        msgtype: 'template_card',
+        template_card: template,
+      });
+      return { messageId: '' };
+    }
     const r = await sendAppMessage(this.apiOpts, {
-      touser,
+      touser: target.id,
       msgtype: 'template_card',
       agentid: Number(this.cfg.agentId),
       template_card: template,
@@ -132,24 +149,41 @@ export class WeComTransport implements IMTransport {
     path: string,
     opts?: SendFileOptions,
   ): Promise<SendResult> {
-    const touser = this.resolveTargetUser(chatId);
+    const target = this.resolveTarget(chatId);
     const type = guessMediaType(path);
     const options: Parameters<typeof uploadMedia>[3] = opts?.name ?? '';
     const media = await uploadMedia(this.apiOpts, path, type === 'image' ? 'file' : type, options);
+    const msgtype = type === 'image' ? 'file' : type;
+    if (target.kind === 'chat') {
+      await sendAppChat(this.apiOpts, {
+        chatid: target.id,
+        msgtype,
+        [msgtype]: { media_id: media.media_id },
+      });
+      return { messageId: '' };
+    }
     const r = await sendAppMessage(this.apiOpts, {
-      touser,
-      msgtype: type === 'image' ? 'file' : type,
+      touser: target.id,
+      msgtype,
       agentid: Number(this.cfg.agentId),
-      [type === 'image' ? 'file' : type]: { media_id: media.media_id },
+      [msgtype]: { media_id: media.media_id },
     });
     return { messageId: r.msgid, raw: r };
   }
 
   async sendImage(chatId: string, path: string): Promise<SendResult> {
-    const touser = this.resolveTargetUser(chatId);
+    const target = this.resolveTarget(chatId);
     const media = await uploadMedia(this.apiOpts, path, 'image');
+    if (target.kind === 'chat') {
+      await sendAppChat(this.apiOpts, {
+        chatid: target.id,
+        msgtype: 'image',
+        image: { media_id: media.media_id },
+      });
+      return { messageId: '' };
+    }
     const r = await sendAppMessage(this.apiOpts, {
-      touser,
+      touser: target.id,
       msgtype: 'image',
       agentid: Number(this.cfg.agentId),
       image: { media_id: media.media_id },
@@ -209,19 +243,24 @@ export class WeComTransport implements IMTransport {
     logger.debug('wecom unhandled msgtype', { msgType, fromUser });
   }
 
-  private resolveTargetUser(chatId: string): string {
-    // 去掉 wecom: 前缀，然后 user:xxx / chat:xxx
+  /**
+   * 从 chatId 解析出目标类型和 ID：
+   *   'wecom:user:xxx' → { kind: 'user', id: 'xxx' } —— 走 /message/send
+   *   'wecom:chat:xxx' → { kind: 'chat', id: 'xxx' } —— 走 /appchat/send（企微应用群）
+   *   'wecom:xxx'（无子前缀）→ 视作 user
+   *   fallback：WECOM_DEFAULT_TO_USER
+   */
+  private resolveTarget(chatId: string): { kind: 'user' | 'chat'; id: string } {
     const noPrefix = chatId.startsWith('wecom:') ? chatId.slice('wecom:'.length) : chatId;
     if (noPrefix.startsWith('user:')) {
-      return noPrefix.slice('user:'.length);
+      return { kind: 'user', id: noPrefix.slice('user:'.length) };
     }
     if (noPrefix.startsWith('chat:')) {
-      // 1v1 应用消息 API 不接受 chat_id，需要走「群聊消息推送」API
-      // 简化 v1：只支持 1v1 应用消息；群聊场景在后续版本加 /appchat/send
-      throw new Error(`wecom v1 暂不支持群聊消息 target=${chatId}；需要用 1v1 应用消息 (WECOM_DEFAULT_TO_USER=<userid>)`);
+      return { kind: 'chat', id: noPrefix.slice('chat:'.length) };
     }
-    // fallback：defaultToUser
-    if (this.cfg.defaultToUser) return this.cfg.defaultToUser;
-    throw new Error(`wecom: 无法解析 target chatId=${chatId}，设 WECOM_DEFAULT_TO_USER 或用 wecom:user:<userid>`);
+    if (this.cfg.defaultToUser) {
+      return { kind: 'user', id: this.cfg.defaultToUser };
+    }
+    throw new Error(`wecom: 无法解析 target chatId=${chatId}，设 WECOM_DEFAULT_TO_USER 或用 wecom:user:<userid> / wecom:chat:<chatid>`);
   }
 }

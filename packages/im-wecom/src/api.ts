@@ -82,6 +82,27 @@ export async function sendAppMessage(
 }
 
 /**
+ * 发群聊消息 —— 走 /cgi-bin/appchat/send。跟 /message/send 的区别是 target 是
+ * chatid（企微里由 /appchat/create 创建的应用群，不是普通企业群）。
+ *
+ * 参考：https://developer.work.weixin.qq.com/document/path/90248
+ */
+export interface SendAppChatPayload {
+  chatid: string;
+  msgtype: string;
+  safe?: number;
+  [key: string]: unknown;
+}
+
+export async function sendAppChat(
+  opts: WeComApiOpts,
+  payload: SendAppChatPayload,
+): Promise<{ ok: true }> {
+  await postJson(opts, '/appchat/send', payload);
+  return { ok: true };
+}
+
+/**
  * 更新已发出的模板卡片。企微有两种：
  *   /message/update_template_card —— 只能更新交互按钮的 checked 状态之类
  *   建议改用 /message/recall（撤回）+ 重新 send —— 简单可靠
