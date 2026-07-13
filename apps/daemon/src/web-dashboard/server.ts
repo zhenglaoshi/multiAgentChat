@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { logger } from 'multiagent-orchestrator';
@@ -131,10 +132,17 @@ export class WebDashboardServer {
         const body = await readJson(req);
         const tty = body.tty as string;
         if (!tty) return sendJson(res, { error: 'missing tty' }, 400);
+        const rawWidth = body.width as number | undefined;
+        const targetWidth = typeof rawWidth === 'number' && rawWidth >= 400 && rawWidth <= 2400
+          ? rawWidth
+          : 1200;   // 默认 1200px 宽度 —— Retina 全窗口 13MB → 降到 100-400KB
         const pngPath = await captureScreen(tty);
-        const buf = await readFile(pngPath);
-        const dataUrl = 'data:image/png;base64,' + buf.toString('base64');
-        return sendJson(res, { dataUrl, path: pngPath, bytes: buf.length });
+        // sips 降采样 + 转 JPEG（RGB 无 alpha，体积再降 2-4x，手机 4G 秒开）
+        const jpgPath = pngPath.replace(/\.png$/i, '.jpg');
+        await runSipsResize(pngPath, jpgPath, targetWidth);
+        const buf = await readFile(jpgPath);
+        const dataUrl = 'data:image/jpeg;base64,' + buf.toString('base64');
+        return sendJson(res, { dataUrl, path: jpgPath, bytes: buf.length, width: targetWidth });
       }
       if (path === '/api/exec' && req.method === 'POST') {
         const body = await readJson(req);
@@ -203,6 +211,29 @@ function sendJson(res: ServerResponse, obj: unknown, status = 200): void {
   res.statusCode = status;
   res.setHeader('content-type', 'application/json');
   res.end(JSON.stringify(obj));
+}
+
+/**
+ * 用 macOS 内建 sips 把 PNG 降采样成 JPEG（宽度 targetWidth，压缩率 75%）。
+ * Retina 全窗口 png 13MB → jpg 100-400KB，手机 4G 秒开。
+ */
+function runSipsResize(srcPng: string, outJpg: string, targetWidth: number): Promise<void> {
+  return new Promise((resolveP, rejectP) => {
+    const p = spawn('sips', [
+      '-s', 'format', 'jpeg',
+      '-s', 'formatOptions', '75',
+      '--resampleWidth', String(targetWidth),
+      srcPng,
+      '--out', outJpg,
+    ], { stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderr = '';
+    p.stderr.on('data', (d: Buffer) => (stderr += d.toString('utf8')));
+    p.on('error', rejectP);
+    p.on('close', (code) => {
+      if (code === 0) resolveP();
+      else rejectP(new Error(`sips exit ${code}: ${stderr}`));
+    });
+  });
 }
 
 async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
