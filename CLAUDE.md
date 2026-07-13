@@ -24,62 +24,87 @@ agent request-approval --title "git push --force" --body "..."  # 审批
 
 ## 整体结构
 
+> **pnpm monorepo**（不再是单 `src/`）。一个 `apps/daemon` 组装入口 + 5 个 `packages/*`。
+> 依赖方向：`daemon` → `im-lark`/`im-wecom` → `framework`/`host-mac`/`orchestrator`。
+> `framework`/`host-mac`/`orchestrator` 之间互不依赖（传输无关、宿主无关、编排无关三层解耦）。
+> 包名：`multiagent-framework` / `multiagent-host-mac` / `multiagent-im-lark` / `multiagent-im-wecom` / `multiagent-orchestrator`。
+
 ```
-src/
-├─ index.ts                 启动总入口（installWsWatchdog → startLarkBot → ControlServer → Watcher → HealthCheck）
-├─ config.ts                .env 加载 + 全局配置
-├─ logger.ts                统一 logger（INFO/WARN/ERROR 带时间戳）
-├─ workspace.ts             ./data 目录管理
-├─ recent-cwds.ts           最近用过的 cwd（用于 new-tab dropdown）
+apps/
+└─ daemon/src/
+    ├─ index.ts             启动总入口（main()：assertNodeVersion → ensureEnvFile → startCaffeinate
+    │                       → installWsWatchdog → startLarkBot →[可选]WeComTransport
+    │                       → startControlServer → attachWatcherToLark → startHealthCheck
+    │                       → startSystemEventsProbe →[可选]WebDashboardServer → refreshDirIndex）
+    │                       同时幂等 upsert Claude Code hooks + agent CLI symlink + multiagent-lark skill
+    │                       企微侧的 final/ask/cardAction/approval 监听器也都挂在这（attachWeCom*）
+    └─ web-dashboard/       内置 Web 面板（config / html / server；缺 WEB_DASHBOARD_TOKEN 则不启用）
+
+packages/
+├─ framework/               传输无关 + 宿主无关的公共内核
+│   └─ src/
+│       ├─ control/         本地 IPC（Unix domain socket）
+│       │   ├─ server.ts    startControlServer：起 ~/.multiagent-chat/agent.sock，路由所有 op
+│       │   ├─ cli.ts       `agent` CLI 实现（tabs/use/which/send/open/show/lark/approvals/doctor ...）
+│       │   ├─ doctor.ts    环境自检（权限 / 依赖 / socket）
+│       │   └─ protocol.ts  Request/Response 类型 + SOCKET_PATH
+│       └─ im/              IMTransport 抽象接口（lark/wecom 都 implement；chatId 带 'lark:'/'wecom:' 前缀）
 │
-├─ lark/                    飞书侧（入站事件 + 出站 API）
-│   ├─ client.ts            startLarkBot：建 SDK Client + WSClient 长连接
-│   ├─ handlers.ts          事件入口（im.message.receive_v1 / card.action.trigger）→ dispatchSendToTab / handleCommand / handleCardAction
-│   ├─ commands.ts          斜杠命令路由（/dashboard /shells /history /new /use /preset /recall /approvals /watch ...）
-│   ├─ cards.ts             所有交互卡片 schema（progress / batch / dashboard / waitingInput / approval / chooseDir / ack ...）
-│   ├─ api.ts               withRetry 包裹的 lark API 调用（sendCardReturnId / patchCard / sendFile / sendImage）
-│   ├─ target.ts            @target 解析（tty 全/短匹配 → title → cwd basename → fuzzy）
-│   └─ reply.ts             replyText / sendText 工具
+├─ host-mac/                Mac 宿主能力（AppleScript 控制 Terminal.app）
+│   └─ src/
+│       ├─ terminal/
+│       │   ├─ tabs.ts      listTabs / getHistory / send / forceEnter / newTab
+│       │   ├─ applescript.ts runScript / runOsascript 包装 + escape
+│       │   ├─ keys.ts      sendKeys / forceEnter（System Events key code 36 发真 Enter）
+│       │   ├─ probe.ts     probeSystemEvents（术语故障自检；恒 false 分支里放 key code 36）
+│       │   ├─ screen.ts    captureScreen（截 tab 可视区域）
+│       │   ├─ status.ts    inferTabStatus（idle/busy/claude/login/waiting/TUI）
+│       │   └─ types.ts     TerminalTab 类型
+│       ├─ workspace.ts     ./data 目录管理
+│       ├─ recent-cwds.ts   最近用过的 cwd（new-tab dropdown）
+│       ├─ dir-index.ts     后台 refreshDirIndex 建目录索引（open/new 时补全）
+│       └─ bookmarks.ts     常用目录书签
 │
-├─ terminal/                AppleScript 控制 Terminal.app
-│   ├─ tabs.ts              listTabsRaw / listTabs / getHistory / send / forceEnter / newTab
-│   ├─ applescript.ts       runOsascript 包装 + escape
-│   ├─ status.ts            inferTabStatus（idle/busy/claude/login/waiting/TUI）
-│   └─ types.ts             TerminalTab 类型
+├─ im-lark/                 飞书 transport + tab 观测通知（monitor 与 lark cards/api 强耦合，暂同包）
+│   └─ src/
+│       ├─ lark/
+│       │   ├─ client.ts    startLarkBot：建 SDK Client + WSClient 长连接
+│       │   ├─ handlers.ts  事件入口（im.message.receive_v1 / card.action.trigger）→ dispatch/command/cardAction
+│       │   ├─ commands.ts  斜杠命令路由（/dashboard /shells /history /new /use /preset /recall /approvals /watch ...）
+│       │   ├─ cards.ts     所有交互卡片 schema（progress / batch / dashboard / approval / chooseDir / ack ...）
+│       │   ├─ api.ts       withRetry 包裹的 lark API（sendCardReturnId / patchCard / sendFile / sendImage）
+│       │   ├─ target.ts    @target 解析（tty 全/短匹配 → title → cwd basename → fuzzy）
+│       │   ├─ task-render.ts 任务进度/结果卡的渲染
+│       │   └─ reply.ts     replyText / sendText 工具
+│       ├─ monitor/
+│       │   ├─ watcher.ts   tab poll（2s tick）+ pending 字符长度稳定性检测 + cache
+│       │   ├─ pending.ts   PendingOutput 跟踪器（add/forTty/remove/done 列表）
+│       │   ├─ notifier.ts  attachWatcherToLark：watcher event → patchCard / sendCardMessage
+│       │   ├─ detector.ts  paragraph stable / local task detector 辅助
+│       │   ├─ chains.ts    任务链（A2：@a X >> @b Y）执行编排
+│       │   ├─ sanitize.ts  推送前清洗终端 noise（ANSI / 控制字符）
+│       │   ├─ health-check.ts  30s 调 lark token endpoint，失败 3 次自杀
+│       │   ├─ ws-watchdog.ts   monkey-patch console.log 截获 SDK [ws] 状态，判定 WS 死
+│       │   └─ system-events-probe.ts  每 2min 跑 probeSystemEvents，状态翻转时推飞书告警
+│       └─ chats/           per-chat 状态（activeTty / watchAllTabs）store + types
 │
-├─ monitor/                 后台观测 + 通知
-│   ├─ watcher.ts           tab poll（3s tick）+ pending 字符长度稳定性检测 + cache
-│   ├─ pending.ts           PendingOutput 跟踪器（add/forTty/remove/done 列表）
-│   ├─ notifier.ts          attachWatcherToLark：watcher event → patchCard / sendCardMessage
-│   ├─ detector.ts          paragraph stable / local task detector 辅助
-│   ├─ health-check.ts      30s 调 lark token endpoint，失败 3 次自杀
-│   ├─ ws-watchdog.ts       monkey-patch console.log 截获 SDK [ws] 状态，判定 WS 死
-│   └─ ...
+├─ im-wecom/                企业微信 transport（可选；配了 WECOM_* 才 attach）
+│   └─ src/                 config / transport / api / auth / crypto（签名+AES）/ event-server / cards
 │
-├─ control/                 本地 IPC（Unix domain socket）
-│   ├─ server.ts            启动 ~/.multiagent-chat/agent.sock，路由所有 op
-│   ├─ cli.ts               `agent` CLI 实现（tabs/use/which/send/open/show/lark/approvals/install-skill ...）
-│   └─ protocol.ts          Request/Response 类型 + SOCKET_PATH
-│
-├─ approval/                审批工作流
-│   ├─ manager.ts           ApprovalManager.create / resolve / list，5min auto-timeout
-│   └─ types.ts
-│
-├─ memory/                  跨任务长期记忆
-│   ├─ store.ts             ./data/memories/<id>.json
-│   ├─ recall.ts            tokenize + scoreMemory（cwd + keyword + age） + formatRecallPrefix
-│   └─ types.ts             TaskMemory
-│
-├─ chats/                   per-chat 状态（activeTty / watchAllTabs）
-│   ├─ store.ts             ./data/chats/<chatId>.json
-│   └─ types.ts
-│
-└─ presets/                 任务模板雏形（A1 会在此扩展）
-    └─ store.ts
+└─ orchestrator/            传输无关的编排 + 持久化（./data 落盘）
+    └─ src/
+        ├─ logger.ts        统一 logger（INFO/WARN/ERROR 带时间戳）
+        ├─ tasks/           任务模型 + SOP prompt（store / sop-prompt / types）
+        ├─ presets/         任务模板（A1）
+        ├─ memory/          跨任务长期记忆 + stage 记忆（store / stage-store / recall / types）
+        ├─ approval/        审批工作流（manager.create/resolve/list，5min auto-timeout）
+        ├─ ask/             AskUserQuestion 交互问答（manager / types）
+        ├─ subagents/       subagent 注册表（registry / types）
+        └─ knowledge/       shell 交互流自动提炼知识条目（extractor / heuristics / store / sanitize；缺 KNOWLEDGE_EXTRACT_ENABLED 不启用）
 
 skills/multiagent-lark/SKILL.md    →  会 symlink/copy 到 ~/.claude/skills/
-bin/agent                          →  CLI 入口
-data/                              →  运行时持久化（memories / chats / approvals / templates）
+bin/agent                          →  CLI 入口（npx tsx packages/framework/src/control/cli.ts）
+data/                              →  运行时持久化（memories / chats / approvals / templates / knowledge）
 ```
 
 ## 核心数据流
@@ -105,7 +130,7 @@ pendingTracker.add({ tty, beforeCharLen, originalPrompt, source, batchId... })
 ### 2. 任务执行中 → 进度回传
 
 ```
-watcher tick (3s) → for each pending
+watcher tick (2s) → for each pending
    ↓ getHistory(tty) 拿 fullHist
 currentCharLen = fullHist.length
    ↓ 与 lastSeenCharLen 比较
@@ -177,6 +202,16 @@ spawn detached: agent lark send-text --auto <text>
 → Terminal.app / iTerm / 任何运行 dev 的进程 + osascript 自己都要加到：
   System Settings → Privacy & Security → Accessibility
 
+### System Events 术语故障（forceEnter 静默失败）
+
+`forceEnter` 靠 System Events 专有术语 `key code 36` 发真 Enter。当 System Events helper 被拖挂
+（进程 T 态 / LaunchServices 注册损坏 / 术语字典加载失败，实测诱因：Mac 严重过载 + 长时间未重启），
+`key code` 会在 **编译期** 就报语法错 → forceEnter 静默失败 → 飞书注入的命令停在命令行不回车。
+→ `host-mac/terminal/probe.ts` 的 `probeSystemEvents()` 把 `key code 36` 塞进恒 false 分支：编译期
+  照样解析术语（坏则捕获），运行时永不真按键。`im-lark/monitor/system-events-probe.ts` 每 2min 自检，
+  仅在状态翻转时推飞书（正常→故障发 🚨 含修法；故障→正常发 ✅），持续故障每 30min 再提醒。
+→ **修法就是重启 Mac**（解开 wedged helper）。重启后跑一次探针脚本确认 exit 0 即恢复。
+
 ### .env 不可提交
 
 `LARK_APP_SECRET` 在 .env，gitignored。`.env.example` 模板可提交。任何 audit / agent / commit 行为都不要把 .env 内容写进任何地方。
@@ -184,9 +219,9 @@ spawn detached: agent lark send-text --auto <text>
 ### WS 长连接的"假活"
 
 `@larksuiteoapi/node-sdk` 的 WSClient 偶尔会 silent 断开，HTTP 还通但 WS 死。
-→ `monitor/ws-watchdog.ts` monkey-patch `console.log` 截获 SDK 的 `[ws] reconnect` / `[ws] ws client ready`，跟踪 reconnect 计数。
-→ `monitor/health-check.ts` 先看 WS 状态（reconnect ≥3 且 90s 没 ready）触发自杀；再看 HTTP（失败 3 次自杀）。
-→ 自杀 = `utimesSync` touch index.ts 让 tsx watch reload + `process.exit(1)`。
+→ `im-lark/monitor/ws-watchdog.ts` monkey-patch `console.log` 截获 SDK 的 `[ws] reconnect` / `[ws] ws client ready`，跟踪 reconnect 计数。
+→ `im-lark/monitor/health-check.ts` 先看 WS 状态（reconnect ≥3 且 90s 没 ready）触发自杀；再看 HTTP（失败 3 次自杀）。
+→ 自杀 = `utimesSync` touch `apps/daemon/src/index.ts` 让 tsx watch reload + `process.exit(1)`。
 
 ### pending 的 char-length 而非 line-count
 
@@ -228,19 +263,26 @@ npm run typecheck
 
 ## 扩展时的小坑
 
-1. 新增 lark API 调用 → 用 `api.ts` 的 `withRetry`，不要直接 `client.xxx.xxx`
-2. 新增卡片 → `cards.ts` 集中放，按已有 template 配色：黄/红 = 需用户响应；蓝/绿 = 信息
-3. 新增 watcher event → 在 `watcher.events.emit('xxx')` 之外，必须在 `notifier.ts` 接听
-4. 新增 CLI 命令 → 同时改 `control/cli.ts`（client 侧）+ `control/server.ts`（server 侧）+ `control/protocol.ts`（共享 type）
-5. 改了 `index.ts` 或 watcher 启动逻辑 → 注意 tsx watch reload 是否能干净重启（旧的 setInterval 是否清理）
+1. 新增 lark API 调用 → 用 `im-lark/lark/api.ts` 的 `withRetry`，不要直接 `client.xxx.xxx`
+2. 新增卡片 → `im-lark/lark/cards.ts` 集中放，按已有 template 配色：黄/红 = 需用户响应；蓝/绿 = 信息
+3. 新增 watcher event → 在 `watcher.events.emit('xxx')` 之外，必须在 `im-lark/monitor/notifier.ts` 接听
+4. 新增 CLI 命令 → 同时改 `framework/control/cli.ts`（client 侧）+ `framework/control/server.ts`（server 侧）+ `framework/control/protocol.ts`（共享 type）
+5. 改了 `apps/daemon/src/index.ts` 或 watcher 启动逻辑 → 注意 tsx watch reload 是否能干净重启（旧的 setInterval 是否清理）
+6. 新增跨传输的编排/持久化能力（不绑飞书）→ 放 `orchestrator/`，通过 `multiagent-orchestrator` 导出；飞书专属的才留 `im-lark/`
+7. 加平台（如企微已在 `im-wecom/`）→ implement `framework/im` 的 `IMTransport`，daemon 里 attach，chatId 带平台前缀
 
-## 当前阶段（2026-06）
+## 当前阶段（2026-07）
 
-v3.x 完成（基础链路 + TUI 适配 + memory + approval + WS watchdog）
-v4.0 进行中：A 路线 · 编排
-  - A1 任务模板（/template + /run）
-  - A2 任务链（@a X >> @b Y）
-  - A3 Planner（待评估）
-旁支：代码 audit / integration test 主路径
+已完成：
+- v3.x 基础链路 + TUI 适配 + memory + approval + WS watchdog
+- monorepo 拆分（framework / host-mac / im-lark / im-wecom / orchestrator）—— 三层解耦，为多平台铺路
+- 企微 transport（im-wecom，`IMTransport` 抽象，配 WECOM_* 才启用）
+- Web Dashboard（apps/daemon/web-dashboard，配 WEB_DASHBOARD_TOKEN 启用）
+- Knowledge Extraction（orchestrator/knowledge，shell 交互流自动提炼；KNOWLEDGE_EXTRACT_ENABLED=1 启用）
+- System Events 术语故障自检告警（见上「关键约定」）
+
+进行中 / 待办：
+- A 路线 · 编排：A1 任务模板（/template + /run）、A2 任务链（chains.ts）、A3 Planner（待评估）
+- v52 `restart-all-claude-tabs --except`（待做）
 
 下一会话从 `agent tabs` 开始看现状，然后 `cat MEMORY.md` 看 memory 上下文。
