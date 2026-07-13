@@ -1,6 +1,6 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import type { ApprovalRequest, ApprovalStatus, AskRequest, AskType } from 'multiagent-orchestrator';
+import type { ApprovalRequest, ApprovalStatus, AskRequest, AskType, KnowledgeEntry } from 'multiagent-orchestrator';
 import type { ChatState } from 'multiagent-im-lark';
 import type { LoopRule } from 'multiagent-orchestrator';
 import type { TaskState, TaskStatus } from 'multiagent-orchestrator';
@@ -219,6 +219,44 @@ export interface WeComAskData {
   request: AskRequest;
 }
 
+// ---- Knowledge extraction ops ----
+
+export interface KnowledgeStatsOp {
+  op: 'knowledge.stats';
+}
+
+export interface KnowledgeListOp {
+  op: 'knowledge.list';
+  limit?: number;
+  cwd?: string;
+  tag?: string;
+  kind?: string;
+}
+
+export interface KnowledgeExtractLastOp {
+  op: 'knowledge.extract-last';
+  tty: string;
+  lines?: number;
+}
+
+export interface KnowledgeStatsData {
+  total: number;
+  byKind: Record<string, number>;
+  latestAt: number | null;
+  queueSize: number;
+  enabled: boolean;
+}
+
+export interface KnowledgeListData {
+  entries: KnowledgeEntry[];
+}
+
+export interface KnowledgeExtractLastData {
+  queued: boolean;
+  reason?: string;
+  chunkLen: number;
+}
+
 // ---- Ask op（弹飞书交互卡片，阻塞式拿答案） ----
 
 export interface LarkAskOp {
@@ -371,6 +409,9 @@ export type Request =
   | WeComSendImageOp
   | WeComResolveChatOp
   | WeComAskOp
+  | KnowledgeStatsOp
+  | KnowledgeListOp
+  | KnowledgeExtractLastOp
   | TaskCreateOp
   | TaskGetOp
   | TaskListOp

@@ -9,7 +9,7 @@ import { startLarkBot } from 'multiagent-im-lark';
 import { loadWeComConfig, WeComTransport, renderWeComCard } from 'multiagent-im-wecom';
 import { loadWebDashboardConfig } from './web-dashboard/config.js';
 import { WebDashboardServer } from './web-dashboard/server.js';
-import { approvals, asks, type ApprovalRequest, type AskRequest } from 'multiagent-orchestrator';
+import { approvals, asks, knowledgeQueue, type ApprovalRequest, type AskRequest } from 'multiagent-orchestrator';
 import type { CardSpec } from 'multiagent-framework';
 import { logger } from 'multiagent-orchestrator';
 import { startHealthCheck } from 'multiagent-im-lark';
@@ -653,6 +653,49 @@ async function dispatchWeComSlash(
 }
 
 /**
+ * Knowledge extractor 挂到 watcher.taskOutput —— 每次 isFinal 时把 taskOnlyTail
+ * 入队，异步 LLM 提取值得记住的知识。启发式过滤 + sanitize + 去重都在 extractor 内。
+ * 通过 env KNOWLEDGE_EXTRACT_ENABLED=1 打开（默认关闭以免第一次跑就消耗 subscription）。
+ */
+function attachKnowledgeExtractor(): void {
+  if (process.env['KNOWLEDGE_EXTRACT_ENABLED'] !== '1') {
+    logger.info('knowledge extractor 未启用（设 KNOWLEDGE_EXTRACT_ENABLED=1 开启）');
+    return;
+  }
+  logger.info('knowledge extractor attached · 提取器已开 · claude -p 本地跑');
+  watcher.events.on(
+    'taskOutput',
+    ({
+      pending,
+      taskOnlyTail,
+      outputTail,
+      isFinal,
+    }: {
+      pending: PendingOutput;
+      taskOnlyTail: string;
+      outputTail: string;
+      isFinal: boolean;
+    }) => {
+      if (!isFinal) return;
+      const chunk = (taskOnlyTail && taskOnlyTail.trim().length > 0) ? taskOnlyTail : outputTail;
+      if (!chunk || chunk.length < 50) return;
+      const origin =
+        pending.source === 'wecom' ? 'wecom' :
+        pending.source === 'local' ? 'local' :
+        'feishu';
+      const enq: Parameters<typeof knowledgeQueue.enqueue>[0] = {
+        chunk,
+        origin,
+      };
+      if (pending.originalPrompt) enq.originalPrompt = pending.originalPrompt;
+      if (pending.tty) enq.tty = pending.tty;
+      if (pending.cwd) enq.cwd = pending.cwd;
+      knowledgeQueue.enqueue(enq);
+    },
+  );
+}
+
+/**
  * 监听 watcher.taskOutput —— 只处理 pending.im === 'wecom'，在 isFinal 时把
  * 任务摘要用 wecom transport 发到源 chat。中间不 patch（企微 body update 有限，
  * 用"初始 ack + 最终摘要"简化模式）。
@@ -957,6 +1000,7 @@ async function main() {
   await startControlServer(lark.client, wecom ?? undefined);
   attachWatcherToLark(lark.client);
   attachStageMemoryListener();
+  attachKnowledgeExtractor();
   startHealthCheck(lark.client);
   await ensureSkillInstalled();
   await installClaudeCodeHooks();

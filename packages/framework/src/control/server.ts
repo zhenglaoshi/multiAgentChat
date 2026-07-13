@@ -6,7 +6,7 @@ import { homedir } from 'node:os';
 import { basename, dirname, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import * as Lark from '@larksuiteoapi/node-sdk';
-import { approvals, asks } from 'multiagent-orchestrator';
+import { approvals, asks, knowledgeQueue, listEntries, statsSummary } from 'multiagent-orchestrator';
 import { listAllChats, loadChat, saveChat } from 'multiagent-im-lark';
 import { originShellPushCard, sendCardMessage, sendFile, sendImage, sendTextMessage } from 'multiagent-im-lark';
 import { logger } from 'multiagent-orchestrator';
@@ -675,6 +675,54 @@ async function handleLarkAsk(
     const { result } = await asks.create(createInput);
     const final = await result;
     sendOk<LarkAskData>(sock, { request: final });
+  } catch (e) {
+    sendErr(sock, (e as Error).message);
+  }
+  sock.end();
+}
+
+// ---- Knowledge ops ----
+
+async function handleKnowledgeStats(sock: Socket) {
+  const s = await statsSummary();
+  sendOk<import('./protocol.js').KnowledgeStatsData>(sock, {
+    total: s.total,
+    byKind: s.byKind,
+    latestAt: s.latestAt,
+    queueSize: knowledgeQueue.size(),
+    enabled: process.env['KNOWLEDGE_EXTRACT_ENABLED'] === '1',
+  });
+  sock.end();
+}
+
+async function handleKnowledgeList(
+  sock: Socket,
+  req: Extract<Request, { op: 'knowledge.list' }>,
+) {
+  const opts: Parameters<typeof listEntries>[0] = { limit: req.limit ?? 20 };
+  if (req.cwd) opts.cwd = req.cwd;
+  if (req.tag) opts.tag = req.tag;
+  if (req.kind) opts.kind = req.kind;
+  const entries = await listEntries(opts);
+  sendOk<import('./protocol.js').KnowledgeListData>(sock, { entries });
+  sock.end();
+}
+
+async function handleKnowledgeExtractLast(
+  sock: Socket,
+  req: Extract<Request, { op: 'knowledge.extract-last' }>,
+) {
+  try {
+    const lines = req.lines ?? 200;
+    const full = await getHistory(req.tty);
+    const arr = full.split('\n');
+    const tail = arr.slice(-lines).join('\n');
+    const r = knowledgeQueue.enqueue({ chunk: tail, origin: 'local', tty: req.tty });
+    sendOk<import('./protocol.js').KnowledgeExtractLastData>(sock, {
+      queued: r.queued,
+      reason: r.reason,
+      chunkLen: tail.length,
+    });
   } catch (e) {
     sendErr(sock, (e as Error).message);
   }
@@ -1366,6 +1414,12 @@ async function dispatch(sock: Socket, req: Request): Promise<void> {
       return handleWeComResolveChat(sock, req);
     case 'wecom.ask':
       return handleWeComAsk(sock, req);
+    case 'knowledge.stats':
+      return handleKnowledgeStats(sock);
+    case 'knowledge.list':
+      return handleKnowledgeList(sock, req);
+    case 'knowledge.extract-last':
+      return handleKnowledgeExtractLast(sock, req);
     case 'task.create':
       return handleTaskCreate(sock, req);
     case 'task.get':

@@ -1365,6 +1365,78 @@ async function cmdRequestApproval(flags: Flags): Promise<void> {
   }
 }
 
+async function cmdKnowledge(flags: Flags): Promise<void> {
+  const sub = flags.positional[0] ?? 'stats';
+
+  if (sub === 'stats') {
+    const data = await sendOnce<import('./protocol.js').KnowledgeStatsData>({ op: 'knowledge.stats' });
+    stdout.write(`Knowledge extraction · ${data.enabled ? '✅ ENABLED' : '⊘ 未启用（设 KNOWLEDGE_EXTRACT_ENABLED=1）'}\n`);
+    stdout.write(`总条目：${data.total}\n`);
+    if (data.total > 0 && data.latestAt) {
+      stdout.write(`最新：${new Date(data.latestAt).toISOString()}\n`);
+      stdout.write(`按 kind:\n`);
+      for (const [k, v] of Object.entries(data.byKind)) stdout.write(`  ${k}: ${v}\n`);
+    }
+    stdout.write(`队列：${data.queueSize} 个待提取\n`);
+    return;
+  }
+
+  if (sub === 'list') {
+    const opts: Parameters<typeof sendOnce>[0] = {
+      op: 'knowledge.list',
+      limit: flags.lines ?? 20,
+    };
+    if (flags.cwd) (opts as unknown as Record<string, unknown>)['cwd'] = flags.cwd;
+    const data = await sendOnce<import('./protocol.js').KnowledgeListData>(opts as unknown as Request);
+    if (data.entries.length === 0) { stdout.write('(空)\n'); return; }
+    for (const e of data.entries) {
+      const ts = new Date(e.createdAt).toISOString().replace('T', ' ').slice(0, 16);
+      const cwd = e.source.cwd ? ` · ${e.source.cwd.replace(/^.+\//, '')}` : '';
+      stdout.write(`[${ts}] ${e.kind}${cwd}  ·  ${e.title}\n`);
+      stdout.write(`  tags: ${e.tags.join(', ')}\n`);
+      stdout.write(`  id: ${e.id}\n\n`);
+    }
+    return;
+  }
+
+  if (sub === 'show') {
+    const id = flags.positional[1];
+    if (!id) die('agent knowledge show <id>');
+    const data = await sendOnce<import('./protocol.js').KnowledgeListData>({ op: 'knowledge.list', limit: 1000 } as never);
+    const e = data.entries.find((x) => x.id === id || x.id.startsWith(id));
+    if (!e) die(`no entry: ${id}`);
+    stdout.write(`# ${e.title}\n\n`);
+    stdout.write(`Kind: ${e.kind}\n`);
+    stdout.write(`Created: ${new Date(e.createdAt).toISOString()}\n`);
+    stdout.write(`Tags: ${e.tags.join(', ')}\n`);
+    stdout.write(`Origin: ${e.source.origin}${e.source.cwd ? ' · ' + e.source.cwd : ''}\n`);
+    if (e.source.commandsRun?.length) {
+      stdout.write(`Commands: ${e.source.commandsRun.slice(0, 5).join(' | ')}\n`);
+    }
+    stdout.write(`\n---\n\n${e.body}\n`);
+    return;
+  }
+
+  if (sub === 'extract-last' || sub === 'el') {
+    const tty = await resolveTargetTty(flags);
+    const lines = flags.lines ?? 200;
+    const data = await sendOnce<import('./protocol.js').KnowledgeExtractLastData>({
+      op: 'knowledge.extract-last',
+      tty,
+      lines,
+    });
+    if (data.queued) {
+      stdout.write(`✓ 已入队（${data.chunkLen} 字符）· 后台跑 claude -p，几秒后 agent knowledge list 看结果\n`);
+    } else {
+      stdout.write(`⊘ 未入队：${data.reason ?? '(未知原因)'}\n`);
+      exit(1);
+    }
+    return;
+  }
+
+  die(`agent knowledge <stats|list [-n N] [--cwd X]|show <id>|extract-last [-t tty] [-n lines]>`);
+}
+
 function printHelp() {
   stdout.write(
     [
@@ -1515,6 +1587,9 @@ async function main(): Promise<void> {
         return await cmdDoctor();
       case 'subagent':
         return await cmdSubagent(flags);
+      case 'knowledge':
+      case 'kb':
+        return await cmdKnowledge(flags);
       case 'help':
       case '--help':
       case '-h':
