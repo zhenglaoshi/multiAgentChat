@@ -13,6 +13,7 @@ import { approvals, asks, knowledgeQueue, type ApprovalRequest, type AskRequest 
 import type { CardSpec } from 'multiagent-framework';
 import { logger } from 'multiagent-orchestrator';
 import { startHealthCheck } from 'multiagent-im-lark';
+import { startSystemEventsProbe } from 'multiagent-im-lark';
 import { attachWatcherToLark } from 'multiagent-im-lark';
 import { installWsWatchdog } from 'multiagent-im-lark';
 import { attachStageMemoryListener } from 'multiagent-orchestrator';
@@ -1002,6 +1003,7 @@ async function main() {
   attachStageMemoryListener();
   attachKnowledgeExtractor();
   startHealthCheck(lark.client);
+  startSystemEventsProbe(lark.client);
   await ensureSkillInstalled();
   await installClaudeCodeHooks();
   await ensureAgentOnPath();

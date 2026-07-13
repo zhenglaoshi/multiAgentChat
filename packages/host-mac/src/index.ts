@@ -2,6 +2,7 @@ export * from './terminal/types.js';
 export * from './terminal/tabs.js';
 export * from './terminal/status.js';
 export * from './terminal/applescript.js';
+export * from './terminal/probe.js';
 export * from './terminal/screen.js';
 export * from './terminal/keys.js';
 export * from './workspace.js';
