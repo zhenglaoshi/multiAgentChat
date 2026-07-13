@@ -594,6 +594,8 @@ body: 4 步 workflow（脚本 → 汇总 → 打包 → OBS 签名地址）+ 26 
 - 自动 recall 注入新 task 的 prompt（跟 memory recall 融合）
 - 周报 launchd → 飞书推 markdown
 
+**详见 [docs/knowledge.md](knowledge.md)** —— 完整架构、脱敏 pattern、CLI 用法、常见问题。
+
 ---
 
 ## 已知的能力边界

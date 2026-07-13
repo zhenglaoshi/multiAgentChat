@@ -12,6 +12,8 @@
 ## 📖 我在日常用
 - **[commands.md](commands.md)** — 完整命令速查（飞书 / 企微 + Mac CLI，按任务分类）
 - **[sop.md](sop.md)** — SOP 工作流（多 stage / gate / loop / subagent）
+- **[web-dashboard.md](web-dashboard.md)** — 手机浏览器直控 Mac 的 setup + 用法
+- **[knowledge.md](knowledge.md)** — 自动提炼 shell 交互为个人知识库（Phase 1）
 - **[troubleshooting.md](troubleshooting.md)** — 遇到问题查这里
 
 ## 🛠 我想改代码

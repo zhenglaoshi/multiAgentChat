@@ -211,6 +211,20 @@ agent request-approval --title "DROP TABLE prod.users" --body "..."
 - Stage 级：SOP 每 stage 完成时落盘
 - 派新任务时自动检索并注入到 prompt（cwd 精确匹配 + 关键词 + 时间衰减）
 
+### 📱 Web Dashboard（手机浏览器直控 Mac）
+- daemon 内嵌 HTTP :3940，Bearer token 鉴权
+- 手机浏览器一屏见所有 tab + 抓屏（自动降采样 17.5MB→300KB）+ 命令 + Live 3s 自动刷新
+- 飞书发 `/wd` 一键拿多路径 URL（公网 cloudflared / LAN / mDNS / localhost）
+- 详见 [docs/web-dashboard.md](docs/web-dashboard.md)
+
+### 🧠 Knowledge Extraction · 自动个人知识库（Phase 1）
+每次 tab 任务完成 → 脱敏 + 启发式过滤 + spawn `claude -p` 提炼成结构化知识条目（5 类：problem-solved / howto / decision / gotcha / reference）。跨项目复用经验，避免重复踩坑。
+```bash
+KNOWLEDGE_EXTRACT_ENABLED=1              # .env
+agent knowledge stats/list/show/extract-last
+```
+详见 [docs/knowledge.md](docs/knowledge.md)。
+
 ---
 
 ## 命令速查
@@ -253,6 +267,8 @@ agent doctor                                                # 健康检查
 | 完整功能清单 | [docs/features.md](docs/features.md) |
 | 命令速查 | [docs/commands.md](docs/commands.md) |
 | SOP 编排 | [docs/sop.md](docs/sop.md) |
+| **Web dashboard 手机直控** | [docs/web-dashboard.md](docs/web-dashboard.md) |
+| **Knowledge 自动知识库** | [docs/knowledge.md](docs/knowledge.md) |
 | 排错 | [docs/troubleshooting.md](docs/troubleshooting.md) |
 | 改代码 | [docs/architecture.md](docs/architecture.md) + [CONTRIBUTING.md](CONTRIBUTING.md) |
 | 全部文档 | [docs/README.md](docs/README.md) |

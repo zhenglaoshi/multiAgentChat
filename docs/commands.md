@@ -226,6 +226,21 @@ agent subagent gen-submit --task-id X --chat Y --body '<json>' [--hard]
 
 ---
 
+## Mac CLI Knowledge Base（自动提炼 shell 交互）
+
+```bash
+agent knowledge stats               # 总条目 / byKind / 队列 / 启用状态
+agent knowledge list [-n 20]        # 最近 N 条列表
+agent knowledge show <id>           # 单条详情（id 可只写前缀）
+agent knowledge extract-last [-t /dev/ttysXXX] [-n 200]
+    # 手动触发对某 tab 最近 N 行提取（不用等任务自动完成）
+    # 别名: agent kb el -t /dev/ttys002 -n 300
+```
+
+需先在 `.env` 加 `KNOWLEDGE_EXTRACT_ENABLED=1` + 重启 dev。详见 **[docs/knowledge.md](knowledge.md)**。
+
+---
+
 ## Mac CLI 诊断 + 维护
 
 ```bash
