@@ -27,8 +27,10 @@ export const DASHBOARD_HTML = `<!doctype html>
   main{flex:1;overflow:auto;padding:8px}
   .card{background:var(--panel);border:1px solid var(--border);border-radius:8px;margin:8px 0;padding:10px}
   .card h2{font-size:12px;margin:0 0 8px;color:var(--muted);font-weight:500;letter-spacing:.05em;text-transform:uppercase}
-  .row{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)}
+  .row{display:flex;align-items:center;gap:8px;padding:8px 6px;border-bottom:1px solid var(--border);border-radius:4px;transition:background .15s}
   .row:last-child{border-bottom:none}
+  .row.selected{background:#243141;border-color:var(--accent)}
+  .row:active{background:#1e2938}
   .tty{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--muted)}
   .title{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .title strong{color:var(--text);font-weight:500}
@@ -44,7 +46,12 @@ export const DASHBOARD_HTML = `<!doctype html>
   textarea{width:100%;min-height:60px;resize:vertical;font-family:ui-monospace,Menlo,monospace;font-size:13px}
   .actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
   .actions button{font-size:12px;padding:4px 8px}
-  .log{font-family:ui-monospace,Menlo,monospace;font-size:11px;color:var(--muted);white-space:pre-wrap;max-height:200px;overflow:auto;background:#0a0d12;border:1px solid var(--border);border-radius:6px;padding:8px;margin-top:8px}
+  .log{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:#c9d3dd;white-space:pre-wrap;height:340px;overflow:auto;background:#0a0d12;border:1px solid var(--border);border-radius:6px;padding:8px;margin-top:8px}
+  .log.loading{color:var(--muted);font-style:italic}
+  .meta-bar{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 4px;font-size:12px;color:var(--muted)}
+  .meta-bar span{background:#0f141b;padding:2px 8px;border-radius:10px;font-family:ui-monospace,Menlo,monospace}
+  .live-indicator{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--ok);margin-right:4px;animation:pulse 1.5s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
   .screenshot{width:100%;border:1px solid var(--border);border-radius:6px;margin-top:8px;max-height:400px;object-fit:contain;background:#000}
   .empty{color:var(--muted);text-align:center;padding:20px 0;font-size:12px}
   #toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--panel);border:1px solid var(--border);padding:8px 14px;border-radius:20px;font-size:13px;opacity:0;transition:opacity .2s;pointer-events:none;z-index:100}
@@ -71,19 +78,20 @@ export const DASHBOARD_HTML = `<!doctype html>
 
     <div class="card" id="tab-detail">
       <h2 id="detail-title">Tab 详情</h2>
-      <div id="detail-body"></div>
+      <div class="meta-bar" id="detail-meta"></div>
+      <div id="detail-log" class="log loading">选中 tab 后自动显示实时输出…</div>
       <div class="cmd-input">
         <input id="cmd-text" placeholder="输入命令 (Enter 发送)"/>
         <button id="cmd-send" class="primary">发送</button>
       </div>
       <div class="actions">
+        <button data-action="refresh-history">🔄 History</button>
         <button data-action="screen">📸 抓屏</button>
-        <button data-action="history">📜 History</button>
         <button data-action="keys-enter">⏎ Enter</button>
         <button data-action="keys-ctrlc" class="danger">⊘ Ctrl-C</button>
+        <button data-action="live-toggle" id="live-btn"><span class="live-indicator"></span>3s 自动刷新 ON</button>
       </div>
       <img id="screenshot" class="screenshot" style="display:none"/>
-      <div id="detail-log" class="log" style="display:none"></div>
     </div>
 
     <div class="card">
@@ -146,7 +154,8 @@ function renderTabs(tabs) {
   list.innerHTML = '';
   for (const t of tabs) {
     const row = document.createElement('div');
-    row.className = 'row';
+    row.className = 'row' + (t.tty === selectedTty ? ' selected' : '');
+    row.dataset.tty = t.tty;
     const short = t.tty.replace(/^\\/dev\\//,'');
     const st = statusClass(t);
     row.innerHTML =
@@ -155,19 +164,95 @@ function renderTabs(tabs) {
       (t.cwd?'<div class="cwd">'+t.cwd.replace(/</g,'&lt;')+'</div>':'')+'</div>' +
       '<span class="badge '+st+'">'+(t.busy?'busy':'idle')+'</span>';
     row.style.cursor = 'pointer';
-    row.addEventListener('click', () => selectTab(t));
+    // 点击 + touchstart 双保险（部分移动浏览器 click 有 300ms 延迟，touchstart 更快）
+    const handler = (e) => { e.preventDefault(); selectTab(t); };
+    row.addEventListener('click', handler);
+    row.addEventListener('touchstart', handler, {passive:false});
     list.appendChild(row);
   }
 }
 
+let livePollTimer = null;
+let liveEnabled = true;
+
 function selectTab(t) {
   selectedTty = t.tty;
   const short = t.tty.replace(/^\\/dev\\//,'');
-  document.getElementById('detail-title').textContent = '▶ ' + short + '  ' + (t.cwd||'');
-  document.getElementById('tab-detail').classList.add('open');
+  document.getElementById('detail-title').textContent = '▶ ' + short;
+  // meta bar
+  const meta = [];
+  if (t.cwd) meta.push('📁 ' + t.cwd);
+  if (t.processes?.length) meta.push('⚙ ' + t.processes.slice(0,4).join(', '));
+  meta.push(t.busy ? '⏳ busy' : '○ idle');
+  if (t.hasTUI) meta.push('🖥 TUI (alt-screen)');
+  document.getElementById('detail-meta').innerHTML = meta.map(m => '<span>'+m.replace(/</g,'&lt;')+'</span>').join('');
+  const detail = document.getElementById('tab-detail');
+  detail.classList.add('open');
+  detail.style.display = 'block';
   document.getElementById('screenshot').style.display = 'none';
-  document.getElementById('detail-log').style.display = 'none';
-  toast('选中 ' + short);
+  const log = document.getElementById('detail-log');
+  log.textContent = '加载中…';
+  log.classList.add('loading');
+  // 标记选中行
+  document.querySelectorAll('#tabs-list .row').forEach(r => {
+    r.classList.toggle('selected', r.dataset.tty === t.tty);
+  });
+  // 立即拉一次 history + 抓屏
+  refreshDetailHistory();
+  refreshDetailScreenshot();
+  // 起自动刷新
+  restartLivePoll();
+  // 滚到详情面板
+  setTimeout(() => {
+    try { detail.scrollIntoView({behavior:'smooth', block:'start'}); } catch { detail.scrollIntoView(); }
+  }, 50);
+  toast('▶ 已选 ' + short + ' · 自动刷新 ON', 2500);
+}
+
+async function refreshDetailHistory() {
+  if (!selectedTty) return;
+  try {
+    const data = await api('GET','/api/history?tty='+encodeURIComponent(selectedTty)+'&lines=100');
+    const log = document.getElementById('detail-log');
+    const wasNearBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
+    log.textContent = data.text || '(空)';
+    log.classList.remove('loading');
+    // 自动滚到底部（除非用户手动滚上去看了）
+    if (wasNearBottom) log.scrollTop = log.scrollHeight;
+  } catch(e) {
+    /* silent；下次 tick 会重试 */
+  }
+}
+
+async function refreshDetailScreenshot() {
+  if (!selectedTty) return;
+  try {
+    const data = await api('POST','/api/screen',{tty:selectedTty});
+    const img = document.getElementById('screenshot');
+    img.src = data.dataUrl;
+    img.style.display = 'block';
+  } catch(e) { toast('抓屏失败: ' + e.message); }
+}
+
+function restartLivePoll() {
+  if (livePollTimer) { clearInterval(livePollTimer); livePollTimer = null; }
+  if (!liveEnabled || !selectedTty) return;
+  livePollTimer = setInterval(refreshDetailHistory, 3000);
+}
+
+function toggleLive() {
+  liveEnabled = !liveEnabled;
+  const btn = document.getElementById('live-btn');
+  if (liveEnabled) {
+    btn.innerHTML = '<span class="live-indicator"></span>3s 自动刷新 ON';
+    restartLivePoll();
+    toast('自动刷新 ON');
+  } else {
+    btn.innerHTML = '⏸ 自动刷新 OFF';
+    if (livePollTimer) clearInterval(livePollTimer);
+    livePollTimer = null;
+    toast('自动刷新 OFF');
+  }
 }
 
 async function refreshTabs() {
@@ -207,32 +292,33 @@ async function sendCmd() {
   try {
     await api('POST','/api/send',{tty:selectedTty,text});
     document.getElementById('cmd-text').value = '';
-    toast('已发送');
+    toast('已发送 · 输出会在 3s 内自动出现');
+    // 主动拉一次，别等下轮 tick
+    setTimeout(refreshDetailHistory, 500);
+    setTimeout(refreshDetailHistory, 1500);
   } catch(e) { toast('失败: '+e.message); }
 }
 
 document.querySelectorAll('[data-action]').forEach(btn => {
   btn.addEventListener('click', async () => {
-    if (!selectedTty) { toast('先选一个 tab'); return; }
     const a = btn.dataset.action;
+    if (a === 'live-toggle') { toggleLive(); return; }
+    if (!selectedTty) { toast('先选一个 tab'); return; }
     try {
       if (a === 'screen') {
         toast('抓屏中…');
-        const data = await api('POST','/api/screen',{tty:selectedTty});
-        const img = document.getElementById('screenshot');
-        img.src = data.dataUrl;
-        img.style.display = 'block';
-      } else if (a === 'history') {
-        const data = await api('GET','/api/history?tty='+encodeURIComponent(selectedTty)+'&lines=60');
-        const log = document.getElementById('detail-log');
-        log.textContent = data.text || '(空)';
-        log.style.display = 'block';
+        await refreshDetailScreenshot();
+      } else if (a === 'refresh-history') {
+        await refreshDetailHistory();
+        toast('History 已刷新');
       } else if (a === 'keys-enter') {
         await api('POST','/api/keys',{tty:selectedTty,sequence:'⏎'});
         toast('已发 Enter');
+        setTimeout(refreshDetailHistory, 300);
       } else if (a === 'keys-ctrlc') {
         await api('POST','/api/keys',{tty:selectedTty,sequence:'ctrl+c'});
         toast('已发 Ctrl-C');
+        setTimeout(refreshDetailHistory, 300);
       }
     } catch(e) { toast(a+' 失败: '+e.message); }
   });

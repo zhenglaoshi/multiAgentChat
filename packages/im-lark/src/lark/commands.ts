@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
-import { readdir } from 'node:fs/promises';
-import { homedir } from 'node:os';
+import { readdir, readFile } from 'node:fs/promises';
+import { homedir, hostname, networkInterfaces } from 'node:os';
 import { join, resolve } from 'node:path';
 import { approvals } from 'multiagent-orchestrator';
 import { loadChat, saveChat } from '../chats/store.js';
@@ -166,6 +166,9 @@ const ALIAS: Record<string, string> = {
   pins: 'pin',
   bookmark: 'pin',
   bookmarks: 'pin',
+  // Web dashboard URL 快捷
+  wd: 'webdash',
+  web: 'webdash',
 };
 
 function parseCommand(text: string): { name: string; rest: string } {
@@ -192,6 +195,88 @@ function homeify(p: string): string {
 function truncatePrompt(s: string, n: number): string {
   const oneLine = s.replace(/\s+/g, ' ').trim();
   return oneLine.length <= n ? oneLine : oneLine.slice(0, n - 1) + '…';
+}
+
+/**
+ * 组装 web dashboard 访问 URL —— 各种网络可达路径都列出来（Cloudflared tunnel /
+ * LAN / hostname / localhost），用户在飞书 chat 里一 tap 就能开对应 URL。
+ *
+ * 优先级：
+ *   1. `WEB_DASHBOARD_PUBLIC_URL` env override（用户手动配的稳定 URL）
+ *   2. `/tmp/mchat-cf-tunnel.log` grep 出 trycloudflare 域名（quick tunnel 场景）
+ *   3. LAN IPv4 从 os.networkInterfaces()
+ *   4. mDNS hostname (`xxx.local`)
+ *   5. localhost（本机测试）
+ *
+ * 缺 WEB_DASHBOARD_TOKEN 时提示未启用。
+ */
+async function buildWebDashInfo(): Promise<ReplyAction> {
+  const token = process.env['WEB_DASHBOARD_TOKEN'];
+  const port = process.env['WEB_DASHBOARD_PORT'] ?? '3940';
+  if (!token) {
+    return {
+      kind: 'text',
+      text:
+        '⚠️ Web dashboard 未启用（缺 WEB_DASHBOARD_TOKEN）\n\n' +
+        '要启用：\n' +
+        '1. `openssl rand -hex 32` 生 token\n' +
+        '2. .env 加 `WEB_DASHBOARD_TOKEN=<hex>` 和 `WEB_DASHBOARD_PORT=3940`\n' +
+        '3. 重启 dev（`pnpm dev`）\n' +
+        '4. `/webdash` 会给你 URL 列表',
+    };
+  }
+
+  const frag = `#token=${token}`;
+  const items: string[] = [];
+
+  // 1. env override（如果用户配了 named tunnel 稳定域名）
+  const publicOverride = process.env['WEB_DASHBOARD_PUBLIC_URL'];
+  if (publicOverride) {
+    const base = publicOverride.replace(/\/$/, '');
+    items.push(`🌐 **公网（env 配置）**\n${base}/${frag}`);
+  }
+
+  // 2. cloudflared quick tunnel（读 log 抽 URL）
+  try {
+    const log = await readFile('/tmp/mchat-cf-tunnel.log', 'utf8');
+    const m = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/.exec(log);
+    if (m) {
+      items.push(`🌐 **Cloudflared tunnel**（重启 tunnel 会变）\n${m[0]}/${frag}`);
+    }
+  } catch {
+    /* tunnel 未起，忽略 */
+  }
+
+  // 3. LAN IPv4
+  const nets = networkInterfaces();
+  const lanIps: string[] = [];
+  for (const ifs of Object.values(nets)) {
+    if (!ifs) continue;
+    for (const iface of ifs) {
+      if (iface.family === 'IPv4' && !iface.internal) {
+        lanIps.push(iface.address);
+      }
+    }
+  }
+  for (const ip of lanIps) {
+    items.push(`📡 **LAN (${ip})**\nhttp://${ip}:${port}/${frag}`);
+  }
+
+  // 4. hostname (mDNS)
+  const host = hostname().replace(/\.local$/, '');
+  items.push(`🏷 **mDNS**\nhttp://${host}.local:${port}/${frag}`);
+
+  // 5. localhost
+  items.push(`💻 **localhost**（本机测试）\nhttp://127.0.0.1:${port}/${frag}`);
+
+  return {
+    kind: 'text',
+    text:
+      '📱 Web Dashboard · 访问入口\n\n' +
+      items.join('\n\n') +
+      '\n\n' +
+      '💡 4G 网络用 Cloudflared 那条；同 WiFi 用 LAN 或 mDNS。加书签下次一键打开。',
+  };
 }
 
 function fmtAgoSec(ts: number): string {
@@ -242,6 +327,7 @@ const HELP_TEXT = [
   '       /audit [N]               审批历史（最近 N 条）',
   '  **/r**  /recall [关键词]      搜任务历史；不带关键词 = 最近 10 条',
   '       /watch on/off            本地任务监听（你在 Mac 直接发的命令也推送到飞书）',
+  '  **/webdash** 或 /wd /web       web dashboard 访问 URL（含公网/LAN/mDNS/localhost 多路径）',
   '  **/quiet on/off**              静默模式：长任务只发首次+完成，中间不刷进度卡',
   '                                 （关闭状态下走自适应节流：3.5s→15s→30s→60s 随任务时长）',
   '  /help                         本帮助',
@@ -1467,6 +1553,10 @@ export async function handleCommand(
       return { kind: 'text', text: '🔊 静默模式已关闭，恢复实时进度卡（自适应节流 3.5s→60s）' };
     }
     return { kind: 'text', text: `未知参数：${arg}\n用法：/quiet on  /quiet off  /quiet status` };
+  }
+
+  if (name === 'webdash' || name === 'wd' || name === 'web') {
+    return await buildWebDashInfo();
   }
 
   if (name === 'dashboard') return buildDashboardCard(chatId);
