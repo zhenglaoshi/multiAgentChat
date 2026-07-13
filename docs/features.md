@@ -32,6 +32,8 @@
 | SOP 编排（task/gate/loop） | ✅ | ⚠️ 底层复用，stageProgressCard 只飞书 render | |
 | Doctor 检测 | ✅ | ✅ | agent doctor 里加了 wecom section |
 | `/dashboard` / `/tabs` 等 card 命令 | ✅ | ⚠️ 企微仅 text-kind，提示"卡片去飞书看" | |
+| Web dashboard（手机浏览器直控）| ✅ | ✅ | 无关 IM，daemon 内嵌 HTTP :3940，`/wd` 拿访问 URL |
+| Knowledge extraction 自动知识库 | ✅ | ✅ | 无关 IM，spawn `claude -p` 本地提炼，5 类 KnowledgeEntry |
 
 **核心 IM 桥接能力（99%）在企微都对齐**，只有几个卡片渲染类的 UX 项因企微 API 硬限制走了降级方案。
 
@@ -506,6 +508,91 @@ daemon 启动时**自动**做的事，让新 PC 首次跑通只需要 3 步（�
 
 ### 配置
 详见 [wecom-bot-setup.md](wecom-bot-setup.md) 完整 11 步指南：企业自建应用申请 + cloudflared tunnel + 5 个 env vars + 后台配 URL 校验。
+
+---
+
+## 19. Web Dashboard · 手机浏览器直控 Mac
+
+### 能力
+`apps/daemon/src/web-dashboard/` 内嵌 HTTP server（Node native，无外部依赖），默认端口 3940，Bearer token 鉴权。手机浏览器打开一个 URL 就见：
+- Mac 所有 Terminal tab 列表（状态徽章 busy/idle/claude TUI）
+- 点某 tab → 详情面板：**自动加载最近 100 行历史 + 抓屏**，每 3s 自动刷新
+- 命令输入框 + 快捷 [⏎ Enter / ⊘ Ctrl-C / 📸 抓屏 / 🔄 History / 🔊 Live 开关]
+- Pending 任务列表
+- Quick slash 按钮（/dashboard /shells /where /watch /quiet 一键跑）
+
+### 亮点
+- **抓屏图片自动降采样**（sips → 1200px JPEG 75%），17.5MB → 300KB，4G 秒开
+- **`/wd` 或 `/web` 或 `/webdash`** slash 命令返回一条包含所有可达 URL（公网 tunnel / LAN / mDNS / localhost）的文本，一 tap 直接开
+- 支持公网入口：cloudflared quick tunnel（免账号 URL），或 `WEB_DASHBOARD_PUBLIC_URL` env 自定 named tunnel
+
+### 什么时候用
+- **VNC 太重**：只想快速看 Mac 状态 + 发个命令
+- **飞书通道不够直观**：想一屏看所有 tab
+- **4G 出门**：通过 cloudflared / Tailscale 手机浏览器直接开
+
+### 配置
+```env
+WEB_DASHBOARD_TOKEN=$(openssl rand -hex 32)
+WEB_DASHBOARD_PORT=3940                    # 默认 3940
+# WEB_DASHBOARD_PUBLIC_URL=https://xxx     # 可选，稳定 named tunnel
+```
+
+详见 [docs/web-dashboard.md](web-dashboard.md)。
+
+---
+
+## 20. Knowledge Extraction · 自动提炼 shell 交互为知识条目
+
+### 能力
+每次 tab 任务完成（watcher.taskOutput isFinal），把 shell 输出经过**脱敏 + 启发式过滤 + spawn `claude -p`** 提炼成结构化 KnowledgeEntry，落 `./data/knowledge/<id>.json`。
+
+**5 类知识**：
+- `problem-solved` — 遇到问题 + 尝试 + 解法
+- `howto` — 怎么做 X（有步骤）
+- `decision` — 做了什么架构/工具决策 + 理由
+- `gotcha` — 坑 / 边缘 case
+- `reference` — 命令 snippet / URL / 配置片段
+
+### 流程
+1. **启发式过滤**：只对含 error / success / decision / 代码块的 chunk 提取（挡 npm install 类噪声）
+2. **脱敏**：sk-ant / ghp_ / OpenAI / AWS / JWT / *_SECRET 赋值行 / 邮箱 → `<REDACTED-X>`
+3. **去重**：chunkHash SHA-256 前 16 位，同一 chunk 只提取一次
+4. **提炼**：spawn `claude -p '<prompt>'` 本地跑（复用 Claude Code subscription），30s 出结果
+5. **落盘**：flat JSON
+
+### CLI
+```bash
+agent knowledge stats                       # 总条目 / byKind / 队列 / 启用状态
+agent knowledge list [-n 20]                # 最近 N 条列表
+agent knowledge show <id>                   # 单条详情
+agent knowledge extract-last [-t tty] [-n 200]  # 手动触发提取
+# 别名: agent kb ...
+```
+
+### 什么时候用
+- 反复踩类似坑 → 想让 AI 帮我记住"上次咋 fix 的"
+- 跨项目复用经验（个人 KB）
+- 训练 / fine-tune 未来 AI 助手的个人化基座
+
+### 配置
+```env
+KNOWLEDGE_EXTRACT_ENABLED=1   # 默认关闭，显式开启（每次任务完成会跑 claude -p，~30s，本地）
+```
+
+### 真实产出（Phase 1 实测第一条）
+从 28820 字符的 shell log 里自动提炼出：
+```
+kind: howto
+title: 跑最新三梯队数据并推 OBS 地址到飞书的固定 workflow
+tags: [multiAgentChat, 三梯队, echeloniot1, OBS, 飞书, 数据跑批, workflow]
+body: 4 步 workflow（脚本 → 汇总 → 打包 → OBS 签名地址）+ 26 个覆盖城市清单
+```
+
+### 未做（Phase 2/3）
+- `/kb <关键词>` 飞书搜 + `agent knowledge search` CLI
+- 自动 recall 注入新 task 的 prompt（跟 memory recall 融合）
+- 周报 launchd → 飞书推 markdown
 
 ---
 
