@@ -487,6 +487,31 @@ async function runWeCom(): Promise<DoctorResult[]> {
   return results;
 }
 
+/**
+ * Web dashboard 健康检查 —— 只看 env 有没有配。不实际 curl（daemon 内嵌 server
+ * 本进程内不好检测；用户可自己 `curl http://<mac>:<port>/api/tabs?token=<xxx>` 试）
+ */
+function runWebDashboard(): DoctorResult {
+  const token = process.env['WEB_DASHBOARD_TOKEN'];
+  const port = process.env['WEB_DASHBOARD_PORT'] ?? '3940';
+  if (!token) {
+    return {
+      name: 'Web dashboard',
+      severity: 'optional',
+      status: 'skip',
+      message: '未启用（缺 WEB_DASHBOARD_TOKEN）',
+      hint: '要启用：`openssl rand -hex 32` 生 token，填 .env 里的 WEB_DASHBOARD_TOKEN；手机浏览器打开 http://<mac-name>:' + port + '/#token=<TOKEN>',
+    };
+  }
+  return {
+    name: 'Web dashboard',
+    severity: 'optional',
+    status: 'pass',
+    message: `已配置（port=${port}，token 前 4 位 ${token.slice(0, 4)}…）`,
+    hint: '手机浏览器打开 http://<mac-name>:' + port + '/#token=<TOKEN>',
+  };
+}
+
 export interface DoctorReport {
   results: DoctorResult[];
   summary: { pass: number; warn: number; fail: number; skip: number };
@@ -513,6 +538,7 @@ export async function runDoctor(opts: { repoRoot?: string } = {}): Promise<Docto
   results.push(await runPresets());
   results.push(await runData(repoRoot));
   results.push(...(await runWeCom()));
+  results.push(runWebDashboard());
   const summary = { pass: 0, warn: 0, fail: 0, skip: 0 };
   for (const r of results) summary[r.status]++;
   let overall: DoctorReport['overall'];

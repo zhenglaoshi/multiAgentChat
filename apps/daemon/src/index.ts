@@ -7,6 +7,8 @@ import { fileURLToPath } from 'node:url';
 import { startControlServer } from 'multiagent-framework';
 import { startLarkBot } from 'multiagent-im-lark';
 import { loadWeComConfig, WeComTransport, renderWeComCard } from 'multiagent-im-wecom';
+import { loadWebDashboardConfig } from './web-dashboard/config.js';
+import { WebDashboardServer } from './web-dashboard/server.js';
 import { approvals, asks, type ApprovalRequest, type AskRequest } from 'multiagent-orchestrator';
 import type { CardSpec } from 'multiagent-framework';
 import { logger } from 'multiagent-orchestrator';
@@ -959,6 +961,22 @@ async function main() {
   await ensureSkillInstalled();
   await installClaudeCodeHooks();
   await ensureAgentOnPath();
+
+  // ---- Web dashboard（可选）：仅在 WEB_DASHBOARD_TOKEN 设了时启用 ----
+  const webCfg = loadWebDashboardConfig();
+  if (webCfg) {
+    try {
+      const dash = new WebDashboardServer(webCfg);
+      await dash.start();
+      logger.info('web-dashboard 就绪 · 手机浏览器打开', {
+        url: `http://<mac-name>:${webCfg.port}/#token=<WEB_DASHBOARD_TOKEN>`,
+      });
+    } catch (e) {
+      logger.warn('web-dashboard start failed', { err: (e as Error).message });
+    }
+  } else {
+    logger.info('web-dashboard 未启用（缺 WEB_DASHBOARD_TOKEN）');
+  }
 
   // 后台刷新目录索引（首次可能扫 15s，不阻塞主流程）
   void refreshDirIndex().catch((e) => {
