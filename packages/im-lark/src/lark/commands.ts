@@ -166,9 +166,10 @@ const ALIAS: Record<string, string> = {
   pins: 'pin',
   bookmark: 'pin',
   bookmarks: 'pin',
-  // Web dashboard URL 快捷
+  // Web dashboard URL 快捷（多个别名任选）
   wd: 'webdash',
   web: 'webdash',
+  o: 'webdash',        // "o" for open web —— 极短单字母
 };
 
 function parseCommand(text: string): { name: string; rest: string } {
@@ -327,7 +328,7 @@ const HELP_TEXT = [
   '       /audit [N]               审批历史（最近 N 条）',
   '  **/r**  /recall [关键词]      搜任务历史；不带关键词 = 最近 10 条',
   '       /watch on/off            本地任务监听（你在 Mac 直接发的命令也推送到飞书）',
-  '  **/webdash** 或 /wd /web       web dashboard 访问 URL（含公网/LAN/mDNS/localhost 多路径）',
+  '  **/o** 或 /wd /web /webdash    web dashboard 访问 URL（公网/LAN/mDNS/localhost 多路径）',
   '  **/quiet on/off**              静默模式：长任务只发首次+完成，中间不刷进度卡',
   '                                 （关闭状态下走自适应节流：3.5s→15s→30s→60s 随任务时长）',
   '  /help                         本帮助',
