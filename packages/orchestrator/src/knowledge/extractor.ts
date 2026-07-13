@@ -19,8 +19,8 @@ export interface ExtractRequest {
 
 /** 队列容量 —— 满了新请求直接 drop（避免堆积拖爆内存） */
 const QUEUE_CAP = 30;
-/** claude CLI 超时（单次提取） */
-const CLAUDE_TIMEOUT_MS = 60_000;
+/** claude CLI 超时（单次提取）—— claude -p 冷启动实测 30-90s，给到 180s */
+const CLAUDE_TIMEOUT_MS = 180_000;
 /** chunk tail 上限（超过截断，避免 prompt 过大） */
 const CHUNK_MAX_CHARS = 8000;
 
@@ -109,12 +109,26 @@ class ExtractionQueue {
     const prompt = EXTRACT_PROMPT_TEMPLATE.replace('<<<CHUNK>>>', tailForPrompt);
 
     let entries: Omit<KnowledgeEntry, 'id' | 'createdAt' | 'source' | 'chunkHash'>[];
+    const startedAt = Date.now();
+    logger.info('knowledge extract start', {
+      chunkHash,
+      inputBytes: tailForPrompt.length,
+      cwd: req.cwd,
+    });
     try {
       entries = await runClaudeExtract(prompt);
     } catch (e) {
-      logger.warn('claude extract failed', { err: (e as Error).message });
+      logger.warn('claude extract failed', {
+        err: (e as Error).message,
+        elapsedMs: Date.now() - startedAt,
+      });
       return;
     }
+    logger.info('knowledge extract done', {
+      chunkHash,
+      elapsedMs: Date.now() - startedAt,
+      produced: entries.length,
+    });
     if (entries.length === 0) {
       logger.debug('knowledge extractor returned empty', { chunkHash });
       return;
@@ -156,14 +170,11 @@ class ExtractionQueue {
  */
 function runClaudeExtract(prompt: string): Promise<Omit<KnowledgeEntry, 'id' | 'createdAt' | 'source' | 'chunkHash'>[]> {
   return new Promise((resolveP, rejectP) => {
+    // 不指定 --allowedTools（whitelist 会让 claude 加载 tools + skills，冷启动
+    // 慢很多）；max-turns 1 强制只出答案不动作。
     const p = spawn(
       'claude',
-      [
-        '-p',
-        prompt,
-        '--allowedTools', 'Read',
-        '--max-turns', '2',
-      ],
+      ['-p', prompt, '--max-turns', '1'],
       { stdio: ['ignore', 'pipe', 'pipe'] },
     );
     let stdout = '';
