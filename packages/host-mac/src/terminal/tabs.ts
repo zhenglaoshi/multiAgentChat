@@ -383,6 +383,11 @@ export async function newTab(opts: NewTabOptions = {}): Promise<string> {
     const safe = opts.cwd.replace(/'/g, `'\\''`);
     await sendKeysRaw(tty, `cd '${safe}'`);
   }
+
+  // 打开后补一次 Enter：有些 shell 集成 / 首启会残留一个"按回车继续/选择"的提示，
+  // 一个空 do script（= 纯 Return 到该 tab，不抢焦点）把 prompt 落定到干净状态。
+  await sendKeysRaw(tty, '');
+
   return tty;
 }
 
@@ -496,22 +501,38 @@ export async function forceEnter(tty: string): Promise<boolean> {
   return out.trim() === 'ok';
 }
 
+// close w saving no 只处理"保存文档"，不处理 Terminal 的『关闭前确认（有进程在跑）』
+// sheet —— 那个 sheet 会把窗口卡住关不掉。所以：close w 触发 sheet 后，若检测到 sheet
+// 就按 Return 确认默认按钮（关闭）。没 sheet（未开该确认 / 空 shell）则不误发回车。
 const CLOSE_SCRIPT = `
 on run argv
   set targetTty to item 1 of argv
+  set hit to false
   tell application "Terminal"
     repeat with w in windows
       try
         repeat with t in tabs of w
           if (tty of t) is equal to targetTty then
-            close w saving no
-            return "ok"
+            set frontmost of w to true
+            set hit to true
+            close w
+            exit repeat
           end if
         end repeat
+        if hit then exit repeat
       end try
     end repeat
   end tell
-  return "not-found"
+  if not hit then return "not-found"
+  delay 0.3
+  tell application "System Events"
+    try
+      if exists (sheet 1 of window 1 of process "Terminal") then
+        key code 36
+      end if
+    end try
+  end tell
+  return "ok"
 end run
 `;
 
