@@ -598,6 +598,45 @@ body: 4 步 workflow（脚本 → 汇总 → 打包 → OBS 签名地址）+ 26 
 
 ---
 
+## 21. TAPD Bug 自动监听与认领 · 从"指派给我"到"改完回写状态"
+
+### 能力
+后台监听公司 TAPD 上**指派给我、当天更新、未结束**的缺陷/需求，推飞书卡片，点一下就
+自动切分支 + 开 claude tab 修，改完（经你批准）用 MCP 回写 TAPD 状态。检测走**纯 HTTP 直连
+TAPD MCP 网关**（不经 LLM/CLI，5min 一轮）；工作 tab 里的 claude 配了同一 MCP（`mcp__tapd__*`）
+能读详情/评论/图片、改状态、加评论。
+
+### 流程（点一次卡走完）
+1. **监听**：每 5min 拉「我的·当天·未结束」缺陷+需求，去重后推**差异化卡**（缺陷橙/红、需求蓝）
+2. **认领**：点卡 → 弹 **repo 多选卡**（候选=`/pin` 书签 + 最近 cwd），可勾多个（一个 bug 涉及多 repo）
+3. **选执行模式 & 基准**（卡上按钮切换）：
+   - 模式：**需求→SOP 编排**（Explore→需求分析→架构→审批gate→编码→测试→回归）/ **缺陷→普通任务**（直接修）
+   - 基准：**当前分支直接改**（测试 bug）/ **从 HEAD 切**（默认）/ **从 master、develop 切**（线上 bug hotfix）
+4. **脏工作区策略**（要切新分支且有未提交改动时弹）：暂存 stash / worktree 隔离 / 照切 / 跳过
+5. **开工**：每个选中 repo 切 `fix_<id后6>`/`feat_<id后6>` → 开**一个** claude tab（claude 跨 repo 编排）
+   注入：标题 / TAPD 链接 / 各 repo 工作分支 / 描述（保留图片标记）+ 指引它用 MCP 看评论/图片
+6. **验证 & 回写**：改完**本地验证**（严禁连线上库/生产）→ 不确定用 `agent lark ask` 问你 →
+   验证过 + `agent request-approval` 批准 → 用 MCP 把状态流转到「已解决」+ 评论回填 commit/PR。**状态不自动改**。
+
+### 亮点
+- **一个 tab 多 repo**：跨 repo bug 用一个 claude 会话协调（共享上下文），分支名跨 repo 一致
+- **两类 bug 分流**：线上 bug 从主干切、测试 bug 在被测分支直接改
+- **需求走 SOP**、缺陷走普通任务，可一键互切
+- **安全闸门**：改 TAPD 状态 / 碰生产 一律经飞书审批；不确定弹卡问你
+
+### 配置
+```env
+TAPD_MCP_URL=https://mcp.xxx.com/servers/<id>/mcp
+TAPD_MCP_TOKEN=<Bearer JWT>          # 只进 .env
+TAPD_NICK=你的TAPD昵称                 # current_owner 过滤（token email 不自动解析）
+# 可选：TAPD_WORKSPACE_IDS（空=全部参与项目）/ TAPD_SYSTEMS=bug,story / TAPD_POLL_MS=300000
+```
+daemon 启动会幂等把 TAPD MCP 注册到 Claude Code（user scope）。
+
+**详见 [docs/tapd.md](tapd.md)** —— 完整架构、7 步流程、多 repo/脏策略/基准/SOP、MCP 工具与坑、排错。
+
+---
+
 ## 已知的能力边界
 
 **能做**：
@@ -607,6 +646,7 @@ body: 4 步 workflow（脚本 → 汇总 → 打包 → OBS 签名地址）+ 26 
 - 多 tab 并行
 - SOP 编排
 - 自定义 subagent 域
+- 企微第二 IM / Web Dashboard / 知识提炼 / TAPD Bug 监听认领
 
 **不能做**（当前）：
 - 多平台 IM（企微 / Slack / Telegram / 钉钉等，P2 计划）
