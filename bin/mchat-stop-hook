@@ -66,6 +66,26 @@ function isHeadlessSession() {
   return false;
 }
 
+/*
+ * 内容特征过滤 —— 拦"知识提取 / 协作效率评估器"这类工具的 meta 输出。
+ * 这类跑在**完整交互式 claude**（命令行没 -p，headless 检测抓不到）里，输出的是
+ * "缺少输入，请提供数据…我会输出 {corrections,one_shot,prompt_quality} + 知识数组"
+ * 之类的 meta 回复 —— 对飞书是纯噪音。它们的 JSON schema 词几乎不会出现在正常回复里，
+ * 拿它们当签名，误报极低。可用 MCHAT_STOP_NO_META_FILTER=1 关掉本过滤。
+ */
+function looksLikeInternalMeta(text) {
+  if (process.env['MCHAT_STOP_NO_META_FILTER'] === '1') return false;
+  const t = text;
+  if (/prompt_quality/.test(t)) return true;                       // 评分 schema 专有 key
+  if (/corrections/.test(t) && /one_shot/.test(t)) return true;    // 评分 schema 组合
+  if (/协作效率/.test(t)) return true;                              // 评估器专有词
+  // 知识提取器"要数据"型 meta：提炼/提取知识条目 + 请提供/缺少输入/粘贴
+  if (/(提炼|提取)[^。\n]{0,8}知识条目/.test(t) && /(请提供|缺少输入|粘贴过来)/.test(t)) {
+    return true;
+  }
+  return false;
+}
+
 let raw = '';
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', (chunk) => {
@@ -83,6 +103,11 @@ process.stdin.on('end', () => {
     }
     let text = payload.last_assistant_message;
     if (typeof text !== 'string' || !text.trim()) return process.exit(0);
+    // 内容特征过滤：知识提取 / 协作效率评估器的 meta 输出不推飞书
+    if (looksLikeInternalMeta(text)) {
+      dbg('skip: internal-tool meta output (efficiency/knowledge evaluator)');
+      return process.exit(0);
+    }
     // 长度降噪：短确认（"OK"、"已完成 X"）不推飞书
     const trimmedLen = text.trim().length;
     if (trimmedLen < MIN_TEXT_LEN) {
