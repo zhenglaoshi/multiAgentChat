@@ -1056,12 +1056,12 @@ async function tapdRepoCandidates(
 /** 拼注入 claude 的 bug/需求上下文 prompt（多 repo：都已切到同名分支，claude 跨 repo 编排）。 */
 function buildTapdPrompt(
   claim: { system: string; title: string; id: string; url: string; branch: string; workspaceId: number; description?: string },
-  results: { ok: boolean; repo: string; cwd: string; branch: string; action: string; reason?: string }[],
+  results: { ok: boolean; repo: string; cwd: string; branch: string; action: string; reason?: string; note?: string }[],
 ): string {
   const kind = claim.system === 'bug' ? '缺陷' : '需求';
   const repos = results
     .filter((r) => r.ok)
-    .map((r) => `- ${r.cwd}（分支 ${r.branch}${r.cwd !== r.repo ? ' · worktree' : ''}）`)
+    .map((r) => `- ${r.cwd}（工作分支 ${r.branch}${r.cwd !== r.repo ? ' · worktree' : ''}${r.note ? ` · ${r.note}` : ''}）`)
     .join('\n');
   // 保留图片引用为 [图片:src] 标记（别把图片信息 strip 没了），其余 HTML 去掉
   const descRaw = claim.description
@@ -1079,7 +1079,7 @@ function buildTapdPrompt(
     ``,
     `标题：${claim.title}`,
     `TAPD #${claim.id}：${claim.url}`,
-    `涉及 repo（均已切到分支 ${claim.branch}）：`,
+    `涉及 repo 及各自的工作分支：`,
     repos || '（无）',
     desc,
     ``,
@@ -1109,9 +1109,17 @@ async function finalizeTapdClaim(
   const { sendCardMessage, sendTextMessage } = await import('./api.js');
   const { ackCard } = await import('./cards.js');
   try {
+    const baseMode = claim.base ?? 'head';
     const results = [];
     for (const repo of claim.selectedRepos) {
-      results.push(await hm.prepareBugBranch(repo, claim.branch, strategy as import('multiagent-host-mac').DirtyStrategy));
+      if (baseMode === 'current') {
+        // 不建新分支，在当前分支直接改
+        results.push(await hm.useCurrentBranch(repo));
+      } else {
+        // 从 HEAD / master / develop 切 fix_/feat_
+        const baseRef = baseMode === 'head' ? undefined : baseMode;
+        results.push(await hm.prepareBugBranch(repo, claim.branch, strategy as import('multiagent-host-mac').DirtyStrategy, baseRef));
+      }
     }
     const okRepos = results.filter((r) => r.ok);
     if (okRepos.length === 0) {
@@ -1728,6 +1736,7 @@ end run
           id, system, workspaceId, title, branch, url, description,
           selectedRepos: [] as string[],
           sop: system === 'story', // 需求默认走 SOP，缺陷默认普通任务
+          base: 'head' as const,   // 默认从当前 HEAD 切；可切 当前分支直接改/master/develop
           status: 'picking' as const, createdAt: Date.now(),
         };
         await orch.saveClaim(claim);
@@ -1767,6 +1776,22 @@ end run
     return { card: tapdRepoPickerCard(claim, candidates, process.env['HOME'] ?? '') };
   }
 
+  if (action === 'tapd-cycle-base') {
+    const id = value['id'] as string | undefined;
+    if (!id) return { toast: { type: 'error', content: '缺 id' } };
+    const orch = await import('multiagent-orchestrator');
+    const hm = await import('multiagent-host-mac');
+    const { tapdRepoPickerCard } = await import('./cards.js');
+    const claim = await orch.loadClaim(id);
+    if (!claim) return { toast: { type: 'error', content: '认领已失效' } };
+    const order = ['head', 'current', 'develop', 'master'] as const;
+    const cur = order.indexOf((claim.base ?? 'head') as (typeof order)[number]);
+    claim.base = order[(cur + 1) % order.length]!;
+    await orch.saveClaim(claim);
+    const candidates = await tapdRepoCandidates(hm);
+    return { card: tapdRepoPickerCard(claim, candidates, process.env['HOME'] ?? '') };
+  }
+
   if (action === 'tapd-ignore') {
     const id = value['id'] as string | undefined;
     if (id) {
@@ -1789,7 +1814,12 @@ end run
         const hm = await import('multiagent-host-mac');
         const { sendCardMessage } = await import('./api.js');
         const { tapdDirtyCard } = await import('./cards.js');
-        // 切前查每个选中 repo 的脏状态
+        // 当前分支直接改（不建新分支）→ 无需切换，脏是预期的，直接开工
+        if (claim.base === 'current') {
+          await finalizeTapdClaim(client, chatId, claim, 'normal');
+          return;
+        }
+        // 要切新分支：切前查每个选中 repo 的脏状态
         const states = await Promise.all(claim.selectedRepos.map((r) => hm.gitWorkingState(r)));
         const dirty = states.filter((s) => s.isRepo && s.dirty);
         if (dirty.length > 0) {

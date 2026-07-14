@@ -85,7 +85,7 @@ export async function gitCheckoutBranch(
       return { ok: true, repo, branch, action: 'checked-out' };
     }
 
-    const from = base && base.trim() ? base.trim() : await gitCurrentBranch(repo);
+    const from = await resolveBaseRef(repo, base);
     const args = ['checkout', '-b', branch];
     if (from) args.push(from);
     await git(repo, args);
@@ -99,6 +99,20 @@ export async function gitCheckoutBranch(
       reason: ((e as Error).message ?? String(e)).slice(0, 200),
     };
   }
+}
+
+/** 解析基准 ref：空→当前 HEAD 分支；给了 master/develop 等，本地没有则退 origin/<base>。 */
+async function resolveBaseRef(repo: string, base?: string): Promise<string> {
+  const b = base?.trim();
+  if (!b) return gitCurrentBranch(repo);
+  for (const ref of [b, `origin/${b}`]) {
+    try {
+      await git(repo, ['rev-parse', '--verify', '--quiet', ref]);
+      return ref;
+    } catch { /* try next */ }
+  }
+  // 都不存在 → 退回当前 HEAD（调用方会在 note 里看到实际 base）
+  return gitCurrentBranch(repo);
 }
 
 /** git stash（含 untracked）。只在已知脏时调。 */
@@ -140,6 +154,13 @@ export async function gitAddWorktree(
   } catch (e) {
     return { ok: false, reason: ((e as Error).message ?? String(e)).slice(0, 200) };
   }
+}
+
+/** 不建新分支，直接用当前分支（测试阶段 bug：基于被测分支改）。 */
+export async function useCurrentBranch(repo: string): Promise<PrepareResult> {
+  const st = await gitWorkingState(repo);
+  if (!st.isRepo) return { ok: false, repo, cwd: repo, branch: '', action: 'failed', reason: '非 git 仓库' };
+  return { ok: true, repo, cwd: repo, branch: st.branch || '(当前)', action: 'checked-out', note: '在当前分支直接改（未建新分支）' };
 }
 
 export type DirtyStrategy = 'normal' | 'stash' | 'worktree' | 'carry' | 'skip';

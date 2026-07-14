@@ -16,6 +16,13 @@ export interface TapdClaim {
   selectedRepos: string[];   // 用户勾选的 repo 路径
   /** true → 开工时跑 SOP（多 stage 编排）；false → 普通任务直接修。默认：需求 true / 缺陷 false。 */
   sop: boolean;
+  /**
+   * 分支基准：
+   *  - 'current'  在当前分支直接改，不建新分支（测试阶段 bug：基于被测分支）
+   *  - 'head'     从当前 HEAD 切 fix_/feat_（默认）
+   *  - 'master' / 'develop'  从主干切（线上 bug hotfix）
+   */
+  base: 'current' | 'head' | 'master' | 'develop';
   status: 'picking' | 'working' | 'ignored';
   tty?: string;              // 开工后的 tab
   createdAt: number;

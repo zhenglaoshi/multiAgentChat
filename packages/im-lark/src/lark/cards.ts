@@ -2082,14 +2082,22 @@ export function tapdItemCard(item: TapdItem) {
  * 认领后的 repo 多选卡：勾这个 bug/需求涉及的 repo（可多选），再「建分支并开工」。
  * 每个 repo 按钮 toggle（点一下 ✅/⬜ 切换，卡片原地 patch）。
  */
+const TAPD_BASE_LABEL: Record<string, string> = {
+  current: '当前分支直接改(不建分支)',
+  head: `从当前 HEAD 切`,
+  master: '从 master 切',
+  develop: '从 develop 切',
+};
+
 export function tapdRepoPickerCard(
-  claim: { id: string; branch: string; title: string; system: string; selectedRepos: string[]; sop?: boolean },
+  claim: { id: string; branch: string; title: string; system: string; selectedRepos: string[]; sop?: boolean; base?: string },
   candidates: { path: string; label: string }[],
   home: string,
 ) {
   const selected = new Set(claim.selectedRepos);
   const kindLabel = claim.system === 'bug' ? '缺陷' : '需求';
   const modeLabel = claim.sop ? 'SOP 编排（多 stage）' : '直接修（普通任务）';
+  const baseLabel = TAPD_BASE_LABEL[claim.base ?? 'head'] ?? '从当前 HEAD 切';
 
   const repoButtons = candidates.slice(0, 10).map((c) => ({
     tag: 'button',
@@ -2123,7 +2131,24 @@ export function tapdRepoPickerCard(
     { tag: 'div', text: { tag: 'lark_md', content: `已选 repo：${selList}` } },
     ...rows,
     { tag: 'hr' },
-    { tag: 'div', text: { tag: 'lark_md', content: `模式：**${modeLabel}**` } },
+    { tag: 'div', text: { tag: 'lark_md', content: `模式：**${modeLabel}**　·　基准：**${baseLabel}**` } },
+    {
+      tag: 'action',
+      actions: [
+        {
+          tag: 'button',
+          text: { tag: 'plain_text', content: `🔁 基准：${baseLabel}` },
+          type: 'default',
+          value: { action: 'tapd-cycle-base', id: claim.id },
+        },
+        {
+          tag: 'button',
+          text: { tag: 'plain_text', content: claim.sop ? '切成：直接修' : '切成：SOP 编排' },
+          type: 'default',
+          value: { action: 'tapd-toggle-sop', id: claim.id },
+        },
+      ],
+    },
     {
       tag: 'action',
       actions: [
@@ -2132,12 +2157,6 @@ export function tapdRepoPickerCard(
           text: { tag: 'plain_text', content: '🚀 建分支并开工' },
           type: 'primary',
           value: { action: 'tapd-claim-go', id: claim.id },
-        },
-        {
-          tag: 'button',
-          text: { tag: 'plain_text', content: claim.sop ? '切成：直接修' : '切成：SOP 编排' },
-          type: 'default',
-          value: { action: 'tapd-toggle-sop', id: claim.id },
         },
         {
           tag: 'button',
