@@ -1063,7 +1063,16 @@ function buildTapdPrompt(
     .filter((r) => r.ok)
     .map((r) => `- ${r.cwd}（分支 ${r.branch}${r.cwd !== r.repo ? ' · worktree' : ''}）`)
     .join('\n');
-  const descRaw = claim.description ? claim.description.replace(/<[^>]+>/g, '').replace(/\s+\n/g, '\n').trim() : '';
+  // 保留图片引用为 [图片:src] 标记（别把图片信息 strip 没了），其余 HTML 去掉
+  const descRaw = claim.description
+    ? claim.description
+        .replace(/<img[^>]*\bsrc=["']?([^"'\s>]+)[^>]*>/gi, ' [图片:$1] ')
+        .replace(/<[^>]+>/g, '')
+        .replace(/&nbsp;/gi, ' ')
+        .replace(/[ \t]+\n/g, '\n')
+        .trim()
+    : '';
+  const hasImg = /\[图片:/.test(descRaw);
   const desc = descRaw ? `\n\n描述/复现：\n${descRaw.slice(0, 1500)}` : '';
   return [
     `我在处理一个 TAPD ${kind}，请帮我${claim.system === 'bug' ? '定位并修复' : '实现'}。`,
@@ -1076,8 +1085,13 @@ function buildTapdPrompt(
     ``,
     `请在这些 repo 里完成改动、各自提交（commit message 带 "TAPD #${claim.id}"）。跨 repo 用 cd 或 git -C。`,
     ``,
-    `你有 TAPD MCP 可用（工具名 mcp__tapd__*）：可读 bug 详情、评论、附件。修完并各自提交/推分支后，`,
-    `**先用 \`agent request-approval\` 征得我同意**，再用 tapd MCP 把本${kind} #${claim.id} 流转到「已解决/已修复」并加评论回填 commit/PR 链接`,
+    `你有 TAPD MCP 可用（工具名 mcp__tapd__*）：可读详情、评论、附件、图片。开工前务必：`,
+    `- **看评论**：用 mcp__tapd__tapd-get-comments 拉本${kind}(workspace_id=${claim.workspaceId}, id=${claim.id})的评论 —— 需求变更/补充说明/复现细节常在评论里，别只看上面的描述。`,
+    hasImg
+      ? `- **看图片**：描述里有 [图片:...] 标记；用 mcp__tapd__tapd-get-image 传那个 url/路径拿下载链接(300s有效)，下载后用 Read 查看（或 tapd-get-entity-attachments 看附件）。`
+      : `- 若描述/评论里提到截图，用 mcp__tapd__tapd-get-image / tapd-get-entity-attachments 拿链接下载后 Read 查看。`,
+    ``,
+    `修完并各自提交/推分支后，**先用 \`agent request-approval\` 征得我同意**，再用 tapd MCP 把本${kind} #${claim.id} 流转到「已解决/已修复」并加评论回填 commit/PR 链接`,
     `（改状态前先用 mcp__tapd__tapd-get-workflows-status-map / get-workflows-all-transitions 查该项目正确的目标状态英文名）。`,
     `完成后把摘要用 \`agent lark send-text\` 推给我。`,
   ].join('\n');

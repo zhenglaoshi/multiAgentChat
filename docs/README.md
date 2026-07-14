@@ -14,6 +14,7 @@
 - **[sop.md](sop.md)** — SOP 工作流（多 stage / gate / loop / subagent）
 - **[web-dashboard.md](web-dashboard.md)** — 手机浏览器直控 Mac 的 setup + 用法
 - **[knowledge.md](knowledge.md)** — 自动提炼 shell 交互为个人知识库（Phase 1）
+- **[tapd.md](tapd.md)** — TAPD Bug 自动监听：推卡→认领→多选 repo→切分支→开 claude tab 修复→回写状态
 - **[troubleshooting.md](troubleshooting.md)** — 遇到问题查这里
 
 ## 🛠 我想改代码
