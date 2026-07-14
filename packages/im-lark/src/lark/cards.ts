@@ -1,4 +1,5 @@
 import type { ApprovalRequest, AskRequest, TapdItem } from 'multiagent-orchestrator';
+import { tapdSummary } from 'multiagent-orchestrator';
 import { inferTabStatus, type TabStatusInfo } from 'multiagent-host-mac';
 import type { TerminalTab } from 'multiagent-host-mac';
 
@@ -2028,6 +2029,9 @@ export function tapdItemCard(item: TapdItem) {
   lines.push(`<font color='grey'>${meta.join(' · ')}</font>`);
   if (item.workspaceName) lines.push(`<font color='grey'>项目:${item.workspaceName}</font>`);
   if (item.modified) lines.push(`<font color='grey'>更新:${item.modified}</font>`);
+  // 摘要：一眼看清这条是干啥的（光 id+链接看不出）
+  const summary = tapdSummary(item.description, 160);
+  if (summary) lines.push(`\n${summary}`);
 
   const elements: unknown[] = [
     { tag: 'div', text: { tag: 'lark_md', content: lines.join('\n') } },

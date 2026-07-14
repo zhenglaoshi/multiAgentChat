@@ -1,3 +1,16 @@
+/** TAPD 描述(HTML) → 纯文本摘要（卡片展示用）：去标签、图片记 [图片]、截断。 */
+export function tapdSummary(html: string | undefined, maxLen = 120): string {
+  if (!html) return '';
+  const t = html
+    .replace(/<img[^>]*>/gi, '[图片]')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&lt;/gi, '<').replace(/&gt;/gi, '>').replace(/&amp;/gi, '&')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return t.length > maxLen ? t.slice(0, maxLen) + '…' : t;
+}
+
 /**
  * 拼注入 claude 的 bug/需求上下文 prompt（多 repo：都已切到各自工作分支，claude 跨 repo 编排）。
  * 传输无关：`im` 决定回推/交互用哪个 CLI（飞书 `agent lark` / 企微 `agent wecom`）。

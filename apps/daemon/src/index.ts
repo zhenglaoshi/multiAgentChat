@@ -11,7 +11,7 @@ import { loadWebDashboardConfig } from './web-dashboard/config.js';
 import { WebDashboardServer } from './web-dashboard/server.js';
 import { approvals, asks, knowledgeQueue, type ApprovalRequest, type AskRequest, type TapdItem } from 'multiagent-orchestrator';
 import {
-  loadClaim, saveClaim, buildTapdPrompt, loadTapdConfig, TapdMcpClient, getItemDetail,
+  loadClaim, saveClaim, buildTapdPrompt, tapdSummary, loadTapdConfig, TapdMcpClient, getItemDetail,
   type TapdClaim,
 } from 'multiagent-orchestrator';
 import type { CardSpec } from 'multiagent-framework';
@@ -762,6 +762,8 @@ function tapdItemCardSpec(item: TapdItem): CardSpec {
   if (item.statusLabel ?? item.status) meta.push(`状态:${item.statusLabel ?? item.status}`);
   if (item.reporter) meta.push(`提出:${item.reporter}`);
   const bodyLines = [item.title];
+  const summary = tapdSummary(item.description, 160);
+  if (summary) bodyLines.push(summary);
   if (item.workspaceName) bodyLines.push(`项目：${item.workspaceName}`);
   bodyLines.push(`TAPD：${item.url}`); // CardAction 无 url 按钮 → 链接放正文
   return {

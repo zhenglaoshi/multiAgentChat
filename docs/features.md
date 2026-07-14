@@ -501,6 +501,7 @@ daemon 启动时**自动**做的事，让新 PC 首次跑通只需要 3 步（�
 - **进度卡不实时 patch**：企微 template_card body 不支持任意更新；用简化"初始 ack + isFinal 摘要"模式
 - **部分 card 类 slash 命令**（`/dashboard /tabs /new`）目前只飞书能渲染成卡；企微收到 text-kind 提示"卡片去飞书看"
 - **SOP stageProgressCard** 只飞书 render（企微 render 未做，低价值）
+- **TAPD 认领**（§21）：企微支持通知 + 单 repo 简化认领；多 repo 多选 / 需求 SOP / 脏工作区策略卡只飞书
 
 ### 什么时候用
 - 团队用企微不用飞书
@@ -623,6 +624,11 @@ TAPD MCP 网关**（不经 LLM/CLI，5min 一轮）；工作 tab 里的 claude �
 - **两类 bug 分流**：线上 bug 从主干切、测试 bug 在被测分支直接改
 - **需求走 SOP**、缺陷走普通任务，可一键互切
 - **安全闸门**：改 TAPD 状态 / 碰生产 一律经飞书审批；不确定弹卡问你
+
+### 企业微信也支持
+- **通知**：bug/需求卡同样推企微（发 `WECOM_DEFAULT_TO_USER`）
+- **认领（简化流）**：企微卡无 patch/toggle → 单 repo（最近目录）+ 按钮选基准 + 普通任务直接修
+- **富交互仍走飞书**：多 repo 多选 / 需求 SOP / 脏工作区策略卡（企微 UI 做不了）
 
 ### 配置
 ```env

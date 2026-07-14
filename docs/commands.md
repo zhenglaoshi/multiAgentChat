@@ -157,9 +157,14 @@ agent which                         # 看 CLI 当前默认 tab
 agent send [-t tty] "..."           # 发文本到 tab
 agent show [-t tty] [-n 60]         # 看 tab 屏幕历史 tail
 agent open [path] [--new-window]    # 开新 tab
-agent close <tty>                   # 关 tab（会关整 window，慎用）
+agent close <tty>                   # 关 tab（会关整 window，自动过关闭确认框）
 agent recent-cwds                   # 最近用过的 cwd
+agent restart-all-claude-tabs       # 原地重启所有 claude tab（默认 dry-run，加 --yes 执行）
+#   选项：--yes 真执行 · --dry-run 只列 · --continue 续会话 · --except t1,t2 · --include-self
 ```
+
+> **TAPD Bug 监听**（见 [features.md §21](features.md) / [tapd.md](tapd.md)）是**卡片驱动**，无 slash 命令：
+> daemon 自动轮询推卡，你点卡上按钮认领即可（飞书全功能 / 企微简化流）。
 
 ---
 
