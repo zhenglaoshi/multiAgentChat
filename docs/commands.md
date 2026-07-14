@@ -141,6 +141,8 @@ Framework 会派任务到 active tab 的主 claude，让它生成结构化 JSON�
 /new [path]             # Mac 上开新 tab（不带路径弹选目录卡）
 /watch on / off         # 本地任务监听（非飞书发起的 shell 活动也推飞书）
 /recall <关键词>         # 搜 task memory；不带关键词 = 最近 10 条
+/tapd                   # 列指派给我的未结束 TAPD 缺陷/需求（见 tapd.md）
+/report day|week|month|year [--brief]  # 工作总结：日/周=简报md，月/年=PPT(--brief 出简报)
 /help 或 /?             # 帮助
 ```
 
