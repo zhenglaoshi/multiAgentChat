@@ -14,6 +14,8 @@ export interface TapdClaim {
   url: string;
   description?: string;      // 认领时拉的详情，注入 claude 用
   selectedRepos: string[];   // 用户勾选的 repo 路径
+  /** true → 开工时跑 SOP（多 stage 编排）；false → 普通任务直接修。默认：需求 true / 缺陷 false。 */
+  sop: boolean;
   status: 'picking' | 'working' | 'ignored';
   tty?: string;              // 开工后的 tab
   createdAt: number;

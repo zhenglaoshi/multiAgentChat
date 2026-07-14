@@ -1126,7 +1126,35 @@ async function finalizeTapdClaim(
     await new Promise((r) => setTimeout(r, 1500));
     await hm.launchClaudeInTab(tty, { continueSession: false });
     await new Promise((r) => setTimeout(r, 1500));
-    await hm.send(tty, buildTapdPrompt(claim, results));
+
+    const tapdPrompt = buildTapdPrompt(claim, results);
+    let modeNote: string;
+    if (claim.sop) {
+      // 需求（或用户切成 SOP）：跑多 stage SOP（Explore→需求分析→架构→[gate]→编码→测试→回归）
+      const taskId = generateTaskId();
+      const task = await createTask({
+        taskId,
+        tty,
+        cwd: primaryCwd,
+        chatId,
+        stages: [...orch.DEFAULT_SDLC_STAGES],
+        gates: [...orch.DEFAULT_SDLC_GATES],
+        loops: orch.DEFAULT_SDLC_LOOPS.map((l) => ({ ...l })),
+        artifactDir: `docs/tasks/${taskId}`,
+        userPrompt: tapdPrompt,
+        presetName: 'tapd-sop',
+      });
+      try {
+        const mid = await sendCardReturnId(client, chatId, buildStageProgressCardFromTask(task, homedir()));
+        if (mid) await setTaskProgressMessageId(task.taskId, mid);
+      } catch { /* 降级：无进度卡 */ }
+      await hm.send(tty, buildSopWrapperPrompt(task, tapdPrompt));
+      modeNote = `🎯 SOP 编排 · task \`${task.taskId}\`（after-architect 有审批 gate）`;
+    } else {
+      // 缺陷：普通任务，直接修
+      await hm.send(tty, tapdPrompt);
+      modeNote = '🔧 普通任务（直接修）';
+    }
     await new Promise((r) => setTimeout(r, 600));
     await hm.forceEnter(tty).catch(() => {});
     claim.status = 'working'; claim.tty = tty; await orch.saveClaim(claim);
@@ -1138,7 +1166,7 @@ async function finalizeTapdClaim(
     );
     await sendCardMessage(client, chatId, ackCard({
       title: `🌿 已开工 · ${claim.branch}`,
-      body: `tab \`${tty}\` · ${claim.system === 'bug' ? '缺陷' : '需求'} #${claim.id}\n${lines.join('\n')}\n\n已把 bug 上下文注入 claude，它会跨 repo 处理并推结果给你。`,
+      body: `tab \`${tty}\` · ${claim.system === 'bug' ? '缺陷' : '需求'} #${claim.id}\n${modeNote}\n${lines.join('\n')}\n\n已把上下文注入 claude，它会跨 repo 处理并推结果给你。`,
     }));
   } catch (e) {
     await sendTextMessage(client, chatId, `❌ TAPD 开工失败：${(e as Error).message}`).catch(() => {});
@@ -1698,7 +1726,9 @@ end run
           : `https://www.tapd.cn/${workspaceId}/prong/stories/view/${id}`;
         const claim = {
           id, system, workspaceId, title, branch, url, description,
-          selectedRepos: [] as string[], status: 'picking' as const, createdAt: Date.now(),
+          selectedRepos: [] as string[],
+          sop: system === 'story', // 需求默认走 SOP，缺陷默认普通任务
+          status: 'picking' as const, createdAt: Date.now(),
         };
         await orch.saveClaim(claim);
         const candidates = await tapdRepoCandidates(hm);
@@ -1719,6 +1749,20 @@ end run
     const { tapdRepoPickerCard } = await import('./cards.js');
     const claim = await orch.toggleRepo(id, cwd);
     if (!claim) return { toast: { type: 'error', content: '认领已失效' } };
+    const candidates = await tapdRepoCandidates(hm);
+    return { card: tapdRepoPickerCard(claim, candidates, process.env['HOME'] ?? '') };
+  }
+
+  if (action === 'tapd-toggle-sop') {
+    const id = value['id'] as string | undefined;
+    if (!id) return { toast: { type: 'error', content: '缺 id' } };
+    const orch = await import('multiagent-orchestrator');
+    const hm = await import('multiagent-host-mac');
+    const { tapdRepoPickerCard } = await import('./cards.js');
+    const claim = await orch.loadClaim(id);
+    if (!claim) return { toast: { type: 'error', content: '认领已失效' } };
+    claim.sop = !claim.sop;
+    await orch.saveClaim(claim);
     const candidates = await tapdRepoCandidates(hm);
     return { card: tapdRepoPickerCard(claim, candidates, process.env['HOME'] ?? '') };
   }

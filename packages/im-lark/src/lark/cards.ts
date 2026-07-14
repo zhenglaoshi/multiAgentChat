@@ -2083,12 +2083,13 @@ export function tapdItemCard(item: TapdItem) {
  * 每个 repo 按钮 toggle（点一下 ✅/⬜ 切换，卡片原地 patch）。
  */
 export function tapdRepoPickerCard(
-  claim: { id: string; branch: string; title: string; system: string; selectedRepos: string[] },
+  claim: { id: string; branch: string; title: string; system: string; selectedRepos: string[]; sop?: boolean },
   candidates: { path: string; label: string }[],
   home: string,
 ) {
   const selected = new Set(claim.selectedRepos);
   const kindLabel = claim.system === 'bug' ? '缺陷' : '需求';
+  const modeLabel = claim.sop ? 'SOP 编排（多 stage）' : '直接修（普通任务）';
 
   const repoButtons = candidates.slice(0, 10).map((c) => ({
     tag: 'button',
@@ -2122,6 +2123,7 @@ export function tapdRepoPickerCard(
     { tag: 'div', text: { tag: 'lark_md', content: `已选 repo：${selList}` } },
     ...rows,
     { tag: 'hr' },
+    { tag: 'div', text: { tag: 'lark_md', content: `模式：**${modeLabel}**` } },
     {
       tag: 'action',
       actions: [
@@ -2130,6 +2132,12 @@ export function tapdRepoPickerCard(
           text: { tag: 'plain_text', content: '🚀 建分支并开工' },
           type: 'primary',
           value: { action: 'tapd-claim-go', id: claim.id },
+        },
+        {
+          tag: 'button',
+          text: { tag: 'plain_text', content: claim.sop ? '切成：直接修' : '切成：SOP 编排' },
+          type: 'default',
+          value: { action: 'tapd-toggle-sop', id: claim.id },
         },
         {
           tag: 'button',

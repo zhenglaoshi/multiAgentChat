@@ -62,6 +62,16 @@ claude mcp get tapd     # 应 ✔ Connected
           流转到「已解决」+ 加评论回填 commit/PR 链接（改状态前先查 workflows-status-map）
 ```
 
+## 需求走 SOP，缺陷走普通任务
+
+认领开工时按类型选执行模式（repo 选择卡上可切换）：
+
+- **需求(story)** → 默认 **SOP 编排**：`Explore → 需求分析 → 架构 →〔after-architect 审批 gate〕→ 编码 → 测试 → 回归`
+  （`DEFAULT_SDLC_STAGES`）。gate 让你在飞书先审设计再编码；需求分析阶段可用 MCP 读 TAPD 需求+评论澄清。
+  会发一张实时 stage 进度卡。
+- **缺陷(bug)** → 默认 **普通任务**：直接把上下文注入 claude 让它定位修复（多数 bug 局部改动，全 SDLC 太重）。
+- **可覆盖**：repo 多选卡上有「切成 SOP / 切成直接修」按钮，小需求可切直接修、复杂 bug 可切 SOP。
+
 ## 图片 & 评论（靠工作 tab 里的 MCP）
 
 TAPD 的描述/评论是 HTML，可能含图片，且**评论里常有需求变更/补充/复现细节**。处理方式：
