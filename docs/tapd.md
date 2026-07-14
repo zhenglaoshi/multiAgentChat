@@ -155,3 +155,16 @@ claim 注入给 claude 的完成流程（缺陷普通任务 & 需求 SOP 都适�
 3. **不确定就问**：无法复现 / 多种改法 / 需求不清 / 影响面拿不准 → `agent lark ask` 问用户再继续。
 4. 验证通过 → **先 `agent request-approval` 批准** → 再用 tapd MCP 流转状态到「已解决」+ 评论回填 commit/PR。
    —— 状态**不会自动改**，永远经你批准。
+
+## 企业微信支持
+
+TAPD 对接同时支持企微（配了 WECOM_* 才生效）：
+
+- **通知**：watcher 除推飞书外，也把 bug/需求卡推到企微（发 `WECOM_DEFAULT_TO_USER`）。
+  企微卡为 CardSpec（button_interaction），TAPD 链接在正文（企微按钮不支持 url）。
+- **认领（简化流）**：企微卡没有原地 patch / checkbox toggle，故认领是**单 repo（最近使用目录）
+  + 按钮选基准（当前分支/HEAD/develop/master）+ 普通任务直接修**。
+  **多 repo / 需求 SOP / 脏工作区策略** 这些富交互 → 请用飞书认领。
+- 修复时工作 tab 里的 claude 用 `agent wecom send-text / ask` 回推企微（`buildTapdPrompt` 的 `im` 参数）。
+
+企微侧 card-action 走 daemon 的 `attachWeComCardActionRouter`（`tapd-claim` / `tapd-go-wecom` / `tapd-ignore`）。

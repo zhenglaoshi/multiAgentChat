@@ -10,6 +10,10 @@ import { loadWeComConfig, WeComTransport, renderWeComCard } from 'multiagent-im-
 import { loadWebDashboardConfig } from './web-dashboard/config.js';
 import { WebDashboardServer } from './web-dashboard/server.js';
 import { approvals, asks, knowledgeQueue, type ApprovalRequest, type AskRequest, type TapdItem } from 'multiagent-orchestrator';
+import {
+  loadClaim, saveClaim, buildTapdPrompt, loadTapdConfig, TapdMcpClient, getItemDetail,
+  type TapdClaim,
+} from 'multiagent-orchestrator';
 import type { CardSpec } from 'multiagent-framework';
 import { logger } from 'multiagent-orchestrator';
 import { startHealthCheck } from 'multiagent-im-lark';
@@ -26,6 +30,11 @@ import {
   send as terminalSend,
   sendKeys,
   forceEnter,
+  newTab,
+  launchClaudeInTab,
+  listRecentCwds,
+  prepareBugBranch,
+  useCurrentBranch,
 } from 'multiagent-host-mac';
 import type { IMMessageEvent } from 'multiagent-framework';
 import {
@@ -871,6 +880,66 @@ function attachWeComAskListener(wecom: WeComTransport): void {
  *   - ask.pick / ask.cancel（AskManager）
  *   - approve / reject（ApprovalManager）
  */
+/** 企微认领·选基准卡（企微无 toggle/patch，用按钮一次定基准；单 repo；多repo/SOP 走飞书）。 */
+function tapdWecomBaseCard(claim: TapdClaim, defaultRepo: string | undefined): CardSpec {
+  const kindLabel = claim.system === 'bug' ? '缺陷' : '需求';
+  const repoNote = defaultRepo
+    ? `将在最近目录 ${defaultRepo} 上处理`
+    : '⚠️ 没有最近使用的目录，无法在企微认领；请用飞书认领（可多选 repo）';
+  const mk = (label: string, base: string, type: 'primary' | 'default' = 'default') => ({
+    label, type, value: { action: 'tapd-go-wecom', id: claim.id, base },
+  });
+  return {
+    kind: 'ack',
+    title: `🌿 认领 ${kindLabel} #${claim.id} · 选分支基准`,
+    template: 'orange',
+    body: `${claim.title}\n\n${repoNote}\n分支 ${claim.branch}（普通任务·直接修）`,
+    metaLines: ['企微认领为单 repo 简化流；多 repo / 需求 SOP 请用飞书'],
+    actions: defaultRepo
+      ? [
+          mk('🧪当前分支改', 'current', 'primary'),
+          mk('🌿从develop切', 'develop'),
+          mk('🔥从master切', 'master'),
+          mk('从HEAD切', 'head'),
+          { label: '取消', type: 'default', value: { action: 'tapd-ignore', id: claim.id } },
+        ]
+      : [{ label: '取消', type: 'default', value: { action: 'tapd-ignore', id: claim.id } }],
+  };
+}
+
+/** 企微认领执行：单 repo 切分支 + 开 claude tab 注入（普通任务）。 */
+async function runWeComTapdClaim(wecom: WeComTransport, chatId: string, claim: TapdClaim): Promise<void> {
+  const repo = claim.selectedRepos[0];
+  if (!repo) {
+    await wecom.sendText(chatId, '❌ 没有可用 repo，请用飞书认领');
+    return;
+  }
+  const outcome = claim.base === 'current'
+    ? await useCurrentBranch(repo)
+    : await prepareBugBranch(repo, claim.branch, 'normal', claim.base === 'head' ? undefined : claim.base);
+  if (!outcome.ok) {
+    await wecom.sendText(chatId, `❌ 切分支失败：${outcome.reason ?? '未知'}`);
+    return;
+  }
+  const tty = await newTab({ cwd: outcome.cwd });
+  await new Promise((r) => setTimeout(r, 1500));
+  await launchClaudeInTab(tty, { continueSession: false });
+  await new Promise((r) => setTimeout(r, 1500));
+  await terminalSend(tty, buildTapdPrompt(claim, [outcome], 'wecom'));
+  await new Promise((r) => setTimeout(r, 600));
+  await forceEnter(tty).catch(() => {});
+  claim.status = 'working';
+  claim.tty = tty;
+  await saveClaim(claim);
+  const spec: CardSpec = {
+    kind: 'ack',
+    title: `🌿 已开工 · ${outcome.branch}`,
+    template: 'green',
+    body: `tab ${tty} · ${claim.system === 'bug' ? '缺陷' : '需求'} #${claim.id}\n${outcome.cwd}（${outcome.action}${outcome.note ? ' · ' + outcome.note : ''}）\n\n已注入 bug 上下文到 claude，它会修复并（经审批后）回写 TAPD。`,
+  };
+  await wecom.sendCard(chatId, spec);
+}
+
 function attachWeComCardActionRouter(wecom: WeComTransport): void {
   wecom.events.on('cardAction', async (ev) => {
     const action = ev.action;
@@ -908,6 +977,62 @@ function attachWeComCardActionRouter(wecom: WeComTransport): void {
       }
       return;
     }
+    // ---- TAPD 认领（企微简化流：单 repo + 按钮选基准 + 普通任务）----
+    if (action === 'tapd-claim') {
+      const id = value['id'] as string | undefined;
+      if (!id) return;
+      try {
+        const system = (value['system'] as 'bug' | 'story' | undefined) ?? 'bug';
+        const workspaceId = Number(value['workspaceId']);
+        const branch = value['branch'] as string;
+        const title = (value['title'] as string | undefined) ?? '';
+        let description: string | undefined;
+        const cfg = loadTapdConfig();
+        if (cfg.enabled && Number.isFinite(workspaceId)) {
+          const c = new TapdMcpClient(cfg.mcpUrl, cfg.token);
+          const d = await getItemDetail(c, workspaceId, system, id).catch(() => null);
+          if (d?.description) description = d.description;
+        }
+        const url = system === 'bug'
+          ? `https://www.tapd.cn/${workspaceId}/bugtrace/bugs/view/${id}`
+          : `https://www.tapd.cn/${workspaceId}/prong/stories/view/${id}`;
+        const recent = await listRecentCwds();
+        const defaultRepo = recent[0];
+        const claim: TapdClaim = {
+          id, system, workspaceId, title, branch, url, description,
+          selectedRepos: defaultRepo ? [defaultRepo] : [],
+          sop: false, base: 'head', status: 'picking', createdAt: Date.now(),
+        };
+        await saveClaim(claim);
+        await wecom.sendCard(ev.chatId, tapdWecomBaseCard(claim, defaultRepo));
+      } catch (e) {
+        logger.warn('wecom tapd-claim failed', { err: (e as Error).message });
+      }
+      return;
+    }
+    if (action === 'tapd-go-wecom') {
+      const id = value['id'] as string | undefined;
+      const base = (value['base'] as TapdClaim['base'] | undefined) ?? 'head';
+      if (!id) return;
+      const claim = await loadClaim(id);
+      if (!claim) { void wecom.sendText(ev.chatId, '⚠️ 认领已失效'); return; }
+      claim.base = base;
+      await saveClaim(claim);
+      void runWeComTapdClaim(wecom, ev.chatId, claim).catch((e) =>
+        logger.warn('wecom tapd-go failed', { err: (e as Error).message }),
+      );
+      return;
+    }
+    if (action === 'tapd-ignore') {
+      const id = value['id'] as string | undefined;
+      if (id) {
+        const claim = await loadClaim(id);
+        if (claim) { claim.status = 'ignored'; await saveClaim(claim); }
+      }
+      void wecom.sendText(ev.chatId, '已忽略');
+      return;
+    }
+
     logger.info('wecom cardAction unhandled', { action, value });
   });
 }
