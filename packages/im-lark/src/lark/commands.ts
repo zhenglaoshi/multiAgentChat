@@ -325,6 +325,7 @@ const HELP_TEXT = [
   '       消息体语法：`@a X >> @b Y >> @c Z`（一行内串联）',
   '  **/a**  /approvals            待审批列表 + 最近历史',
   '       /audit [N]               审批历史（最近 N 条）',
+  '  **/tapd**                     列指派给我的未结束 TAPD 缺陷/需求（主动查）',
   '  **/r**  /recall [关键词]      搜任务历史；不带关键词 = 最近 10 条',
   '       /watch on/off            本地任务监听（你在 Mac 直接发的命令也推送到飞书）',
   '  **/wd** 或 /web /webdash        web dashboard 访问 URL（公网/LAN/mDNS/localhost 多路径）',
@@ -1335,6 +1336,29 @@ export async function handleCommand(
   const { name, rest } = parseCommand(text);
 
   if (name === 'help' || name === '?') return { kind: 'text', text: HELP_TEXT };
+
+  if (name === 'tapd') {
+    const orch = await import('multiagent-orchestrator');
+    const cfg = orch.loadTapdConfig();
+    if (!cfg.enabled) {
+      return { kind: 'text', text: 'TAPD 未配置（.env 缺 TAPD_MCP_URL / TAPD_MCP_TOKEN / TAPD_NICK）' };
+    }
+    try {
+      const mcp = new orch.TapdMcpClient(cfg.mcpUrl, cfg.token);
+      const items = await orch.listActionableItems(mcp, cfg, { allOpen: true, systems: cfg.systems });
+      if (items.length === 0) return { kind: 'text', text: '✅ 没有指派给你的未结束缺陷/需求' };
+      const lines = [`📋 指派给你的未结束项（${items.length}）：`, ''];
+      for (const it of items.slice(0, 30)) {
+        const k = it.system === 'bug' ? '🐞' : '📌';
+        lines.push(`${k} #${it.id} ${it.severity ? `[${it.severity}] ` : ''}${it.title}`);
+        lines.push(`   ${it.workspaceName ?? ''}${it.workspaceName ? ' · ' : ''}${it.url}`);
+      }
+      if (items.length > 30) lines.push(`… 还有 ${items.length - 30} 条（收窄 TAPD_WORKSPACE_IDS 或去 TAPD 看）`);
+      return { kind: 'text', text: lines.join('\n') };
+    } catch (e) {
+      return { kind: 'text', text: `❌ TAPD 查询失败：${(e as Error).message}` };
+    }
+  }
 
   if (name === 'presets' || name === 'p') {
     const all = await listPresets();

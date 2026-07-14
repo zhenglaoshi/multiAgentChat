@@ -65,17 +65,17 @@ async function fetchItems(
   workspaceId: number,
   system: TapdSystem,
   nick: string,
-  date: string,
+  date: string | null,
 ): Promise<Record<string, unknown>[]> {
   const tool = system === 'bug' ? 'tapd-get-bug' : 'tapd-get-stories-or-tasks';
   // 处理人字段名 per 类型：缺陷是 current_owner，需求是 owner。传错 → 过滤被忽略 → 误报全部！
   const ownerField = system === 'bug' ? 'current_owner' : 'owner';
   const options: Record<string, unknown> = {
     [ownerField]: nick,
-    modified: `${date}~${date}`,
     fields: system === 'bug' ? BUG_FIELDS : STORY_FIELDS,
     limit: 200,
   };
+  if (date) options['modified'] = `${date}~${date}`; // date=null → 不限日期，列全部未结束
   const data = await client.callTool<unknown[]>(tool, { workspace_id: workspaceId, options });
   const rows = Array.isArray(data) ? data : [];
   return rows.map((r) => {
@@ -148,6 +148,8 @@ export async function getItemDetail(
 export interface ListOptions {
   /** 覆盖"今天"（测试用，如 '2024-07-01~2024-07-31' 的单日）。默认北京今天。 */
   date?: string;
+  /** true → 不限日期，列全部"未结束"的（/tapd 主动查询用）。 */
+  allOpen?: boolean;
   /** 只查这些类型，默认 ['bug','story']。 */
   systems?: TapdSystem[];
 }
@@ -161,7 +163,7 @@ export async function listActionableItems(
   cfg: TapdConfig,
   opts: ListOptions = {},
 ): Promise<TapdItem[]> {
-  const date = opts.date ?? beijingToday();
+  const date = opts.allOpen ? null : (opts.date ?? beijingToday());
   const systems = opts.systems ?? (['bug', 'story'] as TapdSystem[]);
 
   let workspaces: WorkspaceRef[];
