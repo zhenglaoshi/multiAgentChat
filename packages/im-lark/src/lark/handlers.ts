@@ -1055,7 +1055,7 @@ async function tapdRepoCandidates(
 
 /** 拼注入 claude 的 bug/需求上下文 prompt（多 repo：都已切到同名分支，claude 跨 repo 编排）。 */
 function buildTapdPrompt(
-  claim: { system: string; title: string; id: string; url: string; branch: string; description?: string },
+  claim: { system: string; title: string; id: string; url: string; branch: string; workspaceId: number; description?: string },
   results: { ok: boolean; repo: string; cwd: string; branch: string; action: string; reason?: string }[],
 ): string {
   const kind = claim.system === 'bug' ? '缺陷' : '需求';
