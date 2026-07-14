@@ -23,3 +23,4 @@ export * from './monitor/ws-watchdog.js';
 // Chat state (per-chat activeTty / watchAllTabs)
 export * from './chats/store.js';
 export * from './chats/types.js';
+export * from './monitor/report-scheduler.js';

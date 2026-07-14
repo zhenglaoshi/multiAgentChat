@@ -24,11 +24,14 @@ export interface CollectedWork {
   tasks: { prompt: string; summary?: string; cwd: string; endedAt: number }[];
 }
 
-/** 北京时区窗口起点（day=今天0点 / week=本周一 / month=本月1号 / year=今年1月1号）。 */
-export function reportWindow(kind: ReportWindow): { since: Date; until: Date; sinceLabel: string; untilLabel: string } {
+/**
+ * 北京时区时间窗。
+ *  - prev=false（默认）：当前周期起点 → 现在（day=今天0点 / week=本周一 / month=本月1号 / year=今年1月1号）
+ *  - prev=true：上一个**完整**周期（定时周报/月报用：周一报上周、月初报上月）
+ */
+export function reportWindow(kind: ReportWindow, prev = false): { since: Date; until: Date; sinceLabel: string; untilLabel: string } {
   const fmt = (d: Date) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(d);
   const now = new Date();
-  // 北京当前 y/m/d/dow
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', weekday: 'short',
   }).formatToParts(now);
@@ -36,14 +39,27 @@ export function reportWindow(kind: ReportWindow): { since: Date; until: Date; si
   const y = Number(g('year')); const m = Number(g('month')); const d = Number(g('day'));
   const dowMap: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
   const dow = dowMap[g('weekday')] ?? 1;
-  // 用 UTC 构造北京 0 点（北京 = UTC+8 → 北京 00:00 = 前一天 UTC 16:00）
-  const bjMidnightUTC = (yy: number, mm: number, dd: number) => new Date(Date.UTC(yy, mm - 1, dd, -8, 0, 0));
-  let since: Date;
-  if (kind === 'day') since = bjMidnightUTC(y, m, d);
-  else if (kind === 'week') since = new Date(bjMidnightUTC(y, m, d).getTime() - ((dow + 6) % 7) * 86400_000);
-  else if (kind === 'month') since = bjMidnightUTC(y, m, 1);
-  else since = bjMidnightUTC(y, 1, 1);
-  return { since, until: now, sinceLabel: fmt(since), untilLabel: fmt(now) };
+  // 北京 00:00 = UTC 前一天 16:00 → Date.UTC(y,m-1,d,-8)
+  const bj = (yy: number, mm: number, dd: number) => new Date(Date.UTC(yy, mm - 1, dd, -8, 0, 0));
+
+  // 当前周期起点
+  let curStart: Date;
+  if (kind === 'day') curStart = bj(y, m, d);
+  else if (kind === 'week') curStart = new Date(bj(y, m, d).getTime() - ((dow + 6) % 7) * 86400_000);
+  else if (kind === 'month') curStart = bj(y, m, 1);
+  else curStart = bj(y, 1, 1);
+
+  if (!prev) return { since: curStart, until: now, sinceLabel: fmt(curStart), untilLabel: fmt(now) };
+
+  // 上一个完整周期：[prevStart, curStart)
+  let prevStart: Date;
+  if (kind === 'day') prevStart = new Date(curStart.getTime() - 86400_000);
+  else if (kind === 'week') prevStart = new Date(curStart.getTime() - 7 * 86400_000);
+  else if (kind === 'month') prevStart = m === 1 ? bj(y - 1, 12, 1) : bj(y, m - 1, 1);
+  else prevStart = bj(y - 1, 1, 1);
+  // untilLabel 用 curStart 前一天更直观（区间是左闭右开到 curStart）
+  const untilLbl = fmt(new Date(curStart.getTime() - 86400_000));
+  return { since: prevStart, until: curStart, sinceLabel: fmt(prevStart), untilLabel: untilLbl };
 }
 
 /** 从全局 git config 拿身份（name + email），用于跨 repo 过滤"我的"提交。 */
@@ -98,8 +114,10 @@ export async function collectWorkData(opts: {
   window: ReportWindow;
   repos: string[];
   gitAuthors?: string[];
+  /** true → 采上一个完整周期（定时周报/月报用）。 */
+  prev?: boolean;
 }): Promise<CollectedWork> {
-  const { since, until, sinceLabel, untilLabel } = reportWindow(opts.window);
+  const { since, until, sinceLabel, untilLabel } = reportWindow(opts.window, opts.prev ?? false);
   const gitAuthors = opts.gitAuthors && opts.gitAuthors.length ? opts.gitAuthors : await detectGitAuthors();
 
   const commitLists = await Promise.all(opts.repos.map((r) => gitLog(r, since, until, gitAuthors)));
