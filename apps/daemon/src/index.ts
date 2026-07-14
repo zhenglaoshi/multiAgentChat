@@ -9,7 +9,7 @@ import { startLarkBot } from 'multiagent-im-lark';
 import { loadWeComConfig, WeComTransport, renderWeComCard } from 'multiagent-im-wecom';
 import { loadWebDashboardConfig } from './web-dashboard/config.js';
 import { WebDashboardServer } from './web-dashboard/server.js';
-import { approvals, asks, knowledgeQueue, type ApprovalRequest, type AskRequest } from 'multiagent-orchestrator';
+import { approvals, asks, knowledgeQueue, type ApprovalRequest, type AskRequest, type TapdItem } from 'multiagent-orchestrator';
 import type { CardSpec } from 'multiagent-framework';
 import { logger } from 'multiagent-orchestrator';
 import { startHealthCheck } from 'multiagent-im-lark';
@@ -740,6 +740,42 @@ function attachWeComFinalListener(wecom: WeComTransport): void {
  * AskRequest → wecom CardSpec，然后走 renderWeComCard。
  * ask card 只有 single / input 类型能真正走交互；multi 走降级卡（renderMultiUnsupportedCard）。
  */
+const TAPD_SEV_LABEL: Record<string, string> = {
+  fatal: '致命', serious: '严重', normal: '一般', prompt: '提示', advice: '建议',
+};
+
+/** TAPD 通知卡的传输无关 CardSpec（企微用；飞书侧另有更丰富的 tapdItemCard）。 */
+function tapdItemCardSpec(item: TapdItem): CardSpec {
+  const isBug = item.system === 'bug';
+  const kindLabel = isBug ? '缺陷' : '需求';
+  const meta = [`#${item.id}`, kindLabel];
+  if (item.severity) meta.push(`严重:${TAPD_SEV_LABEL[item.severity] ?? item.severity}`);
+  if (item.statusLabel ?? item.status) meta.push(`状态:${item.statusLabel ?? item.status}`);
+  if (item.reporter) meta.push(`提出:${item.reporter}`);
+  const bodyLines = [item.title];
+  if (item.workspaceName) bodyLines.push(`项目：${item.workspaceName}`);
+  bodyLines.push(`TAPD：${item.url}`); // CardAction 无 url 按钮 → 链接放正文
+  return {
+    kind: 'ack',
+    title: `${isBug ? '🐞' : '📌'} 指派给你的${kindLabel}`,
+    template: isBug ? (item.severity === 'fatal' || item.severity === 'serious' ? 'red' : 'orange') : 'blue',
+    body: bodyLines.join('\n'),
+    metaLines: [meta.join(' · '), `建议分支 ${item.branch}`],
+    actions: [
+      {
+        label: '认领并建分支',
+        type: 'primary',
+        value: {
+          action: 'tapd-claim',
+          id: item.id, system: item.system, workspaceId: item.workspaceId,
+          branch: item.branch, title: item.title,
+        },
+      },
+      { label: '忽略', type: 'default', value: { action: 'tapd-ignore', id: item.id } },
+    ],
+  };
+}
+
 function askToCardSpec(req: AskRequest): CardSpec {
   if (req.type === 'input') {
     return {
@@ -1005,7 +1041,21 @@ async function main() {
   attachKnowledgeExtractor();
   startHealthCheck(lark.client);
   startSystemEventsProbe(lark.client);
-  startTapdWatcher(lark.client);
+  startTapdWatcher(
+    lark.client,
+    wecom
+      ? async (item: TapdItem): Promise<boolean> => {
+          try {
+            // '' → WeComTransport.resolveTarget 兜底到 WECOM_DEFAULT_TO_USER
+            await wecom!.sendCard('', tapdItemCardSpec(item));
+            return true;
+          } catch (e) {
+            logger.warn('tapd wecom 推送失败', { id: item.id, err: (e as Error).message });
+            return false;
+          }
+        }
+      : undefined,
+  );
   await ensureSkillInstalled();
   await installClaudeCodeHooks();
   await ensureAgentOnPath();

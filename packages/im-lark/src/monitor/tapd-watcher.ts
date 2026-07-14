@@ -17,12 +17,18 @@ import { tapdItemCard } from '../lark/cards.js';
 const FIRST_TICK_DELAY_MS = 12_000;
 
 /**
+ * 额外通知钩子：给非飞书传输（如企微）用。返回是否成功推送。
+ * 放 daemon 注入（daemon 能引 framework CardSpec + wecom transport，避免 im-lark↔framework 循环依赖）。
+ */
+export type TapdExtraNotify = (item: TapdItem) => Promise<boolean>;
+
+/**
  * TAPD 监听：每 pollMs 拉一次"指派给我、当天更新、未结束"的缺陷/需求，
  * 对没通知过（或又更新了）的，推飞书卡片让我认领 → 建分支 → 开 tab。
  *
  * 检测走纯 HTTP（TapdMcpClient），不经 claude/LLM/CLI。缺 TAPD_* 配置则不启。
  */
-export function startTapdWatcher(client: Lark.Client): void {
+export function startTapdWatcher(client: Lark.Client, onExtraNotify?: TapdExtraNotify): void {
   const cfg = loadTapdConfig();
   if (!cfg.enabled) {
     logger.info('tapd watcher 未启用（缺 TAPD_MCP_URL / TAPD_MCP_TOKEN / TAPD_NICK 任一）');
@@ -34,19 +40,22 @@ export function startTapdWatcher(client: Lark.Client): void {
   void ensureTapdMcp(cfg);
 
   const pushOne = async (item: TapdItem): Promise<boolean> => {
-    const chats = await listAllChats();
-    if (chats.length === 0) return false;
     let ok = false;
-    for (const chat of chats) {
+    // 飞书：所有已知 chat，用丰富卡（toggle/patch 认领流）
+    for (const chat of await listAllChats()) {
       try {
         await sendCardMessage(client, chat.chatId, tapdItemCard(item));
         ok = true;
       } catch (e) {
-        logger.warn('tapd 卡片单 chat 推送失败', {
-          chatId: chat.chatId,
-          id: item.id,
-          err: (e as Error).message,
-        });
+        logger.warn('tapd 卡片单 chat 推送失败(lark)', { chatId: chat.chatId, id: item.id, err: (e as Error).message });
+      }
+    }
+    // 其它传输（企微等）：daemon 注入的钩子
+    if (onExtraNotify) {
+      try {
+        if (await onExtraNotify(item)) ok = true;
+      } catch (e) {
+        logger.warn('tapd extra-notify 失败', { id: item.id, err: (e as Error).message });
       }
     }
     return ok;
