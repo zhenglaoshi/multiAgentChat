@@ -36,8 +36,10 @@ import {
 import {
   closeTab,
   getHistory,
+  isClaudeTab,
   listTabs,
   newTab,
+  restartClaudeInPlace,
   send,
   waitForOutput,
 } from 'multiagent-host-mac';
@@ -53,6 +55,7 @@ import type {
   Request,
   Response,
   TabCloseData,
+  TabRestartClaudeData,
   TabGetData,
   TabHistoryData,
   TabListData,
@@ -153,6 +156,52 @@ async function handleTabClose(sock: Socket, req: Extract<Request, { op: 'tab.clo
   try {
     const closed = await closeTab(req.tty);
     sendOk<TabCloseData>(sock, { closed });
+  } catch (e) {
+    sendErr(sock, (e as Error).message);
+  }
+  sock.end();
+}
+
+async function handleTabRestartClaude(
+  sock: Socket,
+  req: Extract<Request, { op: 'tab.restart-claude' }>,
+) {
+  try {
+    const except = new Set(req.except ?? []);
+    const dryRun = req.dryRun ?? false;
+    const continueSession = req.continueSession ?? true;
+
+    const tabs = await listTabs();
+    const claudeTabs = tabs.filter(isClaudeTab);
+    const targetsTabs = claudeTabs.filter((t) => !except.has(t.tty));
+    const excluded = claudeTabs.filter((t) => except.has(t.tty)).map((t) => t.tty);
+
+    if (dryRun) {
+      sendOk<TabRestartClaudeData>(sock, {
+        dryRun: true,
+        targets: targetsTabs.map((t) => ({ tty: t.tty, cwd: t.cwd })),
+        excluded,
+      });
+      sock.end();
+      return;
+    }
+
+    // 串行重启：每个都会把 Terminal 拉到 frontmost，并行会互相抢焦点。
+    const results: TabRestartClaudeData['targets'] = [];
+    for (const t of targetsTabs) {
+      const r = await restartClaudeInPlace(t.tty, { continueSession });
+      const entry: TabRestartClaudeData['targets'][number] = { tty: r.tty, ok: r.ok };
+      if (r.cwd !== undefined) entry.cwd = r.cwd;
+      if (r.reason !== undefined) entry.reason = r.reason;
+      if (r.command !== undefined) entry.command = r.command;
+      results.push(entry);
+      logger.info('restart-claude tab', {
+        tty: r.tty,
+        ok: r.ok,
+        reason: r.reason,
+      });
+    }
+    sendOk<TabRestartClaudeData>(sock, { dryRun: false, targets: results, excluded });
   } catch (e) {
     sendErr(sock, (e as Error).message);
   }
@@ -1376,6 +1425,8 @@ async function dispatch(sock: Socket, req: Request): Promise<void> {
       return handleTabNew(sock, req);
     case 'tab.close':
       return handleTabClose(sock, req);
+    case 'tab.restart-claude':
+      return handleTabRestartClaude(sock, req);
     case 'tab.recent-cwds':
       return handleTabRecentCwds(sock);
     case 'tab.screen':

@@ -45,6 +45,16 @@ export interface TabCloseRequest {
   tty: string;
 }
 
+export interface TabRestartClaudeRequest {
+  op: 'tab.restart-claude';
+  /** 要排除的 tty 列表（如发起命令的那个 tab）。 */
+  except?: string[];
+  /** true → 重启后 `claude --continue`；false → 全新 `claude`。默认 true。 */
+  continueSession?: boolean;
+  /** true → 只返回将要重启的目标，不实际执行。 */
+  dryRun?: boolean;
+}
+
 export interface TabRecentCwdsRequest {
   op: 'tab.recent-cwds';
 }
@@ -390,6 +400,7 @@ export type Request =
   | TabSendRequest
   | TabNewRequest
   | TabCloseRequest
+  | TabRestartClaudeRequest
   | TabRecentCwdsRequest
   | TabScreenRequest
   | TabKeysRequest
@@ -455,6 +466,20 @@ export interface TabNewData {
 
 export interface TabCloseData {
   closed: boolean;
+}
+
+export interface TabRestartClaudeData {
+  dryRun: boolean;
+  /** dryRun 时是"将要重启"的目标；非 dryRun 时是执行结果（ok 字段区分成功/失败）。 */
+  targets: Array<{
+    tty: string;
+    cwd?: string;
+    ok?: boolean;        // 非 dryRun 才有
+    reason?: string;     // 失败原因 / 跳过原因
+    command?: string;    // 实际重启命令
+  }>;
+  /** 被 except 排除的 tty。 */
+  excluded: string[];
 }
 
 export interface TabRecentCwdsData {

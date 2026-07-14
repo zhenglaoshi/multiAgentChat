@@ -26,6 +26,7 @@ import type {
   Response,
   StageRecallData,
   TabCloseData,
+  TabRestartClaudeData,
   TabGetData,
   TabHistoryData,
   TabListData,
@@ -83,6 +84,11 @@ interface Flags {
   gateTimeoutMs?: number;
   here: boolean;
   hard: boolean;
+  yes: boolean;           // restart-all-claude-tabs --yes：真执行（否则 dry-run）
+  dryRun: boolean;        // restart-all-claude-tabs --dry-run：只列目标
+  continueSession: boolean; // restart-all-claude-tabs --continue：续上次会话（默认全新 claude，不带历史）
+  includeSelf: boolean;   // restart-all-claude-tabs --include-self：连发起命令的 tab 一起重启
+  except?: string;        // restart-all-claude-tabs --except tty1,tty2：额外排除的 tty（csv）
   plain: boolean;         // agent lark send-text --plain：强制纯文本
   auto: boolean;          // agent lark send-text --auto：Stop-hook 等自动推送，daemon 会按 chat.watchAllTabs gate
   originPid?: number;     // agent lark send-text --origin-pid <ppid>：hook 传 Claude Code pid，daemon 反查 tab
@@ -106,6 +112,10 @@ function parseArgs(args: string[]): Flags {
     newWindow: false,
     here: false,
     hard: false,
+    yes: false,
+    dryRun: false,
+    continueSession: false,
+    includeSelf: false,
     plain: false,
     auto: false,
     question: false,
@@ -153,6 +163,16 @@ function parseArgs(args: string[]): Flags {
       flags.here = true;
     } else if (a === '--hard') {
       flags.hard = true;
+    } else if (a === '--yes' || a === '-y') {
+      flags.yes = true;
+    } else if (a === '--dry-run') {
+      flags.dryRun = true;
+    } else if (a === '--continue') {
+      flags.continueSession = true;
+    } else if (a === '--include-self') {
+      flags.includeSelf = true;
+    } else if (a === '--except') {
+      flags.except = args[++i] ?? die('--except 需要 tty（逗号分隔）');
     } else if (a === '--plain') {
       flags.plain = true;
     } else if (a === '--auto') {
@@ -411,6 +431,110 @@ async function cmdClose(flags: Flags): Promise<void> {
   if (!tty) die('agent close <tty> 或 -t <tty>');
   const data = await sendOnce<TabCloseData>({ op: 'tab.close', tty });
   stdout.write(data.closed ? `⊘ closed ${tty}\n` : `tab not found: ${tty}\n`);
+}
+
+/** normalize：'3' / 'ttys003' / '/dev/ttys003' → '/dev/ttys003' */
+function normalizeTty(raw: string): string {
+  const s = raw.trim();
+  if (s.startsWith('/dev/')) return s;
+  if (s.startsWith('ttys')) return `/dev/${s}`;
+  if (/^\d+$/.test(s)) return `/dev/ttys${s.padStart(3, '0')}`;
+  return s;
+}
+
+/**
+ * 探测本命令跑在哪个 tab（controlling tty）—— 沿 pid → ppid 祖先链上溯，
+ * 找到第一个持有真 ctty 的祖先（claude 进程本身持有终端 ctty，bash 工具子进程
+ * 可能没有，故要往上走）。用于默认排除"自己"，避免 --yes 误杀发起方 tab。
+ * 整条链都无 ctty（如无控制终端的守护/沙箱环境）返回 undefined。
+ */
+function detectSelfTty(): string | undefined {
+  let pid: number | undefined = process.pid;
+  for (let i = 0; i < 12 && pid && pid > 1; i++) {
+    try {
+      const r = spawnSync('ps', ['-o', 'tty=,ppid=', '-p', String(pid)], { encoding: 'utf8' });
+      const line = r.stdout.trim();
+      const m = /^(\S+)\s+(\d+)$/.exec(line);
+      if (!m) break;
+      const tty = m[1]!;
+      if (tty !== '??' && tty !== '?') return normalizeTty(tty);
+      pid = Number(m[2]);
+    } catch {
+      break;
+    }
+  }
+  return undefined;
+}
+
+async function cmdRestartClaudeTabs(flags: Flags): Promise<void> {
+  const except = new Set<string>();
+  if (flags.except) {
+    for (const t of flags.except.split(',')) {
+      const s = t.trim();
+      if (s) except.add(normalizeTty(s));
+    }
+  }
+  // 默认排除发起命令的 tab（除非 --include-self）
+  let selfTty: string | undefined;
+  let selfUndetected = false;
+  if (!flags.includeSelf) {
+    selfTty = detectSelfTty();
+    if (selfTty) except.add(selfTty);
+    else selfUndetected = true;
+  }
+
+  const continueSession = flags.continueSession;
+  // 没 --yes 一律 dry-run（安全默认）
+  const dryRun = flags.dryRun || !flags.yes;
+
+  const data = await sendOnce<TabRestartClaudeData>({
+    op: 'tab.restart-claude',
+    except: [...except],
+    continueSession,
+    dryRun,
+  });
+
+  const mode = continueSession ? 'claude --continue（续会话）' : 'claude（全新，不带历史）';
+  if (data.excluded.length) {
+    stdout.write(`↷ 排除：${data.excluded.join(', ')}${selfTty ? `  [含 self=${selfTty}]` : ''}\n`);
+  } else if (selfTty) {
+    stdout.write(`↷ self=${selfTty}（未在 claude tab 列表中，无需排除）\n`);
+  }
+  if (selfUndetected) {
+    stdout.write(
+      '⚠ 探测不到发起命令的 tab（无 ctty）——无法自动排除"自己"。\n' +
+      '  若下方列表含你正在用的 tab，请用 --except <tty> 手动排除，否则 --yes 会重启它。\n',
+    );
+  }
+
+  if (data.dryRun) {
+    if (data.targets.length === 0) {
+      stdout.write('（没有可重启的 claude tab）\n');
+      return;
+    }
+    stdout.write(`\n将重启 ${data.targets.length} 个 claude tab（机制：原地 Ctrl-C 退出 → ${mode}）：\n`);
+    for (const t of data.targets) {
+      stdout.write(`  • ${t.tty}   cwd: ${homeify(t.cwd)}\n`);
+    }
+    stdout.write(`\n这是 dry-run。确认无误后加 --yes 真执行：\n  agent restart-all-claude-tabs --yes\n`);
+    return;
+  }
+
+  if (data.targets.length === 0) {
+    stdout.write('（没有可重启的 claude tab）\n');
+    return;
+  }
+  stdout.write(`\n重启结果（${mode}）：\n`);
+  let okN = 0;
+  for (const t of data.targets) {
+    if (t.ok) {
+      okN++;
+      stdout.write(`  ✅ ${t.tty}   cwd: ${homeify(t.cwd)}\n`);
+    } else {
+      stdout.write(`  ❌ ${t.tty}   ${t.reason ?? '未知失败'}\n`);
+    }
+  }
+  stdout.write(`\n完成：${okN}/${data.targets.length} 成功。\n`);
 }
 
 async function cmdScreen(flags: Flags): Promise<void> {
@@ -1452,7 +1576,10 @@ function printHelp() {
       '  agent use <tty>                     设 CLI 默认 tab',
       '  agent send [-t tty] [--wait] "cmd"  发命令到 tab（A 模式自然 do script）',
       '  agent open [path] [--new-window]    开新 tab，默认 front window，可选新 window',
-      '  agent close <tty>                   关 tab（会关整 window，慎用）',
+      '  agent close <tty>                   关 tab（关整 window；自动过 Terminal 关闭确认框）',
+      '  agent restart-all-claude-tabs       原地重启所有 claude tab（Ctrl-C 退出 → 纯 claude 重跑）',
+      '     默认排除发起命令的 tab；默认全新 claude（不带历史）；默认 dry-run，加 --yes 才执行',
+      '     选项：--yes 真执行  --dry-run 只列  --continue 续上次会话  --except t1,t2 额外排除  --include-self 连自己',
       '  agent recent-cwds                   最近用过的 cwd',
       '  agent screen [-t tty] [--chat X]    抓 tab 所在窗口截图（含 alt-screen TUI）+ 自动推图到飞书',
       '  agent keys [-t tty] \'<seq>\'         往 tab 发按键序列（osascript System Events）',
@@ -1555,6 +1682,9 @@ async function main(): Promise<void> {
         return await cmdShow(flags);
       case 'close':
         return await cmdClose(flags);
+      case 'restart-all-claude-tabs':
+      case 'restart-claude':
+        return await cmdRestartClaudeTabs(flags);
       case 'screen':
         return await cmdScreen(flags);
       case 'keys':

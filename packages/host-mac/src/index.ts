@@ -5,6 +5,7 @@ export * from './terminal/applescript.js';
 export * from './terminal/probe.js';
 export * from './terminal/screen.js';
 export * from './terminal/keys.js';
+export * from './terminal/restart.js';
 export * from './workspace.js';
 export * from './recent-cwds.js';
 export * from './dir-index.js';
