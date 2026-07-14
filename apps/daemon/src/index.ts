@@ -12,7 +12,7 @@ import { WebDashboardServer } from './web-dashboard/server.js';
 import { approvals, asks, knowledgeQueue, type ApprovalRequest, type AskRequest, type TapdItem } from 'multiagent-orchestrator';
 import {
   loadClaim, saveClaim, buildTapdPrompt, tapdSummary, loadTapdConfig, TapdMcpClient, getItemDetail,
-  markSnoozed, markIgnoredForever,
+  markSnoozed, markIgnoredForever, getRepoMap, saveRepoMap,
   type TapdClaim,
 } from 'multiagent-orchestrator';
 import type { CardSpec } from 'multiagent-framework';
@@ -935,6 +935,7 @@ async function runWeComTapdClaim(wecom: WeComTransport, chatId: string, claim: T
   claim.status = 'working';
   claim.tty = tty;
   await saveClaim(claim);
+  await saveRepoMap(claim.workspaceId, { repos: claim.selectedRepos, base: claim.base, sop: claim.sop });
   const spec: CardSpec = {
     kind: 'ack',
     title: `🌿 已开工 · ${outcome.branch}`,
@@ -1000,12 +1001,14 @@ function attachWeComCardActionRouter(wecom: WeComTransport): void {
         const url = system === 'bug'
           ? `https://www.tapd.cn/${workspaceId}/bugtrace/bugs/view/${id}`
           : `https://www.tapd.cn/${workspaceId}/prong/stories/view/${id}`;
+        // B 一键认领：上次认领过该项目 → 用上次的 repo/基准；否则最近 cwd
+        const prev = await getRepoMap(workspaceId);
         const recent = await listRecentCwds();
-        const defaultRepo = recent[0];
+        const defaultRepo = prev?.repos[0] ?? recent[0];
         const claim: TapdClaim = {
           id, system, workspaceId, title, branch, url, description,
           selectedRepos: defaultRepo ? [defaultRepo] : [],
-          sop: false, base: 'head', status: 'picking', createdAt: Date.now(),
+          sop: false, base: prev?.base ?? 'head', status: 'picking', createdAt: Date.now(),
         };
         await saveClaim(claim);
         await wecom.sendCard(ev.chatId, tapdWecomBaseCard(claim, defaultRepo));

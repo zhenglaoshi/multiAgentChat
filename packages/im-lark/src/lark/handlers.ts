@@ -1132,6 +1132,8 @@ async function finalizeTapdClaim(
     await new Promise((r) => setTimeout(r, 600));
     await hm.forceEnter(tty).catch(() => {});
     claim.status = 'working'; claim.tty = tty; await orch.saveClaim(claim);
+    // B：记住该项目的 repo/基准/模式，下次认领自动预选
+    await orch.saveRepoMap(claim.workspaceId, { repos: claim.selectedRepos, base: claim.base, sop: claim.sop });
     const chat = await loadChat(chatId); chat.activeTty = tty; chat.lastActiveAt = Date.now(); await saveChat(chat);
     const lines = results.map((r) =>
       r.ok
@@ -1702,9 +1704,16 @@ end run
           id, system, workspaceId, title, branch, url, description,
           selectedRepos: [] as string[],
           sop: system === 'story', // 需求默认走 SOP，缺陷默认普通任务
-          base: 'head' as const,   // 默认从当前 HEAD 切；可切 当前分支直接改/master/develop
+          base: 'head' as 'current' | 'head' | 'master' | 'develop', // 默认从 HEAD 切
           status: 'picking' as const, createdAt: Date.now(),
         };
+        // B 一键认领：该 TAPD 项目上次认领过 → 自动预选 repo/基准/模式
+        const prev = await orch.getRepoMap(workspaceId);
+        if (prev) {
+          claim.selectedRepos = prev.repos;
+          claim.base = prev.base;
+          claim.sop = prev.sop;
+        }
         await orch.saveClaim(claim);
         const candidates = await tapdRepoCandidates(hm);
         await sendCardMessage(client, chatId, tapdRepoPickerCard(claim, candidates, process.env['HOME'] ?? ''));

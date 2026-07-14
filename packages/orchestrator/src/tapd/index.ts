@@ -6,3 +6,4 @@ export * from './store.js';
 export * from './claims.js';
 export * from './mcp-setup.js';
 export * from './prompt.js';
+export * from './repo-map.js';
