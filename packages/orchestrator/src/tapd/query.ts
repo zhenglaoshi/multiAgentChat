@@ -12,39 +12,52 @@ interface WorkspaceRef {
   name?: string;
 }
 
-/** 发现"我"参与的项目（workspace）。 */
+// 项目列表 & 工作流终态几乎不变 —— 进程内缓存，砍掉每 tick 的重复调用（省限流额度）。
+let wsCache: { at: number; data: WorkspaceRef[] } | null = null;
+const WS_TTL_MS = 30 * 60_000; // 30min
+const endStatesCache = new Map<string, Set<string>>(); // key: `${ws}:${system}`
+
+/** 发现"我"参与的项目（workspace），带 30min 缓存。 */
 export async function discoverWorkspaces(
   client: TapdMcpClient,
   nick: string,
 ): Promise<WorkspaceRef[]> {
+  if (wsCache && Date.now() - wsCache.at < WS_TTL_MS) return wsCache.data;
   const data = await client.callTool<unknown[]>('tapd-get-user-participant-projects', { nick });
   const rows = Array.isArray(data) ? data : [];
-  return rows.map((r) => {
+  const out = rows.map((r) => {
     const w = (r as { Workspace?: Record<string, unknown> }).Workspace ?? (r as Record<string, unknown>);
     return { id: Number(w['id']), name: w['name'] as string | undefined };
   }).filter((w) => Number.isFinite(w.id) && w.id > 0);
+  wsCache = { at: Date.now(), data: out };
+  return out;
 }
 
-/** 某项目某类型（bug/story）的工作流"结束状态"英文 key 集合。 */
+/** 某项目某类型（bug/story）的工作流"结束状态"英文 key 集合（进程内缓存）。 */
 async function endStates(
   client: TapdMcpClient,
   workspaceId: number,
   system: TapdSystem,
 ): Promise<Set<string>> {
+  const key = `${workspaceId}:${system}`;
+  const cached = endStatesCache.get(key);
+  if (cached) return cached;
   try {
     const data = await client.callTool<Record<string, string>>('tapd-get-workflows-last-steps', {
       workspace_id: workspaceId,
       options: { system },
     });
-    return new Set(Object.keys(data ?? {}));
+    const set = new Set(Object.keys(data ?? {}));
+    endStatesCache.set(key, set);
+    return set;
   } catch (e) {
     logger.warn('tapd endStates failed', { workspaceId, system, err: (e as Error).message });
-    return new Set(); // 拿不到终态 → 不排除任何状态（宁可多推不漏）
+    return new Set(); // 拿不到终态 → 不排除任何状态（宁可多推不漏）；不缓存失败结果
   }
 }
 
 const BUG_FIELDS = 'id,title,status,severity,priority,created,modified,reporter,current_owner,description';
-const STORY_FIELDS = 'id,name,status,priority,created,modified,reporter,current_owner,description';
+const STORY_FIELDS = 'id,name,status,priority,created,modified,creator,owner,description';
 
 /** 拉某项目某类型、current_owner=nick、modified 在 date 当天的项。 */
 async function fetchItems(
@@ -55,8 +68,10 @@ async function fetchItems(
   date: string,
 ): Promise<Record<string, unknown>[]> {
   const tool = system === 'bug' ? 'tapd-get-bug' : 'tapd-get-stories-or-tasks';
-  const options = {
-    current_owner: nick,
+  // 处理人字段名 per 类型：缺陷是 current_owner，需求是 owner。传错 → 过滤被忽略 → 误报全部！
+  const ownerField = system === 'bug' ? 'current_owner' : 'owner';
+  const options: Record<string, unknown> = {
+    [ownerField]: nick,
     modified: `${date}~${date}`,
     fields: system === 'bug' ? BUG_FIELDS : STORY_FIELDS,
     limit: 200,
@@ -88,13 +103,14 @@ function normalize(
     title: String(e['title'] ?? e['name'] ?? '(无标题)'),
     status: String(e['status'] ?? ''),
     url: tapdUrl(ws.id, system, id),
-    branch: system === 'bug' ? `fix_${id}` : `feat_${id}`,
+    // 分支 id 用后六位（TAPD id 很长）：fix_005808 / feat_012345
+    branch: `${system === 'bug' ? 'fix' : 'feat'}_${id.slice(-6)}`,
   };
   if (ws.name) item.workspaceName = ws.name;
   if (e['severity']) item.severity = String(e['severity']);
   if (e['priority']) item.priority = String(e['priority']);
-  if (e['reporter']) item.reporter = String(e['reporter']);
-  if (e['current_owner']) item.current_owner = String(e['current_owner']);
+  if (e['reporter'] ?? e['creator']) item.reporter = String(e['reporter'] ?? e['creator']);
+  if (e['current_owner'] ?? e['owner']) item.current_owner = String(e['current_owner'] ?? e['owner']);
   if (e['created']) item.created = String(e['created']);
   if (e['modified']) item.modified = String(e['modified']);
   if (e['description']) item.description = String(e['description']);

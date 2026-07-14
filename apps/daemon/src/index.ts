@@ -14,6 +14,7 @@ import type { CardSpec } from 'multiagent-framework';
 import { logger } from 'multiagent-orchestrator';
 import { startHealthCheck } from 'multiagent-im-lark';
 import { startSystemEventsProbe } from 'multiagent-im-lark';
+import { startTapdWatcher } from 'multiagent-im-lark';
 import { attachWatcherToLark } from 'multiagent-im-lark';
 import { installWsWatchdog } from 'multiagent-im-lark';
 import { attachStageMemoryListener } from 'multiagent-orchestrator';
@@ -1004,6 +1005,7 @@ async function main() {
   attachKnowledgeExtractor();
   startHealthCheck(lark.client);
   startSystemEventsProbe(lark.client);
+  startTapdWatcher(lark.client);
   await ensureSkillInstalled();
   await installClaudeCodeHooks();
   await ensureAgentOnPath();

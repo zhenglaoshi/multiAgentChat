@@ -17,6 +17,8 @@ export interface TapdConfig {
   nick: string;
   /** 只监听这些项目；空 = 用 get-user-participant-projects 发现的全部 */
   workspaceIds: number[];
+  /** 监听哪些类型（默认 bug+story）。TAPD_SYSTEMS=bug 则只 bug。 */
+  systems: TapdSystem[];
   /** 轮询间隔 ms（默认 5min） */
   pollMs: number;
   /** 是否启用（缺 TAPD_MCP_URL/TOKEN/NICK 任一 → false） */

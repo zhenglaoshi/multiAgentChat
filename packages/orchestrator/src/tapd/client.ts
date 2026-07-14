@@ -17,8 +17,26 @@ export class TapdMcpClient {
     private readonly token: string,
   ) {}
 
-  /** 调一个 TAPD MCP 工具，返回 TAPD 信封里的 data。 */
+  /** 调一个 TAPD MCP 工具，返回 TAPD 信封里的 data。遇 429 限流退避重试。 */
   async callTool<T = unknown>(
+    name: string,
+    args: Record<string, unknown>,
+    retriesLeft = 2,
+  ): Promise<T> {
+    try {
+      return await this.callToolOnce<T>(name, args);
+    } catch (e) {
+      const msg = (e as Error).message;
+      if (retriesLeft > 0 && (msg.includes('429') || msg.includes('Too Many Requests'))) {
+        const backoff = (3 - retriesLeft) * 1500 + 1500; // 1.5s, 3s
+        await new Promise((r) => setTimeout(r, backoff));
+        return this.callTool<T>(name, args, retriesLeft - 1);
+      }
+      throw e;
+    }
+  }
+
+  private async callToolOnce<T>(
     name: string,
     args: Record<string, unknown>,
   ): Promise<T> {

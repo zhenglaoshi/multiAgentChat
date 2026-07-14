@@ -1,4 +1,4 @@
-import type { ApprovalRequest, AskRequest } from 'multiagent-orchestrator';
+import type { ApprovalRequest, AskRequest, TapdItem } from 'multiagent-orchestrator';
 import { inferTabStatus, type TabStatusInfo } from 'multiagent-host-mac';
 import type { TerminalTab } from 'multiagent-host-mac';
 
@@ -1994,6 +1994,81 @@ export function askCard(req: AskRequest) {
     header: {
       template,
       title: { tag: 'plain_text', content: headerTitle },
+    },
+    elements,
+  };
+}
+
+// ---- TAPD bug/需求 通知卡 ----
+
+const TAPD_SEVERITY_LABEL: Record<string, string> = {
+  fatal: '致命', serious: '严重', normal: '一般', prompt: '提示', advice: '建议',
+};
+
+/**
+ * 指派给我的当天 TAPD 缺陷/需求通知卡（黄 = 需我操作）。
+ * [认领并建分支] → 走 tapd-claim 流程（选 repo/基准分支 → git checkout -b → 开 tab）。
+ */
+export function tapdItemCard(item: TapdItem) {
+  const isBug = item.system === 'bug';
+  const icon = isBug ? '🐞' : '📌';
+  const kindLabel = isBug ? '缺陷' : '需求';
+  const sev = item.severity ? (TAPD_SEVERITY_LABEL[item.severity] ?? item.severity) : '';
+
+  const lines: string[] = [];
+  lines.push(`**${truncate(item.title, 80)}**`);
+  const meta: string[] = [`#${item.id}`, kindLabel];
+  if (sev) meta.push(`严重级:${sev}`);
+  if (item.statusLabel || item.status) meta.push(`状态:${item.statusLabel ?? item.status}`);
+  if (item.reporter) meta.push(`提出:${item.reporter}`);
+  lines.push(`<font color='grey'>${meta.join(' · ')}</font>`);
+  if (item.workspaceName) lines.push(`<font color='grey'>项目:${item.workspaceName}</font>`);
+  if (item.modified) lines.push(`<font color='grey'>更新:${item.modified}</font>`);
+
+  const elements: unknown[] = [
+    { tag: 'div', text: { tag: 'lark_md', content: lines.join('\n') } },
+    { tag: 'hr' },
+    {
+      tag: 'div',
+      text: { tag: 'lark_md', content: `建议分支名：\`${item.branch}\`` },
+    },
+    {
+      tag: 'action',
+      actions: [
+        {
+          tag: 'button',
+          text: { tag: 'plain_text', content: '🌿 认领并建分支' },
+          type: 'primary',
+          value: {
+            action: 'tapd-claim',
+            id: item.id,
+            system: item.system,
+            workspaceId: item.workspaceId,
+            branch: item.branch,
+            title: item.title,
+          },
+        },
+        {
+          tag: 'button',
+          text: { tag: 'plain_text', content: '🔗 打开 TAPD' },
+          type: 'default',
+          multi_url: { url: item.url, pc_url: item.url, ios_url: item.url, android_url: item.url },
+        },
+        {
+          tag: 'button',
+          text: { tag: 'plain_text', content: '🙈 忽略' },
+          type: 'default',
+          value: { action: 'tapd-ignore', id: item.id },
+        },
+      ],
+    },
+  ];
+
+  return {
+    config: { wide_screen_mode: true },
+    header: {
+      template: 'yellow',
+      title: { tag: 'plain_text', content: `${icon} 指派给你的${kindLabel}` },
     },
     elements,
   };

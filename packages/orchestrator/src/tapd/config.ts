@@ -1,4 +1,4 @@
-import type { TapdConfig } from './types.js';
+import type { TapdConfig, TapdSystem } from './types.js';
 
 /**
  * 从 env 读 TAPD 配置。缺 URL/TOKEN/NICK 任一 → enabled=false（daemon 不启监听）。
@@ -19,11 +19,17 @@ export function loadTapdConfig(): TapdConfig {
     return Number.isFinite(v) && v >= 60_000 ? v : 300_000; // 默认 5min，最小 1min
   })();
 
+  const systems = ((process.env['TAPD_SYSTEMS'] ?? 'bug,story')
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s === 'bug' || s === 'story') as TapdSystem[]);
+
   return {
     mcpUrl,
     token,
     nick,
     workspaceIds,
+    systems: systems.length ? systems : (['bug', 'story'] as TapdSystem[]),
     pollMs,
     enabled: Boolean(mcpUrl && token && nick),
   };
