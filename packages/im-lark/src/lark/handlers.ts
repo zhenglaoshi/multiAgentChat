@@ -1768,6 +1768,22 @@ end run
     return { toast: { type: 'info', content: '已忽略' } };
   }
 
+  if (action === 'tapd-snooze') {
+    const id = value['id'] as string | undefined;
+    if (!id) return { toast: { type: 'error', content: '缺 id' } };
+    const orch = await import('multiagent-orchestrator');
+    await orch.markSnoozed(id);
+    return { toast: { type: 'info', content: '🕐 3 小时后再提醒' } };
+  }
+
+  if (action === 'tapd-not-mine') {
+    const id = value['id'] as string | undefined;
+    if (!id) return { toast: { type: 'error', content: '缺 id' } };
+    const orch = await import('multiagent-orchestrator');
+    await orch.markIgnoredForever(id);
+    return { toast: { type: 'info', content: '🙈 不再提醒（如需重新指派请在 TAPD 改处理人）' } };
+  }
+
   if (action === 'tapd-claim-go') {
     const id = value['id'] as string | undefined;
     if (!id) return { toast: { type: 'error', content: '缺 id' } };

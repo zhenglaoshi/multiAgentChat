@@ -2064,9 +2064,15 @@ export function tapdItemCard(item: TapdItem) {
         },
         {
           tag: 'button',
-          text: { tag: 'plain_text', content: '🙈 忽略' },
+          text: { tag: 'plain_text', content: '🕐 稍后' },
           type: 'default',
-          value: { action: 'tapd-ignore', id: item.id },
+          value: { action: 'tapd-snooze', id: item.id },
+        },
+        {
+          tag: 'button',
+          text: { tag: 'plain_text', content: '🙈 不是我的' },
+          type: 'default',
+          value: { action: 'tapd-not-mine', id: item.id },
         },
       ],
     },

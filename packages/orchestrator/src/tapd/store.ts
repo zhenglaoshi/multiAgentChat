@@ -10,6 +10,10 @@ interface SeenRecord {
   modified?: string;
   status?: string;
   notifiedAt: number;
+  /** 稍后提醒：此时间戳之前不再通知，之后重新通知一次。 */
+  snoozeUntil?: number;
+  /** 「不是我的」：永久不再通知（除非在 TAPD 改了处理人重新指派）。 */
+  ignored?: boolean;
 }
 type SeenMap = Record<string, SeenRecord>;
 
@@ -38,12 +42,35 @@ async function saveSeen(map: SeenMap): Promise<void> {
  */
 export async function filterUnnotified(items: TapdItem[]): Promise<TapdItem[]> {
   const seen = await loadSeen();
+  const now = Date.now();
   return items.filter((it) => {
     const rec = seen[it.id];
     if (!rec) return true;                       // 没见过
+    if (rec.ignored) return false;               // 「不是我的」永久跳过
+    if (rec.snoozeUntil) return now >= rec.snoozeUntil; // 稍后：到点才再通知
     if (it.modified && rec.modified !== it.modified) return true; // 又更新了
     return false;
   });
+}
+
+/** 稍后提醒：ms 毫秒后再通知（默认 3h）。 */
+export async function markSnoozed(id: string, ms = 3 * 3600_000): Promise<void> {
+  const seen = await loadSeen();
+  const rec = seen[id] ?? { notifiedAt: Date.now() };
+  rec.snoozeUntil = Date.now() + ms;
+  delete rec.ignored;
+  seen[id] = rec;
+  await saveSeen(seen);
+}
+
+/** 「不是我的」：永久不再通知该条。 */
+export async function markIgnoredForever(id: string): Promise<void> {
+  const seen = await loadSeen();
+  const rec = seen[id] ?? { notifiedAt: Date.now() };
+  rec.ignored = true;
+  delete rec.snoozeUntil;
+  seen[id] = rec;
+  await saveSeen(seen);
 }
 
 /** 推送成功后标记这些 item 已通知（记下当前 modified/status）。 */

@@ -12,6 +12,7 @@ import { WebDashboardServer } from './web-dashboard/server.js';
 import { approvals, asks, knowledgeQueue, type ApprovalRequest, type AskRequest, type TapdItem } from 'multiagent-orchestrator';
 import {
   loadClaim, saveClaim, buildTapdPrompt, tapdSummary, loadTapdConfig, TapdMcpClient, getItemDetail,
+  markSnoozed, markIgnoredForever,
   type TapdClaim,
 } from 'multiagent-orchestrator';
 import type { CardSpec } from 'multiagent-framework';
@@ -782,7 +783,8 @@ function tapdItemCardSpec(item: TapdItem): CardSpec {
           branch: item.branch, title: item.title,
         },
       },
-      { label: '忽略', type: 'default', value: { action: 'tapd-ignore', id: item.id } },
+      { label: '🕐稍后', type: 'default', value: { action: 'tapd-snooze', id: item.id } },
+      { label: '🙈不是我的', type: 'default', value: { action: 'tapd-not-mine', id: item.id } },
     ],
   };
 }
@@ -1032,6 +1034,18 @@ function attachWeComCardActionRouter(wecom: WeComTransport): void {
         if (claim) { claim.status = 'ignored'; await saveClaim(claim); }
       }
       void wecom.sendText(ev.chatId, '已忽略');
+      return;
+    }
+    if (action === 'tapd-snooze') {
+      const id = value['id'] as string | undefined;
+      if (id) await markSnoozed(id);
+      void wecom.sendText(ev.chatId, '🕐 3 小时后再提醒');
+      return;
+    }
+    if (action === 'tapd-not-mine') {
+      const id = value['id'] as string | undefined;
+      if (id) await markIgnoredForever(id);
+      void wecom.sendText(ev.chatId, '🙈 不再提醒（重新指派请在 TAPD 改处理人）');
       return;
     }
 
