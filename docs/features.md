@@ -662,7 +662,7 @@ daemon 启动会幂等把 TAPD MCP 注册到 Claude Code（user scope）。
 3. **渲染**：简报=markdown；PPT=**pptxgenjs**（纯 Node，无 python，封面→概览→主要工作/成果/亮点/遗留 分页）
 4. **推送**：简报→飞书文本；PPT→飞书 `send-file`
 
-### 命令
+### 命令（按需）
 ```
 /report day            # 今日简报
 /report week           # 本周简报（默认）
@@ -670,8 +670,15 @@ daemon 启动会幂等把 TAPD MCP 注册到 Claude Code（user scope）。
 /report year           # 本年 PPT
 ```
 
-### 未做（P3）
-- 定时自动（launchd：每周一出上周周报 / 每月 1 号出上月月报，自动推飞书）
+### 定时自动（P3）
+daemon 内定时器（非 launchd，报告依赖 daemon 在跑），到点自动生成并推飞书，每周期只触发一次
+（`data/report/fired.json` 防重）；周报/月报采**上一个完整周期**（周一报上周、月初报上月）。
+`.env` 配置（opt-in，缺则不启，改后需重启 dev）：
+```env
+REPORT_DAILY_AT=18:00        # 每天 18:00 当日日报（简报）
+REPORT_WEEKLY_AT=Mon 09:00   # 每周一 09:00 上周周报（简报）
+REPORT_MONTHLY_AT=1 09:00    # 每月 1 号 09:00 上月月报（PPT）
+```
 
 ---
 
