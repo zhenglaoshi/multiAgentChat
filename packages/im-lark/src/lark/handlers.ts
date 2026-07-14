@@ -1056,10 +1056,13 @@ async function tapdRepoCandidates(
 /** 拼注入 claude 的 bug/需求上下文 prompt（多 repo：都已切到同名分支，claude 跨 repo 编排）。 */
 function buildTapdPrompt(
   claim: { system: string; title: string; id: string; url: string; branch: string; description?: string },
-  results: { ok: boolean; repo: string; branch: string; action: string; reason?: string }[],
+  results: { ok: boolean; repo: string; cwd: string; branch: string; action: string; reason?: string }[],
 ): string {
   const kind = claim.system === 'bug' ? '缺陷' : '需求';
-  const repos = results.filter((r) => r.ok).map((r) => `- ${r.repo}（分支 ${r.branch}）`).join('\n');
+  const repos = results
+    .filter((r) => r.ok)
+    .map((r) => `- ${r.cwd}（分支 ${r.branch}${r.cwd !== r.repo ? ' · worktree' : ''}）`)
+    .join('\n');
   const descRaw = claim.description ? claim.description.replace(/<[^>]+>/g, '').replace(/\s+\n/g, '\n').trim() : '';
   const desc = descRaw ? `\n\n描述/复现：\n${descRaw.slice(0, 1500)}` : '';
   return [
@@ -1073,6 +1076,54 @@ function buildTapdPrompt(
     ``,
     `请在这些 repo 里完成改动、各自提交（commit message 带 "TAPD #${claim.id}"）。跨 repo 用 cd 或 git -C。完成后把摘要用 \`agent lark send-text\` 推给我。`,
   ].join('\n');
+}
+
+/** 按脏工作区策略切各 repo 分支 → 开一个 claude tab → 注入 bug 上下文 → 回结果卡。 */
+async function finalizeTapdClaim(
+  client: Lark.Client,
+  chatId: string,
+  claim: import('multiagent-orchestrator').TapdClaim,
+  strategy: string,
+): Promise<void> {
+  const hm = await import('multiagent-host-mac');
+  const orch = await import('multiagent-orchestrator');
+  const { sendCardMessage, sendTextMessage } = await import('./api.js');
+  const { ackCard } = await import('./cards.js');
+  try {
+    const results = [];
+    for (const repo of claim.selectedRepos) {
+      results.push(await hm.prepareBugBranch(repo, claim.branch, strategy as import('multiagent-host-mac').DirtyStrategy));
+    }
+    const okRepos = results.filter((r) => r.ok);
+    if (okRepos.length === 0) {
+      await sendCardMessage(client, chatId, ackCard({
+        title: `⚠️ ${claim.branch} 未开工`,
+        body: `没有可用 repo：\n${results.map((r) => `❌ ${r.repo.split('/').pop()}：${r.reason ?? r.note ?? ''}`).join('\n')}`,
+      }));
+      return;
+    }
+    const primaryCwd = okRepos[0]!.cwd;
+    const tty = await hm.newTab({ cwd: primaryCwd });
+    await new Promise((r) => setTimeout(r, 1500));
+    await hm.launchClaudeInTab(tty, { continueSession: false });
+    await new Promise((r) => setTimeout(r, 1500));
+    await hm.send(tty, buildTapdPrompt(claim, results));
+    await new Promise((r) => setTimeout(r, 600));
+    await hm.forceEnter(tty).catch(() => {});
+    claim.status = 'working'; claim.tty = tty; await orch.saveClaim(claim);
+    const chat = await loadChat(chatId); chat.activeTty = tty; chat.lastActiveAt = Date.now(); await saveChat(chat);
+    const lines = results.map((r) =>
+      r.ok
+        ? `✅ ${r.repo.split('/').pop()} → \`${r.branch}\`（${r.action}）${r.note ? ` · ${r.note}` : ''}`
+        : `❌ ${r.repo.split('/').pop()}：${r.reason ?? r.note ?? '失败'}`,
+    );
+    await sendCardMessage(client, chatId, ackCard({
+      title: `🌿 已开工 · ${claim.branch}`,
+      body: `tab \`${tty}\` · ${claim.system === 'bug' ? '缺陷' : '需求'} #${claim.id}\n${lines.join('\n')}\n\n已把 bug 上下文注入 claude，它会跨 repo 处理并推结果给你。`,
+    }));
+  } catch (e) {
+    await sendTextMessage(client, chatId, `❌ TAPD 开工失败：${(e as Error).message}`).catch(() => {});
+  }
 }
 
 async function handleCardAction(
@@ -1671,44 +1722,42 @@ end run
     if (!claim) return { toast: { type: 'error', content: '认领已失效' } };
     if (claim.selectedRepos.length === 0) return { toast: { type: 'error', content: '先选至少一个 repo' } };
     void (async () => {
-      const { sendCardMessage, sendTextMessage } = await import('./api.js');
       try {
         const hm = await import('multiagent-host-mac');
-        const { ackCard } = await import('./cards.js');
-        // 1. 每个选中 repo 切同名分支
-        const results = [];
-        for (const repo of claim.selectedRepos) {
-          results.push(await hm.gitCheckoutBranch(repo, claim.branch));
+        const { sendCardMessage } = await import('./api.js');
+        const { tapdDirtyCard } = await import('./cards.js');
+        // 切前查每个选中 repo 的脏状态
+        const states = await Promise.all(claim.selectedRepos.map((r) => hm.gitWorkingState(r)));
+        const dirty = states.filter((s) => s.isRepo && s.dirty);
+        if (dirty.length > 0) {
+          // 有脏 → 弹策略卡让用户选（C 方案）
+          await sendCardMessage(client, chatId, tapdDirtyCard(
+            claim,
+            dirty.map((d) => ({ repo: d.repo, branch: d.branch, changeCount: d.changeCount })),
+            process.env['HOME'] ?? '',
+          ));
+          return;
         }
-        const okRepos = results.filter((r) => r.ok);
-        const primary = okRepos[0]?.repo ?? claim.selectedRepos[0]!;
-        // 2. 开一个 tab 在主 repo，起 claude（自动过 trust）
-        const tty = await hm.newTab({ cwd: primary });
-        await new Promise((r) => setTimeout(r, 1500));
-        await hm.launchClaudeInTab(tty, { continueSession: false });
-        await new Promise((r) => setTimeout(r, 1500));
-        // 3. 注入 bug 上下文并提交
-        await hm.send(tty, buildTapdPrompt(claim, results));
-        await new Promise((r) => setTimeout(r, 600));
-        await hm.forceEnter(tty).catch(() => {});
-        // 4. 更新状态 + chat active
-        claim.status = 'working'; claim.tty = tty; await orch.saveClaim(claim);
-        const chat = await loadChat(chatId); chat.activeTty = tty; chat.lastActiveAt = Date.now(); await saveChat(chat);
-        // 5. 结果卡
-        const lines = results.map((r) =>
-          r.ok
-            ? `✅ ${r.repo.split('/').pop()} → \`${r.branch}\`（${r.action}）`
-            : `❌ ${r.repo.split('/').pop()}：${r.reason}`,
-        );
-        await sendCardMessage(client, chatId, ackCard({
-          title: `🌿 已开工 · ${claim.branch}`,
-          body: `tab \`${tty}\` · ${claim.system === 'bug' ? '缺陷' : '需求'} #${claim.id}\n${lines.join('\n')}\n\n已把 bug 上下文注入 claude，它会跨 repo 处理并推结果给你。`,
-        }));
+        // 全干净 → 直接切开工
+        await finalizeTapdClaim(client, chatId, claim, 'normal');
       } catch (e) {
-        await sendTextMessage(client, chatId, `❌ TAPD 开工失败：${(e as Error).message}`).catch(() => {});
+        logger.warn('tapd-claim-go failed', { err: (e as Error).message });
       }
     })();
-    return { toast: { type: 'success', content: '建分支开 tab 中…' } };
+    return { toast: { type: 'info', content: '检查工作区…' } };
+  }
+
+  if (action === 'tapd-go-strategy') {
+    const id = value['id'] as string | undefined;
+    const strategy = (value['strategy'] as string | undefined) ?? 'stash';
+    if (!id) return { toast: { type: 'error', content: '缺 id' } };
+    const orch = await import('multiagent-orchestrator');
+    const claim = await orch.loadClaim(id);
+    if (!claim) return { toast: { type: 'error', content: '认领已失效' } };
+    void finalizeTapdClaim(client, chatId, claim, strategy).catch((e) =>
+      logger.warn('tapd-go-strategy failed', { err: (e as Error).message }),
+    );
+    return { toast: { type: 'success', content: `按「${strategy}」开工中…` } };
   }
 
   if (action === 'show-approvals') {

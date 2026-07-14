@@ -2150,3 +2150,42 @@ export function tapdRepoPickerCard(
     elements,
   };
 }
+
+/**
+ * 脏工作区策略卡：某些选中的 repo 当前分支有未提交改动，让用户选怎么切分支。
+ * 干净的 repo 会照常 checkout -b，只对脏 repo 应用所选策略。
+ */
+export function tapdDirtyCard(
+  claim: { id: string; branch: string; title: string },
+  dirty: { repo: string; branch: string; changeCount: number }[],
+  home: string,
+) {
+  const list = dirty
+    .map((d) => `- \`${homeify(d.repo, home)}\`（当前 \`${d.branch || '?'}\` · ${d.changeCount} 处未提交）`)
+    .join('\n');
+  const btn = (content: string, strategy: string, type: string) => ({
+    tag: 'button',
+    text: { tag: 'plain_text', content },
+    type,
+    value: { action: 'tapd-go-strategy', id: claim.id, strategy },
+  });
+  return {
+    config: { wide_screen_mode: true },
+    header: {
+      template: 'orange',
+      title: { tag: 'plain_text', content: '⚠️ 有 repo 未提交改动 · 怎么切分支？' },
+    },
+    elements: [
+      {
+        tag: 'div',
+        text: {
+          tag: 'lark_md',
+          content: `要切到 \`${claim.branch}\`，但这些 repo 的当前分支有未提交改动：\n${list}\n\n<font color='grey'>干净的 repo 会照常切；下面的选择只作用于上面这些脏 repo。</font>`,
+        },
+      },
+      { tag: 'hr' },
+      { tag: 'action', actions: [btn('📦 暂存后切(stash)', 'stash', 'primary'), btn('🌿 worktree 隔离', 'worktree', 'default'), btn('➡️ 照切带过去', 'carry', 'default')] },
+      { tag: 'action', actions: [btn('⏭ 跳过脏 repo', 'skip', 'default'), { tag: 'button', text: { tag: 'plain_text', content: '取消' }, type: 'default', value: { action: 'tapd-ignore', id: claim.id } }] },
+    ],
+  };
+}
