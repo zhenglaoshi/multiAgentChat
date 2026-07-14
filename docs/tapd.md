@@ -4,6 +4,23 @@
 > 多选涉及的 repo → 切分支 → 开一个 claude tab 注入上下文 → claude 跨 repo 修复 →
 > 审批后用 MCP 回写 TAPD 状态。
 
+## 能力总览
+
+- **监听**：每 5min 拉「我的·当天更新·未结束」缺陷+需求，去重推卡；差异化卡（缺陷橙/红·需求蓝）+ 描述摘要
+- **卡动作**：认领并建分支 / 打开 TAPD / 🕐稍后(snooze 3h) / 🙈不是我的(永久)
+- **主动查询**：飞书 `/tapd` 列我全部未结束项
+- **认领**：多选涉及的 repo（候选 = /pin 书签 + 最近 cwd + 全机 git 仓库索引，新人装完即有）
+- **一键认领**：记住每个项目上次的 repo/基准/模式，下次自动预选
+- **分支基准**：当前分支直接改（测试 bug）/ 从 HEAD / 从 master / 从 develop（线上 bug）
+- **脏工作区**：stash / worktree 隔离 / 照切 / 跳过（只在切新分支时问）
+- **执行模式**：需求→SOP 编排（含 after-architect 审批 gate）/ 缺陷→普通任务，可互切
+- **一个 tab 多 repo**：跨 repo bug 一个 claude 会话协调，分支名一致
+- **上下文注入**：标题 + TAPD 链接 + 各 repo 工作分支 + 描述(保留图片标记) + 指引用 MCP 看评论/图片
+- **修复约束**：本地验证、严禁连线上库/生产、不确定弹 `agent lark ask`、状态改动经审批
+- **回写**：审批后用 MCP 把状态流转到已解决 + 评论回填 commit/PR
+- **生命周期卡**：认领→修复中→验证中→待审批→已解决，claude 用 `agent tapd stage` 上报，卡随进度更新
+- **企业微信**：通知 + 单 repo 简化认领（多 repo/SOP/脏策略富交互走飞书）
+
 ## 一句话架构
 
 - **检测（监听）**：daemon 每 5min 直连公司 **TAPD MCP 网关**（streamable-http + Bearer token）拉数据 —— 纯 HTTP，**不经 claude/LLM/CLI**，确定、快、可高频。
