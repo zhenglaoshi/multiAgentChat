@@ -2014,6 +2014,10 @@ export function tapdItemCard(item: TapdItem) {
   const icon = isBug ? '🐞' : '📌';
   const kindLabel = isBug ? '缺陷' : '需求';
   const sev = item.severity ? (TAPD_SEVERITY_LABEL[item.severity] ?? item.severity) : '';
+  // 差异化：缺陷=橙（致命/严重升红），需求=蓝
+  const template = isBug
+    ? (item.severity === 'fatal' || item.severity === 'serious' ? 'red' : 'orange')
+    : 'blue';
 
   const lines: string[] = [];
   lines.push(`**${truncate(item.title, 80)}**`);
@@ -2067,7 +2071,7 @@ export function tapdItemCard(item: TapdItem) {
   return {
     config: { wide_screen_mode: true },
     header: {
-      template: 'yellow',
+      template,
       title: { tag: 'plain_text', content: `${icon} 指派给你的${kindLabel}` },
     },
     elements,
