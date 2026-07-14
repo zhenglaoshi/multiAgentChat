@@ -46,7 +46,7 @@ const CLAUDE_TUI_REMINDER = [
   '⚠ 回到飞书 — 飞书看不见你的 TUI 屏幕。**先在 TUI 完整回答用户，然后再** `agent lark send-text "<同样一份摘要>"` 推到飞书（两个渠道并行，不能只推不答）。要用户从选项里选（单/多选）或填文本，**用 `agent lark ask single|multi|input`**（stdout 拿答案 JSON），不要用 AskUserQuestion 或在 TUI 里 wait 键盘。',
 ].join('\n');
 import { patchCard, sendCardReturnId, sendImage } from './api.js';
-import { ackCard, askCard, batchProgressCard, browseCard, chainProgressCard, progressCard, receiptCard, type BatchTaskItem, type ChainStepItem } from './cards.js';
+import { ackCard, askCard, batchProgressCard, browseCard, chainProgressCard, progressCard, receiptCard, tapdClaimCard, type BatchTaskItem, type ChainStepItem } from './cards.js';
 import { readdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname, basename } from 'node:path';
@@ -1131,19 +1131,21 @@ async function finalizeTapdClaim(
     }
     await new Promise((r) => setTimeout(r, 600));
     await hm.forceEnter(tty).catch(() => {});
-    claim.status = 'working'; claim.tty = tty; await orch.saveClaim(claim);
+    claim.status = 'working'; claim.tty = tty;
+    claim.stage = 'fixing'; claim.chatId = chatId; // A 生命周期
     // B：记住该项目的 repo/基准/模式，下次认领自动预选
     await orch.saveRepoMap(claim.workspaceId, { repos: claim.selectedRepos, base: claim.base, sop: claim.sop });
     const chat = await loadChat(chatId); chat.activeTty = tty; chat.lastActiveAt = Date.now(); await saveChat(chat);
     const lines = results.map((r) =>
       r.ok
-        ? `✅ ${r.repo.split('/').pop()} → \`${r.branch}\`（${r.action}）${r.note ? ` · ${r.note}` : ''}`
+        ? `✅ ${r.repo.split('/').pop()} → ${r.branch}（${r.action}）${r.note ? ` · ${r.note}` : ''}`
         : `❌ ${r.repo.split('/').pop()}：${r.reason ?? r.note ?? '失败'}`,
     );
-    await sendCardMessage(client, chatId, ackCard({
-      title: `🌿 已开工 · ${claim.branch}`,
-      body: `tab \`${tty}\` · ${claim.system === 'bug' ? '缺陷' : '需求'} #${claim.id}\n${modeNote}\n${lines.join('\n')}\n\n已把上下文注入 claude，它会跨 repo 处理并推结果给你。`,
-    }));
+    claim.stageNote = `${modeNote}\n${lines.join('\n')}`;
+    // A 生命周期卡：存 messageId 供后续 agent tapd stage patch
+    const mid = await sendCardReturnId(client, chatId, tapdClaimCard(claim));
+    if (mid) claim.cardMessageId = mid;
+    await orch.saveClaim(claim);
   } catch (e) {
     await sendTextMessage(client, chatId, `❌ TAPD 开工失败：${(e as Error).message}`).catch(() => {});
   }

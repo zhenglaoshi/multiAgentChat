@@ -83,6 +83,22 @@ claude mcp get tapd     # 应 ✔ Connected
 
 （这几种和上面的脏工作区策略正交：只有"切新分支"时才会走脏策略卡。）
 
+## 生命周期进度卡（A）
+
+认领开工后，飞书会有一张**生命周期卡**随进度更新：`认领 → 修复中 → 验证中 → 待审批回写 → 已解决`
+（当前阶段高亮）。工作 tab 里的 claude 在阶段变化时上报，daemon 收到就 patch 这张卡：
+
+```bash
+agent tapd stage fixing            --claim <id>   # 开始修
+agent tapd stage verifying         --claim <id>   # 本地验证中
+agent tapd stage awaiting-approval --claim <id>   # 等你审批回写
+agent tapd stage resolved          --claim <id>   # 已回写 TAPD
+agent tapd stage failed --claim <id> --note "原因" # 卡住/需要你
+```
+
+注入的 prompt 已带这些指令（含本 claim 的 id），claude 会自动上报。飞书用 patch 原地更新；
+企微不能 patch → 改用发一条进度文本。
+
 ## 图片 & 评论（靠工作 tab 里的 MCP）
 
 TAPD 的描述/评论是 HTML，可能含图片，且**评论里常有需求变更/补充/复现细节**。处理方式：

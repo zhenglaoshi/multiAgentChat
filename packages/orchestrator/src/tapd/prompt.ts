@@ -64,5 +64,12 @@ export function buildTapdPrompt(
     `   流转到「已解决/已修复」+ 加评论回填 commit/PR 链接（改状态前先用`,
     `   mcp__tapd__tapd-get-workflows-status-map / get-workflows-all-transitions 查该项目正确的目标状态英文名）。`,
     `5. 全程把关键进展/结论用 \`agent ${im} send-text\` 推给我。`,
+    ``,
+    `进度上报（让我在飞书/企微看到进度卡随之更新）——阶段变化时各跑一次：`,
+    `  开始修 → \`agent tapd stage fixing --claim ${claim.id}\``,
+    `  开始本地验证 → \`agent tapd stage verifying --claim ${claim.id}\``,
+    `  待我审批回写 → \`agent tapd stage awaiting-approval --claim ${claim.id}\``,
+    `  已回写 TAPD → \`agent tapd stage resolved --claim ${claim.id}\``,
+    `  卡住/需要我 → \`agent tapd stage failed --claim ${claim.id} --note "原因"\``,
   ].join('\n');
 }

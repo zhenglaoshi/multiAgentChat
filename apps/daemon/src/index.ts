@@ -934,6 +934,8 @@ async function runWeComTapdClaim(wecom: WeComTransport, chatId: string, claim: T
   await forceEnter(tty).catch(() => {});
   claim.status = 'working';
   claim.tty = tty;
+  claim.stage = 'fixing';
+  claim.chatId = chatId; // A：企微 stage 上报走 sendText（企微不能 patch）
   await saveClaim(claim);
   await saveRepoMap(claim.workspaceId, { repos: claim.selectedRepos, base: claim.base, sop: claim.sop });
   const spec: CardSpec = {

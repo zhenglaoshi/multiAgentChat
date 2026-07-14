@@ -59,6 +59,19 @@ export interface TabRecentCwdsRequest {
   op: 'tab.recent-cwds';
 }
 
+/** TAPD claim 阶段上报（工作 claude 调 `agent tapd stage <state> --claim <id>`）。 */
+export interface TapdStageRequest {
+  op: 'tapd.stage';
+  claimId: string;
+  stage: string;
+  note?: string;
+}
+
+export interface TapdStageData {
+  updated: boolean;
+  stage?: string;
+}
+
 export interface TabScreenRequest {
   op: 'tab.screen';
   tty: string;
@@ -401,6 +414,7 @@ export type Request =
   | TabNewRequest
   | TabCloseRequest
   | TabRestartClaudeRequest
+  | TapdStageRequest
   | TabRecentCwdsRequest
   | TabScreenRequest
   | TabKeysRequest

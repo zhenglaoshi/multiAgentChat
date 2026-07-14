@@ -27,6 +27,7 @@ import type {
   StageRecallData,
   TabCloseData,
   TabRestartClaudeData,
+  TapdStageData,
   TabGetData,
   TabHistoryData,
   TabListData,
@@ -75,6 +76,7 @@ interface Flags {
   chat?: string;          // --chat <chat_id>
   name?: string;          // --name (上传文件名 / 或 task stage 名)
   taskId?: string;
+  claimId?: string;       // agent tapd stage --claim <id>
   summary?: string;
   artifact?: string;
   note?: string;
@@ -145,6 +147,8 @@ function parseArgs(args: string[]): Flags {
       flags.name = args[++i] ?? die('--name 需要值');
     } else if (a === '--task-id') {
       flags.taskId = args[++i] ?? die('--task-id 需要值');
+    } else if (a === '--claim') {
+      flags.claimId = args[++i] ?? die('--claim 需要 claim id');
     } else if (a === '--summary') {
       flags.summary = args[++i] ?? die('--summary 需要值');
     } else if (a === '--artifact') {
@@ -535,6 +539,23 @@ async function cmdRestartClaudeTabs(flags: Flags): Promise<void> {
     }
   }
   stdout.write(`\n完成：${okN}/${data.targets.length} 成功。\n`);
+}
+
+async function cmdTapd(flags: Flags): Promise<void> {
+  const sub = flags.positional[0];
+  if (sub === 'stage') {
+    const stage = flags.positional[1];
+    const claimId = flags.claimId;
+    if (!stage || !claimId) {
+      die('agent tapd stage <fixing|verifying|awaiting-approval|resolved|failed> --claim <id> [--note "..."]');
+    }
+    const req: Extract<Request, { op: 'tapd.stage' }> = { op: 'tapd.stage', claimId, stage };
+    if (flags.note) req.note = flags.note;
+    const data = await sendOnce<TapdStageData>(req);
+    stdout.write(data.updated ? `✅ TAPD stage → ${data.stage}\n` : '未更新\n');
+    return;
+  }
+  die('用法：agent tapd stage <state> --claim <id> [--note "..."]');
 }
 
 async function cmdScreen(flags: Flags): Promise<void> {
@@ -1685,6 +1706,8 @@ async function main(): Promise<void> {
       case 'restart-all-claude-tabs':
       case 'restart-claude':
         return await cmdRestartClaudeTabs(flags);
+      case 'tapd':
+        return await cmdTapd(flags);
       case 'screen':
         return await cmdScreen(flags);
       case 'keys':

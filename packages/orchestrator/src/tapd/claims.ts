@@ -26,7 +26,29 @@ export interface TapdClaim {
   status: 'picking' | 'working' | 'ignored';
   tty?: string;              // 开工后的 tab
   createdAt: number;
+  // ---- A 生命周期（工作 claude 用 `agent tapd stage` 上报，daemon patch 卡）----
+  /** 当前阶段 */
+  stage?: TapdStage;
+  /** 阶段备注（claude 上报时可带） */
+  stageNote?: string;
+  /** 发消息/patch 卡用的 chatId（飞书 oc_ / 企微 wecom:）*/
+  chatId?: string;
+  /** 生命周期卡的 messageId（飞书用来 patch）*/
+  cardMessageId?: string;
 }
+
+/** claim 生命周期阶段（认领 → 修复 → 验证 → 待审批 → 已解决）。 */
+export type TapdStage = 'claimed' | 'fixing' | 'verifying' | 'awaiting-approval' | 'resolved' | 'failed';
+
+export const TAPD_STAGE_ORDER: TapdStage[] = ['claimed', 'fixing', 'verifying', 'awaiting-approval', 'resolved'];
+export const TAPD_STAGE_LABEL: Record<TapdStage, string> = {
+  claimed: '已认领',
+  fixing: '修复中',
+  verifying: '验证中',
+  'awaiting-approval': '待审批回写',
+  resolved: '已解决',
+  failed: '卡住/失败',
+};
 
 async function ensureDir(): Promise<void> {
   await mkdir(DATA_DIR, { recursive: true });

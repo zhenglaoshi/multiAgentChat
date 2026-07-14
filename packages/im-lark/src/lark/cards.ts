@@ -2226,3 +2226,47 @@ export function tapdDirtyCard(
     ],
   };
 }
+
+/**
+ * TAPD claim 生命周期卡（飞书，随 `agent tapd stage` 上报 patch）：
+ * 认领 → 修复中 → 验证中 → 待审批回写 → 已解决，当前阶段高亮。
+ */
+export function tapdClaimCard(claim: {
+  id: string; system: string; title: string; branch: string; url: string; tty?: string;
+  stage?: string; stageNote?: string;
+}) {
+  const ORDER = ['claimed', 'fixing', 'verifying', 'awaiting-approval', 'resolved'];
+  const LABEL: Record<string, string> = {
+    claimed: '已认领', fixing: '修复中', verifying: '验证中', 'awaiting-approval': '待审批回写', resolved: '已解决',
+  };
+  const cur = claim.stage ?? 'claimed';
+  const failed = cur === 'failed';
+  const curIdx = ORDER.indexOf(cur);
+  const steps = ORDER.map((s, i) => {
+    const mark = failed ? (i === 0 ? '✅' : '⚪')
+      : i < curIdx ? '✅' : i === curIdx ? '🔵' : '⚪';
+    return `${mark} ${LABEL[s]}`;
+  }).join('　→　');
+  const kindLabel = claim.system === 'bug' ? '缺陷' : '需求';
+  const lines = [
+    `**${truncate(claim.title, 70)}**`,
+    `<font color='grey'>${kindLabel} #${claim.id} · 分支 \`${claim.branch}\`${claim.tty ? ` · ${claim.tty}` : ''}</font>`,
+    '',
+    failed ? `❌ **卡住/失败**${claim.stageNote ? `：${claim.stageNote}` : ''}` : steps,
+  ];
+  if (!failed && claim.stageNote) lines.push(`<font color='grey'>${claim.stageNote}</font>`);
+  return {
+    config: { wide_screen_mode: true },
+    header: {
+      template: cur === 'resolved' ? 'green' : failed ? 'red' : 'blue',
+      title: { tag: 'plain_text', content: `🌿 ${kindLabel}修复进度 #${claim.id}` },
+    },
+    elements: [
+      { tag: 'div', text: { tag: 'lark_md', content: lines.join('\n') } },
+      { tag: 'action', actions: [{
+        tag: 'button', text: { tag: 'plain_text', content: '🔗 打开 TAPD' }, type: 'default',
+        multi_url: { url: claim.url, pc_url: claim.url, ios_url: claim.url, android_url: claim.url },
+      }] },
+    ],
+  };
+}

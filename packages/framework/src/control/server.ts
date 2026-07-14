@@ -8,7 +8,8 @@ import { promisify } from 'node:util';
 import * as Lark from '@larksuiteoapi/node-sdk';
 import { approvals, asks, knowledgeQueue, listEntries, statsSummary } from 'multiagent-orchestrator';
 import { listAllChats, loadChat, saveChat } from 'multiagent-im-lark';
-import { originShellPushCard, sendCardMessage, sendFile, sendImage, sendTextMessage } from 'multiagent-im-lark';
+import { originShellPushCard, sendCardMessage, sendFile, sendImage, sendTextMessage, patchCard, tapdClaimCard } from 'multiagent-im-lark';
+import { loadClaim, saveClaim, TAPD_STAGE_LABEL, type TapdStage } from 'multiagent-orchestrator';
 import { logger } from 'multiagent-orchestrator';
 import { pendingTracker } from 'multiagent-im-lark';
 import { captureScreen, listRecentCwds, recordCwd, sendKeys } from 'multiagent-host-mac';
@@ -56,6 +57,7 @@ import type {
   Response,
   TabCloseData,
   TabRestartClaudeData,
+  TapdStageData,
   TabGetData,
   TabHistoryData,
   TabListData,
@@ -202,6 +204,35 @@ async function handleTabRestartClaude(
       });
     }
     sendOk<TabRestartClaudeData>(sock, { dryRun: false, targets: results, excluded });
+  } catch (e) {
+    sendErr(sock, (e as Error).message);
+  }
+  sock.end();
+}
+
+async function handleTapdStage(sock: Socket, req: Extract<Request, { op: 'tapd.stage' }>) {
+  try {
+    const claim = await loadClaim(req.claimId);
+    if (!claim) {
+      sendErr(sock, `TAPD claim ${req.claimId} 不存在`);
+      sock.end();
+      return;
+    }
+    claim.stage = req.stage as TapdStage;
+    if (req.note) claim.stageNote = req.note;
+    await saveClaim(claim);
+    const label = TAPD_STAGE_LABEL[claim.stage] ?? claim.stage;
+    // 企微不能 patch → sendText 进度；飞书 patch 生命周期卡
+    if (claim.chatId?.startsWith('wecom:') && wecomTransport) {
+      await wecomTransport
+        .sendText(claim.chatId, `🌿 [TAPD #${claim.id}] ${label}${req.note ? `：${req.note}` : ''}`)
+        .catch(() => {});
+    } else if (larkClient && claim.cardMessageId) {
+      await patchCard(larkClient, claim.cardMessageId, tapdClaimCard(claim)).catch((e) =>
+        logger.warn('tapd stage patch failed', { err: (e as Error).message }),
+      );
+    }
+    sendOk<TapdStageData>(sock, { updated: true, stage: claim.stage });
   } catch (e) {
     sendErr(sock, (e as Error).message);
   }
@@ -1427,6 +1458,8 @@ async function dispatch(sock: Socket, req: Request): Promise<void> {
       return handleTabClose(sock, req);
     case 'tab.restart-claude':
       return handleTabRestartClaude(sock, req);
+    case 'tapd.stage':
+      return handleTapdStage(sock, req);
     case 'tab.recent-cwds':
       return handleTabRecentCwds(sock);
     case 'tab.screen':
