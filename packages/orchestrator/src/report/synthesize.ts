@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { logger } from '../logger.js';
 import type { CollectedWork, ReportWindow } from './collect.js';
+import { renderReportPptx, type ReportDoc } from './render-pptx.js';
 
 const CLAUDE_TIMEOUT_MS = 180_000; // claude -p 冷启动可能慢
 
@@ -73,4 +74,85 @@ export async function generateBrief(
   const markdown = await synthesizeBrief(data);
   logger.info('report brief generated', { window: data.window, commits: data.commits.length, tasks: data.tasks.length });
   return { markdown, data };
+}
+
+// ================= P2 · 月报/年报 PPT =================
+
+interface ReportSections { sections: { heading: string; bullets: string[] }[] }
+
+/** 结构化合成 prompt：要求 claude 输出 JSON（分节 + bullets），供 PPT 分页渲染。 */
+function buildStructuredPrompt(data: CollectedWork): string {
+  const label = WINDOW_LABEL[data.window];
+  const byRepo = new Map<string, string[]>();
+  for (const c of data.commits) {
+    const arr = byRepo.get(c.repo) ?? []; arr.push(`${c.date} ${c.subject}`); byRepo.set(c.repo, arr);
+  }
+  const commitBlock = byRepo.size
+    ? [...byRepo.entries()].map(([r, cs]) => `【${r}】(${cs.length})\n${cs.slice(0, 60).map((s) => '  - ' + s).join('\n')}`).join('\n')
+    : '（无 git 提交）';
+  const taskBlock = data.tasks.length
+    ? data.tasks.slice(0, 60).map((t) => `  - ${t.prompt.slice(0, 80)}${t.summary ? ` → ${t.summary.slice(0, 60)}` : ''}`).join('\n')
+    : '（无）';
+  return [
+    `你是我的工作总结助手。基于「${data.sinceLabel} ~ ${data.untilLabel}」我的真实工作数据，生成一份 **${label}** 的分节内容，用于做 PPT。`,
+    ``,
+    `# git 提交（按仓库，${data.commits.length} 条）`, commitBlock,
+    ``, `# 助手任务（${data.tasks.length} 条）`, taskBlock,
+    ``,
+    `输出**严格 JSON**（不要任何解释/markdown 围栏），schema：`,
+    `{"sections":[{"heading":"章节名","bullets":["要点1","要点2"]}]}`,
+    `建议章节：主要工作（按项目/主题归纳成几件事，不要逐条 commit）、关键成果（含数字）、亮点/难点、遗留与下一步。`,
+    `每章节 3-8 个 bullet，中文，简练。只根据上面数据，别编造。`,
+  ].join('\n');
+}
+
+function synthesizeStructured(data: CollectedWork): Promise<ReportSections> {
+  const prompt = buildStructuredPrompt(data);
+  return new Promise((resolveP, rejectP) => {
+    const p = spawn('claude', ['-p', prompt, '--max-turns', '1'], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, MCHAT_INTERNAL_SESSION: '1' },
+    });
+    let stdout = ''; let stderr = '';
+    p.stdout.on('data', (d: Buffer) => (stdout += d.toString('utf8')));
+    p.stderr.on('data', (d: Buffer) => (stderr += d.toString('utf8')));
+    const timer = setTimeout(() => { p.kill('SIGTERM'); rejectP(new Error('claude timeout')); }, CLAUDE_TIMEOUT_MS);
+    p.on('error', (e) => { clearTimeout(timer); rejectP(e); });
+    p.on('close', (code) => {
+      clearTimeout(timer);
+      if (code !== 0) { rejectP(new Error(`claude exit ${code}: ${stderr.slice(0, 200)}`)); return; }
+      const a = stdout.indexOf('{'); const b = stdout.lastIndexOf('}');
+      if (a < 0 || b <= a) { rejectP(new Error('claude 无 JSON 输出: ' + stdout.slice(0, 150))); return; }
+      try {
+        const j = JSON.parse(stdout.slice(a, b + 1)) as ReportSections;
+        if (!Array.isArray(j.sections)) throw new Error('缺 sections');
+        resolveP(j);
+      } catch (e) { rejectP(new Error('JSON 解析失败: ' + (e as Error).message)); }
+    });
+  });
+}
+
+/** 采集 + 结构化合成 + pptxgenjs 渲染 → .pptx 路径（月/年报）。 */
+export async function generatePptxReport(
+  collect: () => Promise<CollectedWork>,
+  outPath: string,
+  author?: string,
+): Promise<{ path: string; data: CollectedWork }> {
+  const data = await collect();
+  const struct = await synthesizeStructured(data);
+  const repos = new Set(data.commits.map((c) => c.repo));
+  const doc: ReportDoc = {
+    title: `${data.sinceLabel.slice(0, data.window === 'year' ? 4 : 7)} ${WINDOW_LABEL[data.window]}`,
+    period: `${data.sinceLabel} ~ ${data.untilLabel}`,
+    stats: [
+      { label: 'git 提交', value: String(data.commits.length) },
+      { label: '涉及仓库', value: String(repos.size) },
+      { label: '助手任务', value: String(data.tasks.length) },
+    ],
+    sections: struct.sections,
+  };
+  if (author) doc.author = author;
+  await renderReportPptx(doc, outPath);
+  logger.info('report pptx generated', { window: data.window, path: outPath, sections: struct.sections.length });
+  return { path: outPath, data };
 }

@@ -2148,22 +2148,30 @@ export function buildEventDispatcher(client: Lark.Client): Lark.EventDispatcher 
           (async () => {
             try {
               const rest = text.trim().slice(cmdName.length + 1).trim().toLowerCase();
+              const brief = /(--brief|简报)/.test(rest);
               const window: 'day' | 'week' | 'month' | 'year' =
                 rest.startsWith('d') || rest.includes('日') ? 'day'
                 : rest.startsWith('m') || rest.includes('月') ? 'month'
                 : rest.startsWith('y') || rest.includes('年') ? 'year'
                 : 'week';
-              if (window === 'month' || window === 'year') {
-                void sendText(client, chat_id, `📊 ${window === 'month' ? '月报' : '年报'}（PPT）是 P2，还没实现；先用 \`/report day\` / \`/report week\` 出简报`);
-                return;
-              }
-              void sendText(client, chat_id, `📊 ${window === 'day' ? '日报' : '周报'}生成中…（采集 git 提交 + 任务记忆 → claude 合成，约 30-60s）`);
+              const wLabel = { day: '日报', week: '周报', month: '月报', year: '年报' }[window];
               const hm = await import('multiagent-host-mac');
               const orch = await import('multiagent-orchestrator');
               const index = await hm.getDirIndex().catch(() => ({ dirs: [] as { path: string; isGitRepo: boolean }[] }));
               const repos = index.dirs.filter((d) => d.isGitRepo).map((d) => d.path);
-              const { markdown } = await orch.generateBrief(() => orch.collectWorkData({ window, repos }));
-              await sendText(client, chat_id, markdown);
+              const collect = () => orch.collectWorkData({ window, repos });
+              const asPptx = (window === 'month' || window === 'year') && !brief;
+              void sendText(client, chat_id, `📊 ${wLabel}${asPptx ? '(PPT)' : '简报'}生成中…（采集 git+任务记忆 → claude 合成，约 30-60s）`);
+              if (asPptx) {
+                const out = `/tmp/mchat-report-${window}-${Date.now()}.pptx`;
+                const { path } = await orch.generatePptxReport(collect, out, '郑纪泉');
+                const { sendFile } = await import('./api.js');
+                await sendFile(client, chat_id, path);
+                void sendText(client, chat_id, `✅ ${wLabel} PPT 已生成（想要简报版发 \`/report ${window} --brief\`）`);
+              } else {
+                const { markdown } = await orch.generateBrief(collect);
+                await sendText(client, chat_id, markdown);
+              }
             } catch (e) {
               void sendText(client, chat_id, `❌ 报告生成失败：${(e as Error).message}`);
             }
