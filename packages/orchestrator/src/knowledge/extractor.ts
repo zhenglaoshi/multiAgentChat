@@ -175,7 +175,12 @@ function runClaudeExtract(prompt: string): Promise<Omit<KnowledgeEntry, 'id' | '
     const p = spawn(
       'claude',
       ['-p', prompt, '--max-turns', '1'],
-      { stdio: ['ignore', 'pipe', 'pipe'] },
+      {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        // 标记内部会话：本 claude -p 触发的 Stop hook 会读到它并跳过推飞书，
+        // 避免提炼器的 meta 输出泄漏到飞书（mchat-stop-hook isHeadlessSession）。
+        env: { ...process.env, MCHAT_INTERNAL_SESSION: '1' },
+      },
     );
     let stdout = '';
     let stderr = '';

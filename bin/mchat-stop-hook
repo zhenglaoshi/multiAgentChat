@@ -18,7 +18,7 @@
  *       Node 会把无扩展名脚本按 ESM 加载；require() 会 ReferenceError
  *       导致 hook crash（曾经的一个坑）。
  */
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { appendFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -43,6 +43,29 @@ function dbg(msg) {
   } catch {}
 }
 
+/*
+ * 是否 headless / 内部 `claude -p` 会话 —— 这类不该把输出推飞书：
+ *   - 全局装在 ~/.claude/settings.json 的本 hook 会对整台机器上 **任何** claude
+ *     会话触发，包括知识提炼 / 其它自动化跑的 `claude -p`（非交互、没对应 tab），
+ *     它们的 meta 回复（"请提供数据…"之类）泄漏到飞书是噪音。
+ * 判定（命中任一即 headless）：
+ *   1. 环境变量 MCHAT_INTERNAL_SESSION=1（本项目内部 spawn claude 时设，hook 子进程继承）
+ *   2. 触发本 hook 的父 claude 进程命令行含 -p / --print（覆盖外部任意 headless 调用）
+ * 拿不准时返回 false（照旧推送），只在 **确定** headless 时才屏蔽。
+ */
+function isHeadlessSession() {
+  if (process.env['MCHAT_INTERNAL_SESSION'] === '1') return true;
+  try {
+    const cmd = execFileSync('ps', ['-o', 'command=', '-p', String(process.ppid)], {
+      encoding: 'utf8',
+    }).trim();
+    if (/(^|\s)(-p|--print)(\s|$)/.test(cmd)) return true;
+  } catch {
+    /* ps 失败 → 当作交互式，照旧推 */
+  }
+  return false;
+}
+
 let raw = '';
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', (chunk) => {
@@ -53,6 +76,11 @@ process.stdin.on('end', () => {
   try {
     if (!raw.trim()) return process.exit(0);
     const payload = JSON.parse(raw);
+    // headless / 内部 claude -p 会话不推飞书（知识提炼等自动化的 meta 输出属噪音）
+    if (isHeadlessSession()) {
+      dbg(`skip: headless/internal session (ppid=${process.ppid})`);
+      return process.exit(0);
+    }
     let text = payload.last_assistant_message;
     if (typeof text !== 'string' || !text.trim()) return process.exit(0);
     // 长度降噪：短确认（"OK"、"已完成 X"）不推飞书
