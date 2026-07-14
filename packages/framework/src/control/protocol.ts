@@ -1,6 +1,6 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import type { ApprovalRequest, ApprovalStatus, AskRequest, AskType, KnowledgeEntry } from 'multiagent-orchestrator';
+import type { ApprovalRequest, ApprovalStatus, AskFormQuestion, AskRequest, AskType, KnowledgeEntry } from 'multiagent-orchestrator';
 import type { ChatState } from 'multiagent-im-lark';
 import type { LoopRule } from 'multiagent-orchestrator';
 import type { TaskState, TaskStatus } from 'multiagent-orchestrator';
@@ -285,9 +285,10 @@ export interface KnowledgeExtractLastData {
 export interface LarkAskOp {
   op: 'lark.ask';
   chatId?: string;               // 空 → daemon 自动反查
-  type: AskType;                 // 'single' | 'multi' | 'input'
+  type: AskType;                 // 'single' | 'multi' | 'input' | 'form'
   title: string;
   options?: string[];            // single/multi 用
+  questions?: AskFormQuestion[]; // form 用（多问题表单）
   timeoutMs?: number;            // 默认 5min
 }
 

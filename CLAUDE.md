@@ -186,6 +186,15 @@ spawn detached: agent lark send-text --auto <text>
 ```
 
 `card.action.trigger` 同理：callback 立刻返回 `{}`，side effect 用 fire-and-forget 走 sendCard / sendText 推回。
+→ **绝不能 `return { toast }`**：飞书收到回调的 toast 响应后，会把这张卡当作"已处理、无卡片更新"，**盖掉你另发的 `patchCard`** → 按钮标记不刷新（点了像没反应）。要 toast 就牺牲卡片刷新，二选一；本项目一律选卡片刷新（标记变化本身就是反馈）。
+
+### 交互卡多次更新要 `update_multi: true`
+
+会被用户**点击多次、每次 patch** 的交互卡（多选 toggle、多问题表单 form 向导），`config` 必须带 `update_multi: true`，否则第二次起 `patchCard` 在飞书端**视觉不生效**（API 返回 code 0 但卡不变）。服务端单向驱动的进度卡不受影响。另：回调 `value` 里的数字字段（index/q/i/to）用 `Number()` 强转再用——飞书可能回传字符串，直接当 number 会让 `Set.has(0)` 对 `["0"]` 失配。
+
+### 多问题交互用 `agent lark ask form`（AskUserQuestion 的飞书替代）
+
+要用户一次回答多个问题（每题单/多选、可带自由输入）→ 用 `agent lark ask form --spec-json '{"questions":[...]}'`，弹飞书表单卡。**不要用 `AskUserQuestion`**（shell 弹窗手机端看不见，且阻塞会话）。全固定选项渲染成一张卡铺完(A)，任一题 `allowText` 则渲染成向导式一次一题(B，带「💬 打字回答」回流）。single/multi 待答时用户直接打字（裸数字/逗号/选项原文）也能答，是卡片抽风时的解冻兜底。详见 `docs/features.md §14`。
 
 ### claude TUI / alt-screen 模式
 

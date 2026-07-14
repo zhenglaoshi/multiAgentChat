@@ -751,6 +751,7 @@ async function handleLarkAsk(
       title: req.title,
       options: req.options ?? [],
     };
+    if (req.type === 'form' && req.questions) createInput.questions = req.questions;
     if (typeof req.timeoutMs === 'number') createInput.timeoutMs = req.timeoutMs;
     const { result } = await asks.create(createInput);
     const final = await result;

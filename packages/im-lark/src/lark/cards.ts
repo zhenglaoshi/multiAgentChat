@@ -1828,7 +1828,177 @@ export function ackCard(data: AckCardData) {
  *   cancelled/timeout → 灰卡
  * multi 状态下 selection 决定每个按钮前面是 ☑ 还是 ☐。
  */
+/** 任一题允许自由输入(allowText) → 走向导式(B)，否则一张卡铺完(A)。 */
+function formNeedsWizard(req: AskRequest): boolean {
+  return (req.questions ?? []).some((q) => q.allowText);
+}
+
+/** 某题当前答案的可读描述（供汇总/提交页）。 */
+function formAnswerLabel(req: AskRequest, qi: number): string {
+  const q = req.questions?.[qi];
+  if (!q) return '';
+  const txt = req.formText?.[qi];
+  if (txt) return `💬 ${truncate(txt, 60)}`;
+  const chosen = (req.formSelection?.[qi] ?? []).map((i) => q.options[i] ?? '');
+  return chosen.length ? chosen.join('、') : '（未选）';
+}
+
+/** resolved 状态的表单摘要卡（A/B 共用）。 */
+function askFormResolvedCard(req: AskRequest) {
+  const questions = req.questions ?? [];
+  const template = req.status === 'answered' ? 'green' : 'grey';
+  const stateLabel = req.status === 'answered' ? '已提交' : req.status === 'cancelled' ? '已取消' : '已超时';
+  const lines: string[] = [];
+  if (req.answer?.kind === 'form') {
+    req.answer.items.forEach((it) => {
+      const qTitle = questions[it.q]?.title ?? `问题${it.q + 1}`;
+      let ans = '';
+      if (it.kind === 'single') ans = it.value ?? '';
+      else if (it.kind === 'multi') ans = (it.values ?? []).join('、') || '（空）';
+      else ans = `💬 ${it.text ?? ''}`;
+      lines.push(`**${it.q + 1}. ${qTitle}** → ${ans}`);
+    });
+  }
+  return {
+    config: { wide_screen_mode: true, update_multi: true },
+    header: { template, title: { tag: 'plain_text', content: `📋 ${req.title} · ${stateLabel}` } },
+    elements: [{ tag: 'div', text: { tag: 'lark_md', content: lines.join('\n') || `_${stateLabel}_` } }],
+  };
+}
+
+/** 方案 A：一张卡铺完所有（固定选项）问题 + 一个提交。 */
+function askFormAllInOneCard(req: AskRequest) {
+  const questions = req.questions ?? [];
+  const sels = req.formSelection ?? [];
+  const elements: unknown[] = [];
+  questions.forEach((q, qi) => {
+    const sel = new Set(sels[qi] ?? []);
+    const isSingle = q.type === 'single';
+    elements.push({ tag: 'div', text: { tag: 'lark_md', content: `**${qi + 1}. ${q.title}**　<font color='grey'>${isSingle ? '单选' : '多选'}</font>` } });
+    for (let i = 0; i < q.options.length; i += 2) {
+      const row: unknown[] = [];
+      for (let j = i; j < Math.min(i + 2, q.options.length); j++) {
+        const on = sel.has(j);
+        const mark = isSingle ? (on ? '🔘' : '⚪') : (on ? '☑' : '☐');
+        row.push({
+          tag: 'button',
+          text: { tag: 'plain_text', content: `${mark} ${truncate(q.options[j] ?? '', 36)}` },
+          type: on ? 'primary' : 'default',
+          value: { action: 'ask.form-toggle', askId: req.id, q: qi, i: j },
+        });
+      }
+      elements.push({ tag: 'action', actions: row });
+    }
+  });
+  elements.push({ tag: 'hr' });
+  elements.push({
+    tag: 'action',
+    actions: [
+      { tag: 'button', text: { tag: 'plain_text', content: '✅ 提交' }, type: 'primary', value: { action: 'ask.form-submit', askId: req.id } },
+      { tag: 'button', text: { tag: 'plain_text', content: '⊘ 取消' }, type: 'default', value: { action: 'ask.form-cancel', askId: req.id } },
+    ],
+  });
+  return {
+    config: { wide_screen_mode: true, update_multi: true },
+    header: { template: 'yellow', title: { tag: 'plain_text', content: `📋 ${req.title} · ${questions.length} 题` } },
+    elements,
+  };
+}
+
+/** 方案 B：向导式，一次一题；allowText 题带「💬 打字回答」→ 武装后回复文字。 */
+function askFormWizardCard(req: AskRequest) {
+  const questions = req.questions ?? [];
+  const sels = req.formSelection ?? [];
+  const n = questions.length;
+  const cursor = Math.max(0, Math.min(req.formCursor ?? 0, n));
+  const elements: unknown[] = [];
+
+  if (cursor >= n) {
+    const summary = questions.map((q, qi) => `**${qi + 1}. ${q.title}**：${formAnswerLabel(req, qi)}`);
+    elements.push({ tag: 'div', text: { tag: 'lark_md', content: `**确认提交**（共 ${n} 题）\n${summary.join('\n')}` } });
+    elements.push({ tag: 'hr' });
+    elements.push({
+      tag: 'action',
+      actions: [
+        { tag: 'button', text: { tag: 'plain_text', content: '✅ 提交' }, type: 'primary', value: { action: 'ask.form-submit', askId: req.id } },
+        { tag: 'button', text: { tag: 'plain_text', content: '⬅ 上一题' }, type: 'default', value: { action: 'ask.form-nav', askId: req.id, to: n - 1 } },
+        { tag: 'button', text: { tag: 'plain_text', content: '⊘ 取消' }, type: 'default', value: { action: 'ask.form-cancel', askId: req.id } },
+      ],
+    });
+    return {
+      config: { wide_screen_mode: true, update_multi: true },
+      header: { template: 'yellow', title: { tag: 'plain_text', content: `📋 ${req.title} · 确认提交` } },
+      elements,
+    };
+  }
+
+  const q = questions[cursor]!;
+  const sel = new Set(sels[cursor] ?? []);
+  const isSingle = q.type === 'single';
+  const armed = req.formTextArmed === cursor;
+  const curText = req.formText?.[cursor];
+  const hint = armed
+    ? `<font color='blue'>**请直接在对话里回复文字**作为本题答案（回复后自动进入下一题）</font>`
+    : `<font color='grey'>${isSingle ? '单选 · 点一下即选并前进' : '多选 · 点着勾选'}${q.allowText ? ' · 或「💬 打字回答」' : ''}</font>`;
+  elements.push({ tag: 'div', text: { tag: 'lark_md', content: `**${cursor + 1}. ${q.title}**\n${hint}${curText ? `\n已填：💬 ${truncate(curText, 50)}` : ''}` } });
+
+  for (let i = 0; i < q.options.length; i += 2) {
+    const row: unknown[] = [];
+    for (let j = i; j < Math.min(i + 2, q.options.length); j++) {
+      const on = sel.has(j);
+      const mark = isSingle ? (on ? '🔘' : '⚪') : (on ? '☑' : '☐');
+      row.push({
+        tag: 'button',
+        text: { tag: 'plain_text', content: `${mark} ${j + 1}. ${truncate(q.options[j] ?? '', 36)}` },
+        type: on ? 'primary' : 'default',
+        value: { action: 'ask.form-toggle', askId: req.id, q: cursor, i: j },
+      });
+    }
+    elements.push({ tag: 'action', actions: row });
+  }
+  if (q.allowText) {
+    elements.push({
+      tag: 'action',
+      actions: [{
+        tag: 'button',
+        text: { tag: 'plain_text', content: armed ? '⌨️ 等你回复文字…' : '💬 打字回答（Other）' },
+        type: armed ? 'primary' : 'default',
+        value: { action: 'ask.form-text', askId: req.id, q: cursor },
+      }],
+    });
+  }
+  elements.push({ tag: 'hr' });
+  // 导航行：上一题 / 下一题（末题不显示）
+  const nav: unknown[] = [];
+  if (cursor > 0) nav.push({ tag: 'button', text: { tag: 'plain_text', content: '⬅ 上一题' }, type: 'default', value: { action: 'ask.form-nav', askId: req.id, to: cursor - 1 } });
+  if (cursor < n - 1) nav.push({ tag: 'button', text: { tag: 'plain_text', content: '下一题 ➡' }, type: 'default', value: { action: 'ask.form-nav', askId: req.id, to: cursor + 1 } });
+  if (nav.length > 0) elements.push({ tag: 'action', actions: nav });
+  // 提交 / 取消：每一页都在，随时可交
+  elements.push({
+    tag: 'action',
+    actions: [
+      { tag: 'button', text: { tag: 'plain_text', content: '✅ 提交' }, type: 'primary', value: { action: 'ask.form-submit', askId: req.id } },
+      { tag: 'button', text: { tag: 'plain_text', content: '⊘ 取消' }, type: 'default', value: { action: 'ask.form-cancel', askId: req.id } },
+    ],
+  });
+
+  return {
+    config: { wide_screen_mode: true, update_multi: true },
+    header: { template: 'yellow', title: { tag: 'plain_text', content: `📋 ${req.title} · 第 ${cursor + 1}/${n} 题` } },
+    elements,
+  };
+}
+
+/**
+ * 多问题表单卡。全固定选项 → 一张卡铺完(A)；任一题允许自由输入 → 向导式(B)。
+ */
+export function askFormCard(req: AskRequest) {
+  if (req.status !== 'pending') return askFormResolvedCard(req);
+  return formNeedsWizard(req) ? askFormWizardCard(req) : askFormAllInOneCard(req);
+}
+
 export function askCard(req: AskRequest) {
+  if (req.type === 'form') return askFormCard(req);
   const isPending = req.status === 'pending';
   const template =
     req.status === 'pending' ? (req.type === 'input' ? 'blue' : 'yellow') :

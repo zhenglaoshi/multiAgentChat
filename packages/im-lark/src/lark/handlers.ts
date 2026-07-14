@@ -31,6 +31,7 @@ const SYSTEM_GUIDANCE = [
   '    单选：`agent lark ask single --title "选哪个？" --options "选项A,选项B,选项C"`',
   '    多选：`agent lark ask multi  --title "勾选多个" --options "1,2,3"`',
   '    输入：`agent lark ask input  --title "输入什么"`  （用户在飞书 chat 里直接回复文本即可）',
+  '    多问题表单：`agent lark ask form --title "标题" --spec-json \'{"questions":[{"title":"Q1","type":"single","options":["A","B"],"allowText":true},{"title":"Q2","type":"multi","options":["X","Y"]}]}\'` —— 一次问多个、每题单/多选、allowText 题可自由输入；stdout 返回 `{"status":"answered","type":"form","answers":[{"q":0,"kind":"single","index":0,"value":"A"},...]}`。**这是 AskUserQuestion 的飞书替代，多问题场景用它，别用 AskUserQuestion（用户手机看不见）**',
   '    stdout 示例：`{"status":"answered","type":"single","index":1,"value":"选项B"}`；status 也可能是 cancelled / timeout',
   '    退出码：0=answered，1=cancelled，2=timeout',
   '- 不要调 AskUserQuestion 或在 TUI 里等键盘输入，用户手机端看不见 TUI —— **一定要用 `agent lark ask`**',
@@ -184,6 +185,40 @@ function extractTaskTitle(prompt: string): string {
   }
   if (trimmed.length <= 80) return trimmed;
   return trimmed.slice(0, 79) + '…';
+}
+
+/**
+ * 打字兜底解析 single/multi ask 的答案：
+ *  - single：裸数字 "2"（1-based）/ 选项原文精确匹配 → AskAnswerSingle
+ *  - multi：逗号/空格/顿号分隔数字 "1,3" / "1 3" → AskAnswerMulti；选项原文（单个）也可
+ * 解析不出（像普通消息）→ 返回 null，不劫持。
+ */
+function parseTypedAskAnswer(
+  text: string,
+  options: string[],
+  type: 'single' | 'multi',
+): { kind: 'single'; index: number; value: string } | { kind: 'multi'; indices: number[]; values: string[] } | null {
+  const t = text.trim();
+  // 选项原文精确匹配（single）
+  if (type === 'single') {
+    const exact = options.findIndex((o) => o === t);
+    if (exact >= 0) return { kind: 'single', index: exact, value: options[exact]! };
+    if (/^\d+$/.test(t)) {
+      const idx = Number(t) - 1;
+      if (idx >= 0 && idx < options.length) return { kind: 'single', index: idx, value: options[idx]! };
+    }
+    return null;
+  }
+  // multi：分隔的数字
+  const tokens = t.split(/[\s,，、]+/).filter(Boolean);
+  if (tokens.length > 0 && tokens.every((tok) => /^\d+$/.test(tok))) {
+    const indices = [...new Set(tokens.map((tok) => Number(tok) - 1))].filter((i) => i >= 0 && i < options.length).sort((a, b) => a - b);
+    if (indices.length > 0) return { kind: 'multi', indices, values: indices.map((i) => options[i]!) };
+  }
+  // multi：单个选项原文
+  const exact = options.findIndex((o) => o === t);
+  if (exact >= 0) return { kind: 'multi', indices: [exact], values: [options[exact]!] };
+  return null;
 }
 
 function extractText(rawContent: string): string {
@@ -1988,6 +2023,67 @@ end run
     return { toast: { type: 'success', content: '已取消' } };
   }
 
+  // ── form（多问题向导）卡片操作 ──
+  if (action === 'ask.form-toggle' || action === 'ask.form-nav' || action === 'ask.form-submit' || action === 'ask.form-cancel' || action === 'ask.form-text') {
+    const askId = value['askId'] as string | undefined;
+    if (!askId) return { toast: { type: 'error', content: '缺 askId' } };
+    const req = asks.get(askId);
+    if (!req || req.status !== 'pending') return { toast: { type: 'error', content: 'ask 已完成或不存在' } };
+    const by = `feishu:${data.operator?.open_id ?? 'unknown'}`;
+    const patch = (r?: { cardMessageId?: string } | undefined) => {
+      const cur = asks.get(askId);
+      if (cur?.cardMessageId) void patchCard(client, cur.cardMessageId, askCard(cur));
+      void r;
+    };
+
+    if (action === 'ask.form-toggle') {
+      const q = Number(value['q']);
+      const i = Number(value['i']);
+      if (!Number.isInteger(q) || !Number.isInteger(i)) return { toast: { type: 'error', content: '缺 q/i' } };
+      const updated = asks.toggleForm(askId, q, i);
+      // 不自动前进：留在本题让用户看到 🔘/☑ 变化，再手动「下一题」或「提交」
+      const on = (updated?.formSelection?.[q]?.length ?? 0) > 0;
+      patch();
+      return { toast: { type: 'info', content: on ? '已选' : '已取消选择' } };
+    }
+
+    if (action === 'ask.form-nav') {
+      const to = Number(value['to']);
+      if (!Number.isInteger(to)) return { toast: { type: 'error', content: '缺 to' } };
+      asks.setFormCursor(askId, to);
+      patch();
+      return { toast: { type: 'info', content: '已切换' } };
+    }
+
+    if (action === 'ask.form-text') {
+      const q = Number(value['q']);
+      if (!Number.isInteger(q)) return { toast: { type: 'error', content: '缺 q' } };
+      const armed = asks.armFormText(askId, q);
+      patch();
+      return armed
+        ? { toast: { type: 'info', content: '请在对话里直接回复文字' } }
+        : { toast: { type: 'error', content: '本题不支持自由输入' } };
+    }
+
+    if (action === 'ask.form-submit') {
+      const res = await asks.submitForm(askId, by);
+      if (res && res.ok === false) {
+        // 有单选题没选 → 跳到第一个缺的题
+        const first = res.missing[0] ?? 0;
+        asks.setFormCursor(askId, first);
+        patch();
+        return { toast: { type: 'error', content: `第 ${first + 1} 题还没选` } };
+      }
+      if (res && res.ok) patch();
+      return { toast: { type: 'success', content: '✅ 已提交' } };
+    }
+
+    // ask.form-cancel
+    const cancelled = await asks.cancel(askId, by);
+    if (cancelled?.cardMessageId) void patchCard(client, cancelled.cardMessageId, askCard(cancelled));
+    return { toast: { type: 'success', content: '已取消' } };
+  }
+
   if (action === 'approve' || action === 'reject') {
     const approvalId = value['approvalId'] as string | undefined;
     if (!approvalId) return { toast: { type: 'error', content: '缺 approvalId' } };
@@ -2070,6 +2166,39 @@ export function buildEventDispatcher(client: Lark.Client): Lark.EventDispatcher 
               if (updated?.cardMessageId) {
                 void patchCard(client, updated.cardMessageId, askCard(updated));
               }
+            })();
+            return;
+          }
+        }
+      }
+
+      // form 向导：某题「💬 打字回答」已武装 → 本条文字记为该题答案，自动前进并刷新卡片
+      {
+        const awaiting = asks.getAwaitingFormInput(chat_id);
+        if (awaiting && text.trim() !== '/cancel') {
+          const updated = asks.answerFormText(chat_id, text.trim());
+          if (updated) {
+            if (updated.cardMessageId) void patchCard(client, updated.cardMessageId, askCard(updated));
+            void sendText(client, chat_id, `✅ 第 ${awaiting.q + 1} 题已记录：💬 ${text.trim().slice(0, 40)}`);
+            return;
+          }
+        }
+      }
+
+      // 打字兜底：single/multi ask 待答时，允许直接打字回答（裸数字 2 / 逗号 1,3 / 选项原文）。
+      // 卡片点击丢包/限流时的解冻通道。不劫持命令(/)和 @target 消息。
+      {
+        const t = text.trim();
+        const pending = asks.getPendingByChat(chat_id);
+        if (pending && (pending.type === 'single' || pending.type === 'multi') && !t.startsWith('/') && !t.startsWith('@')) {
+          const parsed = parseTypedAskAnswer(t, pending.options, pending.type);
+          if (parsed) {
+            (async () => {
+              const by = `feishu:${data.sender?.sender_id?.open_id ?? 'unknown'}`;
+              const updated = await asks.answer(pending.id, parsed, by);
+              if (updated?.cardMessageId) void patchCard(client, updated.cardMessageId, askCard(updated));
+              const label = parsed.kind === 'single' ? parsed.value : parsed.values.join('、') || '（空）';
+              void sendText(client, chat_id, `✅ 已按打字回答：${label}`);
             })();
             return;
           }
@@ -2242,7 +2371,8 @@ export function buildEventDispatcher(client: Lark.Client): Lark.EventDispatcher 
     'card.action.trigger': async (data: CardActionEvent) => {
       recordInbound();
       const chatId = getChatId(data);
-      // fire-and-forget：异步处理并主动 send card / text，不阻塞 callback 返回
+      // fire-and-forget：立即返回空响应，重活异步。**不能返回 toast** —— 飞书收到回调 toast
+      // 响应后会把卡片当"已处理、无更新"，盖掉我们另发的 patchCard（标记不刷新）。
       (async () => {
         try {
           const result = await handleCardAction(client, data);
@@ -2258,7 +2388,6 @@ export function buildEventDispatcher(client: Lark.Client): Lark.EventDispatcher 
           }
         }
       })();
-      // 立刻返回最简响应（很多飞书 schema 2.0 客户端要求空对象或仅 toast）
       return {};
     },
   });

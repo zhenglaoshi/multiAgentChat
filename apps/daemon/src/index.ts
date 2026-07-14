@@ -838,6 +838,11 @@ function askToCardSpec(req: AskRequest): CardSpec {
 function attachWeComAskListener(wecom: WeComTransport): void {
   asks.events.on('created', async (req: AskRequest) => {
     if (!req.chatId.startsWith('wecom:')) return;
+    if (req.type === 'form') {
+      // 多问题向导表单只在飞书渲染；企微降级提示（会自然超时）
+      try { await wecom.sendText(req.chatId, `📋 ${req.title}\n（多问题表单暂只支持飞书，请到飞书回答）`); } catch { /* ignore */ }
+      return;
+    }
     try {
       const spec = askToCardSpec(req);
       const card = renderWeComCard(spec);

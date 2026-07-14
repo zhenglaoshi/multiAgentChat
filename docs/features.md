@@ -336,10 +336,13 @@ agent doctor
 ## 14. 交互式选择 · `agent lark ask`
 
 ### 能力
-用户在飞书**手指点选**回答问题，claude 从 stdout 拿 JSON 答案。三种类型：
+用户在飞书**手指点选**回答问题，claude 从 stdout 拿 JSON 答案。四种类型：
 - **single** —— radio 单选，按钮阵列
 - **multi** —— checkbox 多选，toggle 后点提交
 - **input** —— 用户在 chat 里直接回复文本（也支持 `/cancel`）
+- **form** —— **多问题表单**（AskUserQuestion 的飞书替代）：一张卡问多个问题，每题单/多选，任一题可开 `allowText`（"Other/自由输入"）。渲染自动择优：全固定选项 → 一张卡铺完(A)；含 `allowText` → 向导式一次一题(B，自由输入题带「💬 打字回答」，回一句文字自动记录并进下一题）
+
+> **打字兜底**：single/multi 待答时，用户直接在 chat 打「裸数字 2 / 逗号 1,3 / 选项原文」也能回答——卡片点击丢包/限流时的解冻通道。
 
 ### 用法
 ```bash
@@ -359,6 +362,18 @@ answer=$(agent lark ask multi \
 # 输入
 answer=$(agent lark ask input --title "输入 commit message")
 # → {"status":"answered","type":"input","text":"fix: xxx"}
+
+# 多问题表单（一次问多个）
+answer=$(agent lark ask form --title "确认几个选项" --spec-json '{
+  "questions": [
+    {"title": "配对方式", "type": "single", "options": ["A 全支持","B 富文本"], "allowText": true},
+    {"title": "要哪些能力", "type": "multi", "options": ["下载","注入","清理"]}
+  ]
+}')
+# → {"status":"answered","type":"form","answers":[
+#      {"q":0,"kind":"single","index":0,"value":"A 全支持"},
+#      {"q":1,"kind":"multi","indices":[0,2],"values":["下载","清理"]}]}
+# 自由输入的题回答形如 {"q":0,"kind":"text","text":"用户打的字"}
 ```
 
 ### 退出码
@@ -372,7 +387,12 @@ answer=$(agent lark ask input --title "输入 commit message")
 - SKILL / SYSTEM_GUIDANCE 强制引导 claude 在选择场景优先用它
 
 ### 底层
-`AskManager`（`packages/orchestrator/src/ask/`）+ 飞书交互卡片（`askCard`）+ card_action.trigger 路由 + input 类型时监听下条文本消息 = 完整闭环。
+`AskManager`（`packages/orchestrator/src/ask/`）+ 飞书交互卡片（`askCard`/`askFormCard`）+ card.action.trigger 路由 + input/form-text 类型监听下条文本消息 = 完整闭环。
+
+> **两个坑（已修，改动勿回退）**：
+> 1. `card.action.trigger` 回调**必须立即 `return {}`**，卡片更新走 fire-and-forget `patchCard`。**绝不能 `return { toast }`**——飞书收到回调 toast 响应后会把卡当"已处理无更新"，盖掉另发的 patch → 标记不刷新。
+> 2. 会被用户点击**多次更新**的交互卡（如 form），`config` 必须带 `update_multi: true`，否则第二次起 patch 视觉不生效。
+> 3. 回调传回的 `value` 里数字字段（q/i/to）用 `Number()` 强转再用，别直接当 number（飞书可能回传字符串，否则 `Set.has` 判断失配）。
 
 ---
 

@@ -98,6 +98,7 @@ interface Flags {
   question: boolean;      // agent lark send-text --question：本次推送含待用户回答的问题，daemon 记 pendingAnswerTty
   optionsJson?: string;   // agent lark send-text --options-json '["是","否"]'：AskUserQuestion 选项 label
   options?: string;       // agent lark ask --options "a,b,c" (逗号分隔简写)
+  specJson?: string;      // agent lark ask form --spec-json '{"questions":[...]}'（多问题表单）
   timeoutMs?: number;     // agent lark ask --timeout <ms>
   positional: string[];
 }
@@ -194,6 +195,8 @@ function parseArgs(args: string[]): Flags {
       flags.optionsJson = args[++i] ?? die('--options-json 需要 JSON');
     } else if (a === '--options') {
       flags.options = args[++i] ?? die('--options 需要 csv');
+    } else if (a === '--spec-json') {
+      flags.specJson = args[++i] ?? die('--spec-json 需要 JSON');
     } else if (a === '--timeout' || a === '--timeout-ms') {
       const v = args[++i] ?? die('--timeout 需要毫秒数');
       const n = Number(v);
@@ -802,10 +805,53 @@ async function cmdLark(flags: Flags): Promise<void> {
     //                                     [--timeout <ms>] [--chat <chatId>]
     // 阻塞式：弹飞书交互卡片，用户点选/回复 → CLI stdout 打印 JSON 答案。
     const type = (rest[0] ?? '').toLowerCase();
-    if (type !== 'single' && type !== 'multi' && type !== 'input') {
-      die("agent lark ask <single|multi|input> --title '...' [--options 'a,b,c']");
+    if (type !== 'single' && type !== 'multi' && type !== 'input' && type !== 'form') {
+      die("agent lark ask <single|multi|input|form> --title '...' [--options 'a,b,c' | --spec-json '{...}']");
     }
     if (!flags.title) die('agent lark ask 需要 --title');
+
+    // ── form：多问题表单（--spec-json '{"questions":[{title,type,options}]}'）──
+    if (type === 'form') {
+      if (!flags.specJson) die("form 类型需要 --spec-json '{\"questions\":[{\"title\":\"..\",\"type\":\"single|multi\",\"options\":[\"a\",\"b\"]}]}'");
+      let questions: { title: string; type: 'single' | 'multi'; options: string[]; allowText?: boolean }[];
+      try {
+        const parsed = JSON.parse(flags.specJson) as { questions?: unknown };
+        const qs = parsed.questions;
+        if (!Array.isArray(qs) || qs.length === 0) die('--spec-json 的 questions 必须是非空数组');
+        questions = (qs as unknown[]).map((q, i) => {
+          const o = q as { title?: unknown; type?: unknown; options?: unknown; allowText?: unknown };
+          const qt = o.type === 'multi' ? 'multi' : 'single';
+          if (typeof o.title !== 'string' || !o.title) die(`第 ${i + 1} 题缺 title`);
+          if (!Array.isArray(o.options) || o.options.length === 0 || !o.options.every((x) => typeof x === 'string')) die(`第 ${i + 1} 题 options 必须是非空字符串数组`);
+          return { title: o.title, type: qt, options: o.options as string[], ...(o.allowText === true ? { allowText: true } : {}) };
+        });
+      } catch (e) {
+        die(`--spec-json 解析失败: ${(e as Error).message}`);
+      }
+      const chatId = await resolveTargetChatId(flags);
+      stderr.write(`⏳ 等待飞书表单答复… (chat=${chatId}, questions=${questions.length})\n`);
+      const reqPayload: Request = {
+        op: 'lark.ask',
+        chatId,
+        type: 'form',
+        title: flags.title,
+        questions,
+        ...(flags.timeoutMs ? { timeoutMs: flags.timeoutMs } : {}),
+      };
+      const data = await sendOnce<LarkAskData>(reqPayload);
+      const req = data.request;
+      if (req.status === 'answered' && req.answer?.kind === 'form') {
+        stdout.write(JSON.stringify({ status: 'answered', type: 'form', answers: req.answer.items }) + '\n');
+        exit(0);
+      } else if (req.status === 'cancelled') {
+        stdout.write(JSON.stringify({ status: 'cancelled' }) + '\n');
+        exit(1);
+      } else {
+        stdout.write(JSON.stringify({ status: 'timeout' }) + '\n');
+        exit(2);
+      }
+    }
+
     let options: string[] = [];
     if (type !== 'input') {
       if (flags.optionsJson) {
