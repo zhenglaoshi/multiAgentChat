@@ -1046,11 +1046,19 @@ async function dispatchSendToTab(
 async function tapdRepoCandidates(
   hm: typeof import('multiagent-host-mac'),
 ): Promise<{ path: string; label: string }[]> {
-  const [recents, bms] = await Promise.all([hm.listRecentCwds(), hm.listBookmarks()]);
+  // 优先级：/pin 书签 → 最近用过的 cwd → 全机 git 仓库索引（新人装完即有，dir-index 自带后台刷新）
+  const [recents, bms, index] = await Promise.all([
+    hm.listRecentCwds(),
+    hm.listBookmarks(),
+    hm.getDirIndex().catch(() => ({ dirs: [] as { path: string; name: string; isGitRepo: boolean }[] })),
+  ]);
   const seen = new Set<string>();
   const out: { path: string; label: string }[] = [];
   for (const b of bms) if (!seen.has(b.path)) { seen.add(b.path); out.push({ path: b.path, label: `@${b.alias}` }); }
   for (const c of recents) if (!seen.has(c)) { seen.add(c); out.push({ path: c, label: c.split('/').pop() || c }); }
+  for (const d of index.dirs) {
+    if (d.isGitRepo && !seen.has(d.path)) { seen.add(d.path); out.push({ path: d.path, label: d.name }); }
+  }
   return out;
 }
 
