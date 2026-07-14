@@ -30,6 +30,31 @@ export async function gitCurrentBranch(repo: string): Promise<string> {
   }
 }
 
+export interface GitWorkingState {
+  repo: string;
+  isRepo: boolean;
+  branch: string;      // 当前分支（detached 时空）
+  dirty: boolean;      // 有未提交改动（含 untracked）
+  changeCount: number; // 变更文件数
+}
+
+/** 切分支前的现状：当前分支 + 工作区是否有未提交改动（含 untracked）。 */
+export async function gitWorkingState(repo: string): Promise<GitWorkingState> {
+  try {
+    const porcelain = await git(repo, ['status', '--porcelain', '--untracked-files=normal']);
+    const lines = porcelain.split('\n').filter((l) => l.trim().length > 0);
+    return {
+      repo,
+      isRepo: true,
+      branch: await gitCurrentBranch(repo),
+      dirty: lines.length > 0,
+      changeCount: lines.length,
+    };
+  } catch (e) {
+    return { repo, isRepo: false, branch: '', dirty: false, changeCount: 0 };
+  }
+}
+
 /**
  * 在 repo 里切到 branch：
  *  - 分支已存在 → checkout（'checked-out'）
