@@ -142,3 +142,16 @@ claude 在工作 tab 里通过 MCP 自取（P3 已把 MCP 配好）。
 
 - [features.md](features.md) · [commands.md](commands.md) · [knowledge.md](knowledge.md)
 - [team-knowledge-base.md](team-knowledge-base.md)（团队知识库方案，草案）
+
+## 修复后的验证与回写（注入 prompt 强约束）
+
+claim 注入给 claude 的完成流程（缺陷普通任务 & 需求 SOP 都适用；SOP 另有 tester/regression 阶段）：
+
+1. 各 repo 改完提交（commit 带 `TAPD #id`）。
+2. **本地验证**：跑单测 / 本地复现确认修好、无回归。
+   - ⚠️ 验证**只能本地/测试环境，严禁连线上数据库/生产环境**；涉及线上数据、生产库、写操作、
+     部署一律先 `agent request-approval`。（注：这是 prompt 级强约束，非 OS 级硬拦截；需要硬拦截可在
+     `bin/mchat-pretooluse-hook` 里按你们生产库 host/连接串加正则 block。）
+3. **不确定就问**：无法复现 / 多种改法 / 需求不清 / 影响面拿不准 → `agent lark ask` 问用户再继续。
+4. 验证通过 → **先 `agent request-approval` 批准** → 再用 tapd MCP 流转状态到「已解决」+ 评论回填 commit/PR。
+   —— 状态**不会自动改**，永远经你批准。
