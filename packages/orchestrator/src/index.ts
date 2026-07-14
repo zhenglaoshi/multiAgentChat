@@ -7,3 +7,4 @@ export * from './ask/index.js';
 export * from './subagents/index.js';
 export * from './knowledge/index.js';
 export * from './tapd/index.js';
+export * from './report/index.js';

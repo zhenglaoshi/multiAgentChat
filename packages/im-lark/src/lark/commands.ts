@@ -326,6 +326,7 @@ const HELP_TEXT = [
   '  **/a**  /approvals            待审批列表 + 最近历史',
   '       /audit [N]               审批历史（最近 N 条）',
   '  **/tapd**                     列指派给我的未结束 TAPD 缺陷/需求（主动查）',
+  '  **/report** day|week          生成工作简报（git 提交+任务记忆→合成 md）；月/年报 PPT 待 P2',
   '  **/r**  /recall [关键词]      搜任务历史；不带关键词 = 最近 10 条',
   '       /watch on/off            本地任务监听（你在 Mac 直接发的命令也推送到飞书）',
   '  **/wd** 或 /web /webdash        web dashboard 访问 URL（公网/LAN/mDNS/localhost 多路径）',
