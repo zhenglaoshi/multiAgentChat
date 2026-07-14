@@ -2077,3 +2077,76 @@ export function tapdItemCard(item: TapdItem) {
     elements,
   };
 }
+
+/**
+ * 认领后的 repo 多选卡：勾这个 bug/需求涉及的 repo（可多选），再「建分支并开工」。
+ * 每个 repo 按钮 toggle（点一下 ✅/⬜ 切换，卡片原地 patch）。
+ */
+export function tapdRepoPickerCard(
+  claim: { id: string; branch: string; title: string; system: string; selectedRepos: string[] },
+  candidates: { path: string; label: string }[],
+  home: string,
+) {
+  const selected = new Set(claim.selectedRepos);
+  const kindLabel = claim.system === 'bug' ? '缺陷' : '需求';
+
+  const repoButtons = candidates.slice(0, 10).map((c) => ({
+    tag: 'button',
+    text: {
+      tag: 'plain_text',
+      content: `${selected.has(c.path) ? '✅' : '⬜'} ${truncate(c.label, 28)}`,
+    },
+    type: selected.has(c.path) ? 'primary' : 'default',
+    value: { action: 'tapd-pick-repo', id: claim.id, cwd: c.path },
+  }));
+
+  // 每行最多 3 个按钮，分组
+  const rows: unknown[] = [];
+  for (let i = 0; i < repoButtons.length; i += 3) {
+    rows.push({ tag: 'action', actions: repoButtons.slice(i, i + 3) });
+  }
+
+  const selList = claim.selectedRepos.length
+    ? claim.selectedRepos.map((p) => `\`${homeify(p, home)}\``).join(' ')
+    : '<font color=\'grey\'>（还没选，点下面的 repo 勾选，可多选）</font>';
+
+  const elements: unknown[] = [
+    {
+      tag: 'div',
+      text: {
+        tag: 'lark_md',
+        content: `**${truncate(claim.title, 70)}**\n<font color='grey'>${kindLabel} #${claim.id} · 分支 \`${claim.branch}\`</font>`,
+      },
+    },
+    { tag: 'hr' },
+    { tag: 'div', text: { tag: 'lark_md', content: `已选 repo：${selList}` } },
+    ...rows,
+    { tag: 'hr' },
+    {
+      tag: 'action',
+      actions: [
+        {
+          tag: 'button',
+          text: { tag: 'plain_text', content: '🚀 建分支并开工' },
+          type: 'primary',
+          value: { action: 'tapd-claim-go', id: claim.id },
+        },
+        {
+          tag: 'button',
+          text: { tag: 'plain_text', content: '取消' },
+          type: 'default',
+          value: { action: 'tapd-ignore', id: claim.id },
+        },
+      ],
+    },
+  ];
+
+  return {
+    config: { wide_screen_mode: true },
+    header: {
+      template: 'turquoise',
+      title: { tag: 'plain_text', content: `🌿 认领 · 选涉及的 repo（可多选）` },
+    },
+    elements,
+  };
+}

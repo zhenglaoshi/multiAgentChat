@@ -117,6 +117,34 @@ function normalize(
   return item;
 }
 
+/** 拉单条详情（含 description，认领时注入 claude 用）。 */
+export async function getItemDetail(
+  client: TapdMcpClient,
+  workspaceId: number,
+  system: TapdSystem,
+  id: string,
+): Promise<{ title: string; description?: string; status?: string; severity?: string } | null> {
+  const tool = system === 'bug' ? 'tapd-get-bug' : 'tapd-get-stories-or-tasks';
+  const fields = system === 'bug'
+    ? 'id,title,status,severity,description'
+    : 'id,name,status,description';
+  const data = await client.callTool<unknown[]>(tool, {
+    workspace_id: workspaceId,
+    options: { id, fields },
+  });
+  const rows = Array.isArray(data) ? data : [];
+  if (rows.length === 0) return null;
+  const rr = rows[0] as Record<string, unknown>;
+  const e = (rr['Bug'] ?? rr['Story'] ?? rr['Task'] ?? rr) as Record<string, unknown>;
+  const out: { title: string; description?: string; status?: string; severity?: string } = {
+    title: String(e['title'] ?? e['name'] ?? ''),
+  };
+  if (e['description']) out.description = String(e['description']);
+  if (e['status']) out.status = String(e['status']);
+  if (e['severity']) out.severity = String(e['severity']);
+  return out;
+}
+
 export interface ListOptions {
   /** 覆盖"今天"（测试用，如 '2024-07-01~2024-07-31' 的单日）。默认北京今天。 */
   date?: string;

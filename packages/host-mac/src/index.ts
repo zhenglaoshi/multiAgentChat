@@ -10,3 +10,4 @@ export * from './workspace.js';
 export * from './recent-cwds.js';
 export * from './dir-index.js';
 export * from './bookmarks.js';
+export * from './git.js';
