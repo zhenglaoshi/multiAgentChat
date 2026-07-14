@@ -6,6 +6,7 @@ import {
   listActionableItems,
   filterUnnotified,
   markNotified,
+  ensureTapdMcp,
   type TapdItem,
 } from 'multiagent-orchestrator';
 import { listAllChats } from '../chats/store.js';
@@ -28,6 +29,9 @@ export function startTapdWatcher(client: Lark.Client): void {
     return;
   }
   const mcp = new TapdMcpClient(cfg.mcpUrl, cfg.token);
+
+  // 幂等把 TAPD MCP 注册给 Claude Code（工作 tab 里的 claude 能读/改 TAPD）
+  void ensureTapdMcp(cfg);
 
   const pushOne = async (item: TapdItem): Promise<boolean> => {
     const chats = await listAllChats();

@@ -1074,7 +1074,12 @@ function buildTapdPrompt(
     repos || '（无）',
     desc,
     ``,
-    `请在这些 repo 里完成改动、各自提交（commit message 带 "TAPD #${claim.id}"）。跨 repo 用 cd 或 git -C。完成后把摘要用 \`agent lark send-text\` 推给我。`,
+    `请在这些 repo 里完成改动、各自提交（commit message 带 "TAPD #${claim.id}"）。跨 repo 用 cd 或 git -C。`,
+    ``,
+    `你有 TAPD MCP 可用（工具名 mcp__tapd__*）：可读 bug 详情、评论、附件。修完并各自提交/推分支后，`,
+    `**先用 \`agent request-approval\` 征得我同意**，再用 tapd MCP 把本${kind} #${claim.id} 流转到「已解决/已修复」并加评论回填 commit/PR 链接`,
+    `（改状态前先用 mcp__tapd__tapd-get-workflows-status-map / get-workflows-all-transitions 查该项目正确的目标状态英文名）。`,
+    `完成后把摘要用 \`agent lark send-text\` 推给我。`,
   ].join('\n');
 }
 
