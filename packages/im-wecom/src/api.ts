@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { basename, extname } from 'node:path';
 import { logger } from 'multiagent-orchestrator';
 import type { TokenManager } from './auth.js';
@@ -172,6 +172,34 @@ export async function uploadMedia(
   if (!media_id) throw new Error(`wecom upload 无 media_id`);
   logger.info('wecom media uploaded', { type, name, media_id, size: buf.length });
   return { media_id, created_at: String(data['created_at'] ?? '') };
+}
+
+/**
+ * 下载临时素材（入站图片用）：GET /media/get?media_id=xxx。
+ * 成功返回二进制流；失败时企微返回 JSON（errcode!=0）。写入 destPath。
+ * 参考：https://developer.work.weixin.qq.com/document/path/90254
+ */
+export async function downloadMedia(
+  opts: WeComApiOpts,
+  mediaId: string,
+  destPath: string,
+): Promise<string> {
+  const accessToken = await opts.token.get();
+  const url = `${BASE}/media/get?access_token=${encodeURIComponent(accessToken)}&media_id=${encodeURIComponent(mediaId)}`;
+  const resp = await fetch(url);
+  if (!resp.ok) {
+    throw new Error(`wecom media get HTTP ${resp.status}: ${await resp.text().catch(() => '')}`);
+  }
+  // 出错时企微以 application/json 返回 {errcode,errmsg}
+  const ct = resp.headers.get('content-type') ?? '';
+  if (ct.includes('application/json') || ct.includes('text/plain')) {
+    const data = await resp.json().catch(() => ({})) as Record<string, unknown>;
+    throw new Error(`wecom media get errcode=${data['errcode']} errmsg=${String(data['errmsg'])}`);
+  }
+  const buf = Buffer.from(await resp.arrayBuffer());
+  await writeFile(destPath, buf);
+  logger.info('wecom media downloaded', { media_id: mediaId, size: buf.length, destPath });
+  return destPath;
 }
 
 /**

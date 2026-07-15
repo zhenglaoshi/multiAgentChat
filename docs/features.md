@@ -427,6 +427,9 @@ answer=$(agent lark ask form --title "确认几个选项" --spec-json '{
 - 图片落 `data/inbound/`（已 gitignore），**24h 自动清理**（`cleanupInboundImages`）
 - 底层：`lark/resource.ts`（下载 + post/image 解析 + 清理 + prompt 拼接）+ `handlers.ts`（归一化入站 / 配对跟踪 / imgPrefix 注入）
 
+### 企微（WeCom）
+同样支持，但**只有 B/C 两法**（企微无富文本一条发）：入站 image 消息取 `MediaId` → `media/get` 下载 → 复用同一套 `imgPrefix` 注入。逻辑在 daemon 的 `dispatchWeComMessage` + `im-wecom` 的 `downloadImage`。需配 `WECOM_*` 才启用。
+
 ---
 
 ## 15. 抓屏 & 按键遥控（TUI 场景兜底）

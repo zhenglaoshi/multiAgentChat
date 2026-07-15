@@ -12,7 +12,7 @@ import type {
 import { withKindPrefix } from 'multiagent-framework';
 import type { WeComConfig } from './config.js';
 import { TokenManager } from './auth.js';
-import { guessMediaType, sendAppChat, sendAppMessage, uploadMedia, type WeComApiOpts } from './api.js';
+import { downloadMedia, guessMediaType, sendAppChat, sendAppMessage, uploadMedia, type WeComApiOpts } from './api.js';
 import { WeComEventServer, pluckXml } from './event-server.js';
 import { decodeButtonKey, renderWeComCard } from './cards.js';
 
@@ -191,6 +191,11 @@ export class WeComTransport implements IMTransport {
     return { messageId: r.msgid, raw: r };
   }
 
+  /** 下载入站图片素材（media_id）到本地 destPath，返回该路径。 */
+  async downloadImage(mediaId: string, destPath: string): Promise<string> {
+    return downloadMedia(this.apiOpts, mediaId, destPath);
+  }
+
   // ---- 内部：事件解析 ----
 
   private dispatchRawMessage(xml: string): void {
@@ -214,6 +219,22 @@ export class WeComTransport implements IMTransport {
         text: content,
         messageId: msgId,
         raw: xml,
+      };
+      this.events.emit('message', ev);
+      return;
+    }
+
+    if (msgType === 'image') {
+      // 入站图片：企微给 MediaId（+ PicUrl）。不带文字，交上层下载 + 与后续文字配对。
+      const mediaId = pluckXml(xml, 'MediaId');
+      if (!mediaId) { logger.warn('wecom image msg 无 MediaId', { fromUser }); return; }
+      const ev: IMMessageEvent = {
+        chatId,
+        senderId: fromUser,
+        text: '',
+        messageId: msgId,
+        raw: xml,
+        imageMediaIds: [mediaId],
       };
       this.events.emit('message', ev);
       return;

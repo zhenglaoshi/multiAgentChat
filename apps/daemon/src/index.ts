@@ -52,6 +52,7 @@ import {
   type PendingOutput,
 } from 'multiagent-im-lark';
 import { sanitizeTerminalOutput } from 'multiagent-im-lark';
+import { buildImagePromptPrefix, buildImageOnlyPrompt } from 'multiagent-im-lark';
 
 /**
  * Upsert Claude Code hooks 到 ~/.claude/settings.json。
@@ -340,6 +341,46 @@ function startCaffeinate(): void {
   }
 }
 
+// ── 企微图文入站：纯图片消息先暂存，等 90s 内文字描述配对（B）；超时直发 active tab（C）──
+const WECOM_IMG_PAIR_WINDOW_MS = 90_000;
+interface WeComPendingImage { paths: string[]; timer: NodeJS.Timeout }
+const wecomPendingImagesByChat = new Map<string, WeComPendingImage>();
+
+function addWeComPendingImage(chatId: string, paths: string[], onTimeout: (paths: string[]) => void): void {
+  const existing = wecomPendingImagesByChat.get(chatId);
+  if (existing) clearTimeout(existing.timer);
+  const timer = setTimeout(() => {
+    wecomPendingImagesByChat.delete(chatId);
+    onTimeout(paths);
+  }, WECOM_IMG_PAIR_WINDOW_MS);
+  wecomPendingImagesByChat.set(chatId, { paths, timer });
+}
+
+function takeWeComPendingImage(chatId: string): string[] {
+  const p = wecomPendingImagesByChat.get(chatId);
+  if (!p) return [];
+  clearTimeout(p.timer);
+  wecomPendingImagesByChat.delete(chatId);
+  return p.paths;
+}
+
+/** 下载企微入站图片（media_id）到 data/inbound，返回绝对路径列表；单张失败跳过。 */
+async function downloadWeComImages(wecom: WeComTransport, mediaIds: string[]): Promise<string[]> {
+  const dir = resolve('./data/inbound');
+  await mkdir(dir, { recursive: true });
+  const out: string[] = [];
+  for (const id of mediaIds) {
+    const safe = id.replace(/[^a-zA-Z0-9_-]/g, '').slice(-32) || 'img';
+    const dest = join(dir, `${Date.now()}-wecom-${safe}.jpg`);
+    try {
+      out.push(await wecom.downloadImage(id, dest));
+    } catch (e) {
+      logger.warn('wecom inbound image download failed', { id, err: (e as Error).message });
+    }
+  }
+  return out;
+}
+
 /**
  * 企微 → Terminal tab 派发（Day 6+ 版）
  *
@@ -362,6 +403,24 @@ async function dispatchWeComMessage(
   ev: IMMessageEvent,
 ): Promise<void> {
   const text = ev.text.trim();
+
+  // 入站图片：下载 media → 纯图暂存等配对（B）/ 90s 超时直发 active tab（C）
+  let nowImagePaths: string[] = [];
+  if (ev.imageMediaIds && ev.imageMediaIds.length > 0) {
+    nowImagePaths = await downloadWeComImages(wecom, ev.imageMediaIds);
+    if (nowImagePaths.length === 0) {
+      await wecom.sendText(ev.chatId, '❌ 收到图片但下载失败（media/get，检查企微素材有效期/权限）。');
+      return;
+    }
+  }
+  if (!text && nowImagePaths.length > 0) {
+    addWeComPendingImage(ev.chatId, nowImagePaths, (paths) => {
+      void dispatchWeComPlainToTab(wecom, ev, buildImageOnlyPrompt(paths)).catch((e) => logger.error('wecom pending-image timeout dispatch failed', e));
+      void wecom.sendText(ev.chatId, `⏳ 没等到文字描述，已把 ${paths.length} 张图直接发给 active tab 让 claude 看。`);
+    });
+    await wecom.sendText(ev.chatId, `📎 收到 ${nowImagePaths.length} 张图。${WECOM_IMG_PAIR_WINDOW_MS / 1000}s 内再发一句文字描述（可带 @ttysXXX）→ 图+字一起给 claude；不发则到点直接发给 active tab。`);
+    return;
+  }
   if (!text) return;
 
   // 优先：input / (wecom-multi) ask 等答案 → 消费此消息为答案
@@ -474,7 +533,12 @@ async function dispatchWeComMessage(
     /* ignore */
   }
 
-  const result = await terminalSend(tab.tty, cmd);
+  // 图文配对：把之前暂存的图（B）作前缀 prepend；发给 tab 的是 finalCmd，pending 仍记用户原文
+  const attach = [...takeWeComPendingImage(ev.chatId), ...nowImagePaths];
+  const imgPrefix = attach.length > 0 ? buildImagePromptPrefix(attach) : '';
+  const finalCmd = imgPrefix + cmd;
+
+  const result = await terminalSend(tab.tty, finalCmd);
   if (!result.ok) {
     await wecom.sendText(ev.chatId, `❌ send 失败：${result.reason ?? '(无原因)'}`);
     return;

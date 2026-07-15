@@ -145,6 +145,8 @@ export interface IMMessageEvent {
   text: string;
   messageId: string;
   raw: unknown;
+  /** 随消息带的图片资源标识（企微=media_id）；transport 侧不下载，由上层下载 */
+  imageMediaIds?: string[];
 }
 
 export interface IMCardActionEvent {
