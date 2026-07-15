@@ -30,6 +30,7 @@ const SYSTEM_GUIDANCE = [
   '- **要用户从多选项里选（单选/多选）或让用户填一段文本，用 `agent lark ask` —— 弹飞书交互卡片，用户手指点选/回复，答案 JSON 从 stdout 回给你。用户不必手打命令。**',
   '    单选：`agent lark ask single --title "选哪个？" --options "选项A,选项B,选项C"`',
   '    多选：`agent lark ask multi  --title "勾选多个" --options "1,2,3"`',
+  '    ⚠ 选项文本里**含逗号**时 `--options` 会被拆乱 → 改用 JSON 数组：`--options \'["含,逗号的选项","选项2"]\'`（或 `--options-json`），一个 flag 安全搞定',
   '    输入：`agent lark ask input  --title "输入什么"`  （用户在飞书 chat 里直接回复文本即可）',
   '    多问题表单：`agent lark ask form --title "标题" --spec-json \'{"questions":[{"title":"Q1","type":"single","options":["A","B"],"allowText":true},{"title":"Q2","type":"multi","options":["X","Y"]}]}\'` —— 一次问多个、每题单/多选、allowText 题可自由输入；stdout 返回 `{"status":"answered","type":"form","answers":[{"q":0,"kind":"single","index":0,"value":"A"},...]}`。**这是 AskUserQuestion 的飞书替代，多问题场景用它，别用 AskUserQuestion（用户手机看不见）**',
   '    stdout 示例：`{"status":"answered","type":"single","index":1,"value":"选项B"}`；status 也可能是 cancelled / timeout',

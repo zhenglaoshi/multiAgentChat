@@ -37,6 +37,10 @@ description: |
 agent lark ask single --title "选一个" --options "a,b,c"
 agent lark ask multi  --title "勾几个" --options "1,2,3"
 agent lark ask input  --title "输入什么"    # 用户在 chat 回文本
+# ⚠ 选项文本含逗号 → --options 会被拆乱，改用 JSON 数组（一个 flag 安全）：
+agent lark ask single --title "选一个" --options '["含,逗号的选项","选项2"]'
+# 多个问题一次问（每题单/多选，可自由输入）→ 用 form（全 JSON，天然免疫逗号）：
+agent lark ask form --title "确认几项" --spec-json '{"questions":[{"title":"Q1","type":"single","options":["A","B"],"allowText":true}]}'
 ```
 
 

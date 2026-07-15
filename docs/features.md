@@ -376,6 +376,8 @@ answer=$(agent lark ask form --title "确认几个选项" --spec-json '{
 # 自由输入的题回答形如 {"q":0,"kind":"text","text":"用户打的字"}
 ```
 
+> **选项含逗号的坑**：`--options` 默认按逗号分隔，选项文本自带逗号会被拆乱。此时把 `--options` 传成 **JSON 数组**即可（已支持自动识别 `[` 开头）：`--options '["含,逗号的选项","选项2"]'`，或用 `--options-json`。多问题一律用 `ask form`（全 JSON，天然免疫）。
+
 ### 退出码
 - 0 = `answered`
 - 1 = `cancelled`

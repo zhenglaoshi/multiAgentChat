@@ -866,7 +866,22 @@ async function cmdLark(flags: Flags): Promise<void> {
           die(`--options-json 解析失败: ${(e as Error).message}`);
         }
       } else if (flags.options) {
-        options = flags.options.split(',').map((s) => s.trim()).filter((s) => s.length > 0);
+        const raw = flags.options.trim();
+        if (raw.startsWith('[')) {
+          // 逗号安全：--options 也接受 JSON 数组（选项文本含逗号时用它，一个 flag 搞定）
+          try {
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed) && parsed.every((x) => typeof x === 'string')) {
+              options = parsed.map((s) => s.trim()).filter((s) => s.length > 0);
+            } else {
+              die('--options 是 JSON 时必须是字符串数组');
+            }
+          } catch (e) {
+            die(`--options JSON 解析失败: ${(e as Error).message}`);
+          }
+        } else {
+          options = raw.split(',').map((s) => s.trim()).filter((s) => s.length > 0);
+        }
       }
       if (options.length === 0) {
         die(`${type} 类型需要 --options 或 --options-json`);
