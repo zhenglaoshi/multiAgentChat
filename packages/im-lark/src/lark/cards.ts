@@ -1,4 +1,4 @@
-import type { ApprovalRequest, AskRequest, TapdItem } from 'multiagent-orchestrator';
+import type { ApprovalRequest, AskRequest, Plan, TapdItem } from 'multiagent-orchestrator';
 import { tapdSummary } from 'multiagent-orchestrator';
 import { inferTabStatus, type TabStatusInfo } from 'multiagent-host-mac';
 import type { TerminalTab } from 'multiagent-host-mac';
@@ -2438,5 +2438,47 @@ export function tapdClaimCard(claim: {
         multi_url: { url: claim.url, pc_url: claim.url, ios_url: claim.url, android_url: claim.url },
       }] },
     ],
+  };
+}
+
+/**
+ * A3 Planner 计划卡（方案丙）：列出 claude -p 分解的步骤，每步一个「▶ 派发」按钮，
+ * 用户点哪步就把该步 prompt 发给当前 active tab（不自动串）。蓝 = 待你操作。
+ */
+export function planCard(plan: Plan) {
+  const elements: unknown[] = [];
+  elements.push({
+    tag: 'div',
+    text: { tag: 'lark_md', content: `🎯 **目标**：${truncate(plan.goal, 80)}\n📋 ${plan.summary}` },
+  });
+  elements.push({ tag: 'hr' });
+
+  plan.steps.forEach((s, i) => {
+    const tgt = s.target ? `　<font color='grey'>→ ${s.target}</font>` : '';
+    elements.push({
+      tag: 'div',
+      text: { tag: 'lark_md', content: `**${i + 1}. ${s.title}**${tgt}\n${truncate(s.prompt, 120)}` },
+    });
+    elements.push({
+      tag: 'action',
+      actions: [{
+        tag: 'button',
+        text: { tag: 'plain_text', content: `▶ 派发步骤 ${i + 1}` },
+        type: 'primary',
+        value: { action: 'plan-dispatch', planId: plan.id, step: i },
+      }],
+    });
+  });
+
+  elements.push({ tag: 'hr' });
+  elements.push({
+    tag: 'note',
+    elements: [{ tag: 'plain_text', content: '点「派发」把该步发给当前 active tab（先 /use @xxx 选目标）。逐步执行，不自动串。' }],
+  });
+
+  return {
+    config: { wide_screen_mode: true },
+    header: { template: 'blue', title: { tag: 'plain_text', content: `🧩 执行计划 · ${plan.steps.length} 步` } },
+    elements,
   };
 }

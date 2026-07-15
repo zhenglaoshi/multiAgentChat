@@ -48,7 +48,8 @@ const CLAUDE_TUI_REMINDER = [
   '⚠ 回到飞书 — 飞书看不见你的 TUI 屏幕。**先在 TUI 完整回答用户，然后再** `agent lark send-text "<同样一份摘要>"` 推到飞书（两个渠道并行，不能只推不答）。要用户从选项里选（单/多选）或填文本，**用 `agent lark ask single|multi|input`**（stdout 拿答案 JSON），不要用 AskUserQuestion 或在 TUI 里 wait 键盘。',
 ].join('\n');
 import { patchCard, sendCardReturnId, sendImage } from './api.js';
-import { ackCard, askCard, batchProgressCard, browseCard, chainProgressCard, progressCard, receiptCard, tapdClaimCard, type BatchTaskItem, type ChainStepItem } from './cards.js';
+import { ackCard, askCard, batchProgressCard, browseCard, chainProgressCard, planCard, progressCard, receiptCard, tapdClaimCard, type BatchTaskItem, type ChainStepItem } from './cards.js';
+import { generatePlan, getPlan } from 'multiagent-orchestrator';
 import { readdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname, basename } from 'node:path';
@@ -1226,6 +1227,33 @@ async function handleCardAction(
     return undefined;
   }
 
+  if (action === 'plan-dispatch') {
+    const planId = value['planId'] as string | undefined;
+    const step = Number(value['step']);
+    if (!planId || !Number.isInteger(step)) return { toast: { type: 'error', content: '缺 planId/step' } };
+    const plan = getPlan(planId);
+    if (!plan) return { toast: { type: 'error', content: '计划已过期（dev 重启会清空），重新 /plan' } };
+    const st = plan.steps[step];
+    if (!st) return { toast: { type: 'error', content: '步骤不存在' } };
+    const ctx = { messageId: 'plan-dispatch', chatId };
+    // fire-and-forget：优先 planner 建议的 target（能解析到 tab 才用），否则发 active tab
+    (async () => {
+      try {
+        let routedTo = '';
+        if (st.target) {
+          const tabs = await listTabs();
+          const resolved = resolveTarget(tabs, st.target.replace(/^\/dev\//, '').toLowerCase());
+          if (resolved) { await sendToNamedTarget(client, ctx, st.target, st.prompt); routedTo = st.target; }
+        }
+        if (!routedTo) await sendToActiveTab(client, ctx, st.prompt);
+        void sendText(client, chatId, `▶ 已派发步骤 ${step + 1}「${st.title}」${routedTo ? `→ ${routedTo}` : '→ active tab'}`);
+      } catch (e) {
+        void sendText(client, chatId, `❌ 派发步骤 ${step + 1} 失败：${(e as Error).message}`);
+      }
+    })();
+    return { toast: { type: 'success', content: `派发步骤 ${step + 1}` } };
+  }
+
   if (action === 'use-tab') {
     const tty = value['tty'] as string | undefined;
     if (!tty) return { toast: { type: 'error', content: '缺 tty' } };
@@ -2365,6 +2393,27 @@ export function buildEventDispatcher(client: Lark.Client): Lark.EventDispatcher 
               }
             } catch (e) {
               void sendText(client, chat_id, `❌ 报告生成失败：${(e as Error).message}`);
+            }
+          })();
+          return;
+        }
+        if (cmdName === 'plan') {
+          (async () => {
+            try {
+              const goal = text.trim().slice(cmdName.length + 1).trim();
+              if (!goal) { void sendText(client, chat_id, '用法：`/plan <目标>` —— 我用 claude 把目标分解成可逐步派发的计划'); return; }
+              void sendText(client, chat_id, `🧩 规划中…（claude 分解目标，约 30-90s）`);
+              const tabs = await listTabs().catch(() => []);
+              const { getDirIndex } = await import('multiagent-host-mac');
+              const index = await getDirIndex().catch(() => ({ dirs: [] as { path: string; isGitRepo: boolean }[] }));
+              const repos = index.dirs.filter((d) => d.isGitRepo).map((d) => d.path).slice(0, 40);
+              const plan = await generatePlan(goal, {
+                tabs: tabs.map((t) => ({ tty: t.tty, cwd: t.cwd, title: t.title })),
+                repos,
+              });
+              await sendCard(client, chat_id, planCard(plan));
+            } catch (e) {
+              void sendText(client, chat_id, `❌ 规划失败：${(e as Error).message}`);
             }
           })();
           return;

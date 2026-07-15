@@ -432,6 +432,25 @@ answer=$(agent lark ask form --title "确认几个选项" --spec-json '{
 
 ---
 
+## 14.6 A3 Planner · `/plan <目标>`（目标 → 计划 → 逐步派发）
+
+### 能力
+把一个模糊目标交给 `claude -p`（headless）自动分解成 2-6 步可执行计划，飞书弹**计划卡**，每步一个「▶ 派发」按钮，你点哪步就把该步指令发给终端 claude。**v1 = 方案丙**：逐步手动派发、不自动串联（最可控）。
+
+### 用法
+飞书发 `/plan 给 pigeon 加一个数据导出接口并写测试`
+→ 约 30-90s 后回一张计划卡：`{summary, steps:[{title,target,prompt}]}`
+→ 点「▶ 派发步骤 N」：优先发给 planner 建议的 `target`（能解析到 tab 才用），否则发当前 active tab
+
+### 底层
+- `orchestrator/planner/`：`generatePlan(goal, {tabs,repos})` spawn `claude -p --max-turns 1`（`MCHAT_INTERNAL_SESSION=1` 不泄漏飞书）→ 解析 JSON → 内存态计划库
+- `planCard`（cards.ts）+ handlers 的 `/plan` 特判 + `plan-dispatch` 卡动作
+- 计划内存态（dev 重启清空，重新 `/plan` 即可）
+
+> 后续可叠加：方案甲（每步按仓库开/复用 tab 自动串成任务链）、方案乙（单 tab SOP）。
+
+---
+
 ## 15. 抓屏 & 按键遥控（TUI 场景兜底）
 
 ### `/screen` · agent screen
