@@ -16,6 +16,7 @@
 - `single`/`multi` ask 打字兜底：用户直接打「裸数字 2 / 逗号 1,3 / 选项原文」也能回答，作为卡片点击丢包/限流时的解冻通道。
 
 **修复**
+- **TAPD 监听漏掉"我只是开发负责人"的需求**：需求查询原来只过滤 `owner`(处理人)，但实测「开发负责人」落在 `developer` 字段（`owner` 常为空）→ 漏报。现在每类型按多字段查询合并去重：需求 `owner,developer`、缺陷 `current_owner,de`（可 env `TAPD_STORY_OWNER_FIELDS`/`TAPD_BUG_OWNER_FIELDS` 覆盖）；处理人显示也回退到 developer/de。实测目标需求 1143702532001006634 已能命中。
 - `agent lark ask --options` 选项含逗号被拆乱：现在 `--options` 也接受 JSON 数组（`[` 开头自动识别）→ `--options '["含,逗号的选项","选项2"]'` 一个 flag 安全搞定；SYSTEM_GUIDANCE / SKILL / 文档同步提示。
 - 手机端进度卡「横杠太多」：`sanitizeTerminalOutput` 折叠 TUI 画的整行水平分隔线（`────`/`———` 边框，手机上占满屏）→ 归一成一条短 `───`、连续多条只留一条 + 折叠连续空行 + 去首尾。
 - `card.action.trigger` 回调改回立即 `return {}`：此前 `return { toast }` 会让飞书把卡当"已处理无更新"，盖掉另发的 `patchCard` → 按钮标记不刷新。

@@ -56,10 +56,26 @@ async function endStates(
   }
 }
 
-const BUG_FIELDS = 'id,title,status,severity,priority,created,modified,reporter,current_owner,description';
-const STORY_FIELDS = 'id,name,status,priority,created,modified,creator,owner,description';
+const BUG_FIELDS = 'id,title,status,severity,priority,created,modified,reporter,current_owner,de,description';
+const STORY_FIELDS = 'id,name,status,priority,created,modified,creator,owner,developer,description';
 
-/** 拉某项目某类型、current_owner=nick、modified 在 date 当天的项。 */
+/**
+ * 每类型要匹配"我"的字段列表（任一命中即算我的）。可用 env 覆盖：
+ *   TAPD_STORY_OWNER_FIELDS（默认 owner,developer —— "处理人"+"开发负责人/开发人员"）
+ *   TAPD_BUG_OWNER_FIELDS（默认 current_owner,de —— "当前处理人"+"开发人员"）
+ * 关键：只查 owner 会漏掉"我只是开发负责人(developer)"的需求（实测踩过）。
+ */
+function ownerFieldsFor(system: TapdSystem): string[] {
+  const raw = system === 'bug'
+    ? (process.env['TAPD_BUG_OWNER_FIELDS'] ?? 'current_owner,de')
+    : (process.env['TAPD_STORY_OWNER_FIELDS'] ?? 'owner,developer');
+  return raw.split(',').map((s) => s.trim()).filter(Boolean);
+}
+
+/**
+ * 拉某项目某类型、modified 在 date 当天、且"我"命中任一 owner 字段的项。
+ * 逐字段各查一次（TAPD 过滤是 AND，跨字段 OR 只能多查合并），按 id 去重。
+ */
 async function fetchItems(
   client: TapdMcpClient,
   workspaceId: number,
@@ -68,20 +84,30 @@ async function fetchItems(
   date: string | null,
 ): Promise<Record<string, unknown>[]> {
   const tool = system === 'bug' ? 'tapd-get-bug' : 'tapd-get-stories-or-tasks';
-  // 处理人字段名 per 类型：缺陷是 current_owner，需求是 owner。传错 → 过滤被忽略 → 误报全部！
-  const ownerField = system === 'bug' ? 'current_owner' : 'owner';
-  const options: Record<string, unknown> = {
-    [ownerField]: nick,
-    fields: system === 'bug' ? BUG_FIELDS : STORY_FIELDS,
-    limit: 200,
-  };
-  if (date) options['modified'] = `${date}~${date}`; // date=null → 不限日期，列全部未结束
-  const data = await client.callTool<unknown[]>(tool, { workspace_id: workspaceId, options });
-  const rows = Array.isArray(data) ? data : [];
-  return rows.map((r) => {
-    const rr = r as Record<string, unknown>;
-    return (rr['Bug'] ?? rr['Story'] ?? rr['Task'] ?? rr) as Record<string, unknown>;
-  });
+  const byId = new Map<string, Record<string, unknown>>();
+  for (const ownerField of ownerFieldsFor(system)) {
+    const options: Record<string, unknown> = {
+      [ownerField]: nick,
+      fields: system === 'bug' ? BUG_FIELDS : STORY_FIELDS,
+      limit: 200,
+    };
+    if (date) options['modified'] = `${date}~${date}`; // date=null → 不限日期，列全部未结束
+    let data: unknown[];
+    try {
+      data = await client.callTool<unknown[]>(tool, { workspace_id: workspaceId, options });
+    } catch (e) {
+      logger.warn('tapd fetchItems 单字段查询失败', { workspaceId, system, ownerField, err: (e as Error).message });
+      continue;
+    }
+    const rows = Array.isArray(data) ? data : [];
+    for (const r of rows) {
+      const rr = r as Record<string, unknown>;
+      const item = (rr['Bug'] ?? rr['Story'] ?? rr['Task'] ?? rr) as Record<string, unknown>;
+      const id = String(item['id'] ?? '');
+      if (id) byId.set(id, item);
+    }
+  }
+  return [...byId.values()];
 }
 
 function tapdUrl(workspaceId: number, system: TapdSystem, id: string): string {
@@ -110,7 +136,9 @@ function normalize(
   if (e['severity']) item.severity = String(e['severity']);
   if (e['priority']) item.priority = String(e['priority']);
   if (e['reporter'] ?? e['creator']) item.reporter = String(e['reporter'] ?? e['creator']);
-  if (e['current_owner'] ?? e['owner']) item.current_owner = String(e['current_owner'] ?? e['owner']);
+  // 处理人显示：current_owner → owner → developer → de（owner 常为空、我只是开发负责人时）
+  const ownerVal = e['current_owner'] || e['owner'] || e['developer'] || e['de'];
+  if (ownerVal) item.current_owner = String(ownerVal);
   if (e['created']) item.created = String(e['created']);
   if (e['modified']) item.modified = String(e['modified']);
   if (e['description']) item.description = String(e['description']);
