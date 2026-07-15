@@ -279,6 +279,7 @@ npm run typecheck
 5. 改了 `apps/daemon/src/index.ts` 或 watcher 启动逻辑 → 注意 tsx watch reload 是否能干净重启（旧的 setInterval 是否清理）
 6. 新增跨传输的编排/持久化能力（不绑飞书）→ 放 `orchestrator/`，通过 `multiagent-orchestrator` 导出；飞书专属的才留 `im-lark/`
 7. 加平台（如企微已在 `im-wecom/`）→ implement `framework/im` 的 `IMTransport`，daemon 里 attach，chatId 带平台前缀
+8. **每次功能/修复/文档改动 → 在 `CHANGELOG.md` 顶部「未发布」区对应日期追加一条**（新增/修复/文档/改动）。这是硬约定，commit 前顺手补。
 
 ## 当前阶段（2026-07）
 
