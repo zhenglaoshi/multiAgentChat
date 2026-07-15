@@ -75,7 +75,8 @@ packages/
 │       │   ├─ api.ts       withRetry 包裹的 lark API（sendCardReturnId / patchCard / sendFile / sendImage）
 │       │   ├─ target.ts    @target 解析（tty 全/短匹配 → title → cwd basename → fuzzy）
 │       │   ├─ task-render.ts 任务进度/结果卡的渲染
-│       │   └─ reply.ts     replyText / sendText 工具
+│       │   ├─ reply.ts     replyText / sendText 工具
+│       │   └─ resource.ts  飞书图文入站：下载 image/post 图片到 data/inbound + post 解析 + 24h 清理 + imgPrefix 拼接
 │       ├─ monitor/
 │       │   ├─ watcher.ts   tab poll（2s tick）+ pending 字符长度稳定性检测 + cache
 │       │   ├─ pending.ts   PendingOutput 跟踪器（add/forTty/remove/done 列表）

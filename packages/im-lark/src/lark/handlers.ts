@@ -52,7 +52,32 @@ import { readdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname, basename } from 'node:path';
 import { parseMessage, resolveTarget } from './target.js';
+import { buildImageOnlyPrompt, buildImagePromptPrefix, downloadInboundImages, parseImageKey, parsePost } from './resource.js';
 import { chainManager } from '../monitor/chains.js';
+
+// 飞书图文入站：纯图片消息先暂存，等 N 秒内的文字描述来配对（B 方案）。
+// 超时（没等到文字）→ 按纯图直发 active tab（C 方案）。
+const IMG_PAIR_WINDOW_MS = 90_000;
+interface PendingInboundImage { paths: string[]; timer: NodeJS.Timeout; }
+const pendingImagesByChat = new Map<string, PendingInboundImage>();
+
+function addPendingImage(chatId: string, paths: string[], onTimeout: (paths: string[]) => void): void {
+  const existing = pendingImagesByChat.get(chatId);
+  if (existing) clearTimeout(existing.timer);
+  const timer = setTimeout(() => {
+    pendingImagesByChat.delete(chatId);
+    onTimeout(paths);
+  }, IMG_PAIR_WINDOW_MS);
+  pendingImagesByChat.set(chatId, { paths, timer });
+}
+
+function takePendingImage(chatId: string): string[] {
+  const p = pendingImagesByChat.get(chatId);
+  if (!p) return [];
+  clearTimeout(p.timer);
+  pendingImagesByChat.delete(chatId);
+  return p.paths;
+}
 
 interface BatchInfo {
   batchId: string;
@@ -2114,31 +2139,58 @@ export function buildEventDispatcher(client: Lark.Client): Lark.EventDispatcher 
     'im.message.receive_v1': async (data: MessageReceiveEvent) => {
       recordInbound();
       const { message_id, chat_id, message_type, content } = data.message;
-      const text = message_type === 'text' ? extractText(content) : '';
-      // 用 info 只记录精简事实；详情走 debug
+      // 归一化：text / post(富文本) / image → 文字 + 内联图片 key
+      let text = '';
+      let inlineImageKeys: string[] = [];
+      if (message_type === 'text') {
+        text = extractText(content);
+      } else if (message_type === 'post') {
+        const p = parsePost(content);
+        text = p.text;
+        inlineImageKeys = p.imageKeys;
+      } else if (message_type === 'image') {
+        const k = parseImageKey(content);
+        if (k) inlineImageKeys = [k];
+      } else {
+        // 其它类型（音频/视频/文件/表情包…）暂不支持
+        await client.im.message.reply({
+          path: { message_id },
+          data: { content: JSON.stringify({ text: `（暂只支持文本 / 图片 / 图文，收到的是 ${message_type}）` }), msg_type: 'text' },
+        });
+        return;
+      }
       logger.info('message received', {
         chat_id,
         message_type,
         textLen: text.length,
+        images: inlineImageKeys.length,
         textPreview: text.length > 40 ? text.slice(0, 40) + '…' : text,
       });
       logger.debug('message received full', { message_id, text });
 
-      if (message_type !== 'text') {
-        await client.im.message.reply({
-          path: { message_id },
-          data: {
-            content: JSON.stringify({
-              text: `（暂只支持文本，收到的是 ${message_type}）`,
-            }),
-            msg_type: 'text',
-          },
+      const ctx = { messageId: message_id, chatId: chat_id };
+
+      // 下载本条消息内联的图片（image / 富文本带图）
+      let nowImagePaths: string[] = [];
+      if (inlineImageKeys.length > 0) {
+        nowImagePaths = await downloadInboundImages(client, message_id, inlineImageKeys);
+        if (nowImagePaths.length === 0) {
+          void sendText(client, chat_id, '❌ 收到图片但下载失败——多半是飞书应用没开 `im:resource`（读消息资源）权限。去开发者后台 → 权限管理 添加后重发。');
+          return;
+        }
+      }
+
+      // 纯图（无文字描述）→ 暂存等配对（B）；90s 没等到文字 → 按纯图直发 active tab（C）
+      if (!text.trim() && nowImagePaths.length > 0) {
+        addPendingImage(chat_id, nowImagePaths, (paths) => {
+          void sendToActiveTab(client, ctx, buildImageOnlyPrompt(paths)).catch((e) => logger.error('pending-image timeout dispatch failed', e));
+          void sendText(client, chat_id, `⏳ 没等到文字描述，已把 ${paths.length} 张图直接发给 active tab，让 claude 自己看图判断。`);
         });
+        void sendText(client, chat_id, `📎 收到 ${nowImagePaths.length} 张图。${IMG_PAIR_WINDOW_MS / 1000}s 内再发一句文字描述（可带 @ttysXXX 指定 tab）→ 图+字一起给 claude；不发的话到点我直接把图发给 active tab。`);
         return;
       }
 
-      const ctx = { messageId: message_id, chatId: chat_id };
-      if (!text) return;
+      if (!text.trim()) return;
 
       // 优先：input-type ask 等答案 → 消费此消息作为答案，短路后续路由
       {
@@ -2205,6 +2257,15 @@ export function buildEventDispatcher(client: Lark.Client): Lark.EventDispatcher 
         }
       }
 
+      // 图文配对：本条文字将发往 tab 时，把「之前暂存的图(B)」+「本条内联图」作为前缀一并注入。
+      // 命令（/xxx，非 //）不消费图片——留给下一条真正发往 tab 的文字。
+      const willGoToTab = !(isCommand(text) && !isForwardSlash(text));
+      let imgPrefix = '';
+      if (willGoToTab) {
+        const attach = [...takePendingImage(chat_id), ...nowImagePaths];
+        if (attach.length > 0) imgPrefix = buildImagePromptPrefix(attach);
+      }
+
       // `//foo` 显式转发到 activeTty —— 剥掉一个 `/`，当普通文本发给 tab
       if (isForwardSlash(text)) {
         const forwardText = stripForwardSlash(text);
@@ -2212,7 +2273,7 @@ export function buildEventDispatcher(client: Lark.Client): Lark.EventDispatcher 
           chat_id,
           preview: forwardText.slice(0, 40),
         });
-        sendToActiveTab(client, ctx, forwardText).catch((e) => {
+        sendToActiveTab(client, ctx, imgPrefix + forwardText).catch((e) => {
           logger.error('sendToActiveTab (forward-slash) failed', e);
           void sendText(client, chat_id, `❌ // 转发失败：${(e as Error).message}`);
         });
@@ -2329,9 +2390,10 @@ export function buildEventDispatcher(client: Lark.Client): Lark.EventDispatcher 
         return;
       }
 
-      // chain 优先：`@a X >> @b Y >> @c Z`
+      // chain 优先：`@a X >> @b Y >> @c Z`（图片前缀挂到第一步）
       if (parsed.chain && parsed.chain.length >= 2) {
         logger.info('chain', { steps: parsed.chain.length });
+        if (imgPrefix && parsed.chain[0]) parsed.chain[0].prompt = imgPrefix + parsed.chain[0].prompt;
         handleChain(client, ctx, parsed.chain).catch((e) => {
           logger.error('handleChain failed', e);
           void sendText(client, chat_id, `❌ chain 失败：${(e as Error).message}`);
@@ -2346,14 +2408,15 @@ export function buildEventDispatcher(client: Lark.Client): Lark.EventDispatcher 
           targets: parsed.targeted.map((t) => t.target),
         });
         if (parsed.targeted.length >= 2) {
-          // 批量 → 先发一张聚合卡占位，所有 task pending 共享 messageId
-          handleBatch(client, ctx, parsed.targeted).catch((e) => {
+          // 批量 → 先发一张聚合卡占位，所有 task pending 共享 messageId（图片前缀挂到每个）
+          const targeted = imgPrefix ? parsed.targeted.map((t) => ({ ...t, text: imgPrefix + t.text })) : parsed.targeted;
+          handleBatch(client, ctx, targeted).catch((e) => {
             logger.error('handleBatch failed', e);
             void sendText(client, chat_id, `❌ 批量失败：${(e as Error).message}`);
           });
         } else {
           for (const t of parsed.targeted) {
-            sendToNamedTarget(client, ctx, t.target, t.text).catch((e) => {
+            sendToNamedTarget(client, ctx, t.target, imgPrefix + t.text).catch((e) => {
               logger.error('sendToNamedTarget failed', e);
               void sendText(client, chat_id, `❌ @${t.target} 失败：${(e as Error).message}`);
             });
@@ -2361,7 +2424,7 @@ export function buildEventDispatcher(client: Lark.Client): Lark.EventDispatcher 
         }
       } else {
         // 没 @ → 走 active tab
-        sendToActiveTab(client, ctx, parsed.fallback ?? text).catch((e) => {
+        sendToActiveTab(client, ctx, imgPrefix + (parsed.fallback ?? text)).catch((e) => {
           logger.error('sendToActiveTab failed', e);
           void sendText(client, chat_id, `❌ 失败：${(e as Error).message}`);
         });

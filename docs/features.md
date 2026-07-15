@@ -396,6 +396,37 @@ answer=$(agent lark ask form --title "确认几个选项" --spec-json '{
 
 ---
 
+## 14.5 飞书图文 → shell claude（截图 + 描述让 claude 解决）
+
+### 能力
+飞书发「截图 + 文字描述」→ 图片下载到本地 → 路径 + 描述注入目标 tab 的 claude（claude 多模态，`Read` 本地图片即"看见"）。
+
+### 三种发法（自动适配）
+- **A 富文本一条发**：一条 post 消息里图 + 文字（+可选 `@ttysXXX`）一起 → 立即下载+注入
+- **B 先图后文配对**：先发纯图（daemon 暂存 + 回执提示）→ 90s 内再发文字描述 → 自动合并注入。文字里可带 `@target` 指定 tab
+- **C 纯图直发**：只发图不发文字 → 90s 到点直接发给 active tab，让 claude 自己看图判断
+
+### 手机端怎么操作（推荐 B，最省事）
+> 用户明确要求"飞书操作简单方便"。**手机上别碰富文本编辑器**（步骤多），直接：
+> 1. 发那张截图（相册 → 发送）
+> 2. **90 秒内紧跟一条文字**描述（可带 `@ttysXXX` 指定 tab；不带则发给 active tab）
+>
+> 顺序记住**先图后文**（先文后图目前不自动配对）。富文本(A) 需进「+ → 富文本 / 长按输入框格式栏」，仅在 PC 端顺手时才建议用。
+
+### 注入形态
+```
+[用户随消息发来 N 张图片，已存到本地。请先用 Read 工具逐张查看，再结合下面的文字处理]
+图片1: /abs/path/data/inbound/<ts>-<key>.png
+<用户的文字描述>
+```
+
+### 依赖 & 约定
+- 飞书应用需开 **`im:resource`**（读消息资源）权限，否则下载失败会回一条提示卡
+- 图片落 `data/inbound/`（已 gitignore），**24h 自动清理**（`cleanupInboundImages`）
+- 底层：`lark/resource.ts`（下载 + post/image 解析 + 清理 + prompt 拼接）+ `handlers.ts`（归一化入站 / 配对跟踪 / imgPrefix 注入）
+
+---
+
 ## 15. 抓屏 & 按键遥控（TUI 场景兜底）
 
 ### `/screen` · agent screen
