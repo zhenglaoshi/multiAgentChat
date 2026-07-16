@@ -2161,7 +2161,9 @@ export function askCard(req: AskRequest) {
   }
 
   return {
-    config: { wide_screen_mode: true },
+    // update_multi:true 让这张卡可被 card.action.trigger 回调响应直接替换刷新
+    // （即时反馈：点击瞬间 toast + 卡片同帧变化，不再依赖异步 patchCard）
+    config: { wide_screen_mode: true, update_multi: true },
     header: {
       template,
       title: { tag: 'plain_text', content: headerTitle },
