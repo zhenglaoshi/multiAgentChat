@@ -113,32 +113,42 @@ export async function prepareTaskWorkspace(opts: {
   id6: string;
   repos: TaskRepoPlan[];
   base?: string;
+  /** true = 只算计划（目标路径/分支/worktree还是clone），不 mkdir、不动 git。 */
+  dryRun?: boolean;
 }): Promise<TaskWorkspaceResult> {
   const branch = taskBranchName(opts.kind, opts.id6);
+  const dry = opts.dryRun === true;
 
   if (opts.kind === 'indev') {
     const repos: TaskRepoResult[] = [];
     for (const r of opts.repos) {
       const src = r.sourcePath;
-      if (!src || !existsSync(src)) { repos.push({ name: r.name, cwd: src ?? '', ok: false, via: 'failed', reason: '本地无该 repo 源' }); continue; }
-      const pr: PrepareResult = await useCurrentBranch(src);
+      const has = !!(src && existsSync(src));
+      if (!has) { repos.push({ name: r.name, cwd: src ?? '', ok: false, via: 'failed', reason: '本地无该 repo 源' }); continue; }
+      if (dry) { repos.push({ name: r.name, cwd: src!, ok: true, via: 'in-place', reason: '(dry-run) 在现有源当前分支直接改' }); continue; }
+      const pr: PrepareResult = await useCurrentBranch(src!);
       repos.push({ name: r.name, cwd: pr.cwd, ok: pr.ok, via: 'in-place', ...(pr.reason ? { reason: pr.reason } : {}) });
     }
     return { ok: repos.some((r) => r.ok), kind: opts.kind, branch, repos };
   }
 
   const dir = join(taskWorkroot(), taskDirName(opts.kind, opts.id6));
-  await mkdir(dir, { recursive: true });
+  if (!dry) await mkdir(dir, { recursive: true });
   const repos: TaskRepoResult[] = [];
   for (const r of opts.repos) {
     const target = join(dir, r.name);
-    if (r.sourcePath && existsSync(r.sourcePath)) {
-      repos.push(await worktreeAt(r.sourcePath, target, branch, opts.base));
-    } else if (r.gitUrl) {
-      repos.push(await cloneAt(r.gitUrl, target, branch, opts.base));
-    } else {
-      repos.push({ name: r.name, cwd: target, ok: false, via: 'failed', reason: '本地无源且无 gitUrl，无法 worktree/clone' });
+    const hasSrc = !!(r.sourcePath && existsSync(r.sourcePath));
+    if (dry) {
+      const via: TaskRepoResult['via'] = hasSrc ? 'worktree' : (r.gitUrl ? 'clone' : 'failed');
+      const reason = hasSrc ? `(dry-run) 从 ${r.sourcePath} worktree → ${target}`
+        : r.gitUrl ? `(dry-run) clone ${r.gitUrl} → ${target}`
+        : '本地无源且无 gitUrl';
+      repos.push({ name: r.name, cwd: target, ok: via !== 'failed', via, reason });
+      continue;
     }
+    if (hasSrc) repos.push(await worktreeAt(r.sourcePath!, target, branch, opts.base));
+    else if (r.gitUrl) repos.push(await cloneAt(r.gitUrl, target, branch, opts.base));
+    else repos.push({ name: r.name, cwd: target, ok: false, via: 'failed', reason: '本地无源且无 gitUrl，无法 worktree/clone' });
   }
   return { ok: repos.some((r) => r.ok), kind: opts.kind, taskDir: dir, branch, repos };
 }
