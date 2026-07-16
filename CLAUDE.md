@@ -101,6 +101,7 @@ packages/
         ├─ approval/        审批工作流（manager.create/resolve/list，5min auto-timeout）
         ├─ ask/             AskUserQuestion 交互问答（manager / types；含多问题表单 form）
         ├─ planner/         A3 Planner：generatePlan(claude -p 分解目标) + 内存计划库（/plan 用）
+        ├─ perf/            performance-platform 对接（P1 只读）：config/client(Basic auth)/query/store；perf-watcher 消费
         ├─ subagents/       subagent 注册表（registry / types）
         └─ knowledge/       shell 交互流自动提炼知识条目（extractor / heuristics / store / sanitize；缺 KNOWLEDGE_EXTRACT_ENABLED 不启用）
 
@@ -296,6 +297,7 @@ npm run typecheck
 进行中 / 待办：
 - A 路线 · 编排：A1 任务模板（/template + /run ✅）、A2 任务链（chains.ts ✅）、A3 Planner（v1·方案丙 ✅ `/plan`；甲多tab自动串/乙单tab SOP 待叠加）
 - 图文入站（飞书✅ + 企微✅）；待补：先文后图配对、富文本(A) 真机验证
+- performance-platform 对接：P1 只读监听 ✅（`orchestrator/perf` + perf-watcher，配 PERF_* 启用）；P2 认领开 tab 修（已含 lite 版）；P3 回写+校验闭环待 perf 侧加 CAS。设计见 docs/perf-integration.md
 - v52 `restart-all-claude-tabs --except`（✅ 已做）
 
 下一会话从 `agent tabs` 开始看现状，然后 `cat MEMORY.md` 看 memory 上下文。

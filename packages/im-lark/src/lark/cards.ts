@@ -1,4 +1,4 @@
-import type { ApprovalRequest, AskRequest, Plan, TapdItem } from 'multiagent-orchestrator';
+import type { ApprovalRequest, AskRequest, PerfItem, Plan, TapdItem } from 'multiagent-orchestrator';
 import { tapdSummary } from 'multiagent-orchestrator';
 import { inferTabStatus, type TabStatusInfo } from 'multiagent-host-mac';
 import type { TerminalTab } from 'multiagent-host-mac';
@@ -2482,5 +2482,56 @@ export function planCard(plan: Plan) {
     config: { wide_screen_mode: true },
     header: { template: 'blue', title: { tag: 'plain_text', content: `🧩 执行计划 · ${plan.steps.length} 步` } },
     elements,
+  };
+}
+
+/**
+ * performance-platform 慢查询/性能建议通知卡（P0=红 / P1=橙 / P2=蓝）。
+ * [🔧 认领修复] → perf-claim（开 tab 注入根因+索引命令+改动文件让 claude 修）。
+ */
+export function perfItemCard(item: PerfItem) {
+  const template = item.priority === 'P0' ? 'red' : item.priority === 'P1' ? 'orange' : 'blue';
+
+  const lines: string[] = [`**${truncate(item.title, 80)}**`];
+  const meta: string[] = [item.priority];
+  if (item.target) meta.push(`目标:${item.target}`);
+  if (item.repo) meta.push(`仓库:${item.repo}`);
+  const ns = [item.database, item.collection].filter(Boolean).join('.');
+  if (ns) meta.push(ns);
+  lines.push(`<font color='grey'>${meta.join(' · ')}</font>`);
+  if (item.rootCause) lines.push(`\n**根因**：${truncate(item.rootCause, 160)}`);
+  else if (item.rationale) lines.push(`\n${truncate(item.rationale, 160)}`);
+  if (item.indexCommand) lines.push(`\n**索引建议**：\n\`${truncate(item.indexCommand, 200)}\``);
+  if (item.codeFile) lines.push(`\n**改动文件**：\`${item.codeFile}\``);
+
+  const actions: unknown[] = [
+    {
+      tag: 'button',
+      text: { tag: 'plain_text', content: '🔧 认领修复' },
+      type: 'primary',
+      value: { action: 'perf-claim', id: item.id },
+    },
+  ];
+  if (item.codePermalink) {
+    actions.push({
+      tag: 'button',
+      text: { tag: 'plain_text', content: '🔗 源码' },
+      type: 'default',
+      multi_url: { url: item.codePermalink, pc_url: item.codePermalink, ios_url: item.codePermalink, android_url: item.codePermalink },
+    });
+  }
+  actions.push(
+    { tag: 'button', text: { tag: 'plain_text', content: '🕐 稍后' }, type: 'default', value: { action: 'perf-snooze', id: item.id } },
+    { tag: 'button', text: { tag: 'plain_text', content: '🙈 不是我的' }, type: 'default', value: { action: 'perf-not-mine', id: item.id } },
+  );
+
+  return {
+    config: { wide_screen_mode: true },
+    header: { template, title: { tag: 'plain_text', content: `⚡ 性能建议 · ${item.priority}` } },
+    elements: [
+      { tag: 'div', text: { tag: 'lark_md', content: lines.join('\n') } },
+      { tag: 'hr' },
+      { tag: 'action', actions },
+    ],
   };
 }

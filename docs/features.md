@@ -451,6 +451,17 @@ answer=$(agent lark ask form --title "确认几个选项" --spec-json '{
 
 ---
 
+## 14.7 performance-platform 性能建议监听（P1 只读）
+
+`performance-platform-api` 出慢查询/性能优化建议（recommendation）→ 本项目 perf-watcher 轮询 → 推飞书卡 → 认领开 tab 修。**P1 = 只读**：拉取 + 推卡 + 认领派发；回写/校验闭环（P3）待 perf 侧加 CAS。
+
+- **启用**：`.env` 配 `PERF_API_URL` + `PERF_API_USER` + `PERF_API_PASS`（缺则不启）。可选 `PERF_TARGETS` / `PERF_PRIORITIES`（默认 P0,P1）/ `PERF_MY_REPOS`（多人归属过滤）/ `PERF_REPOS_BASE_DIR`（repo→本地路径）。
+- **流程**：轮询 `GET /api/recommendations?status=pending`（Basic auth）→ 按 target/优先级/归属过滤 + 去重 → 性能建议卡（P0 红/P1 橙，含根因+索引命令+改动文件+repo）→ [🔧认领修复] 把上下文注入 active tab 让 claude 修（**验证严禁连生产库**）→ [🕐稍后]/[🙈不是我的] 带回执。
+- **底层**：`orchestrator/perf/`（config/client/query/store）+ `im-lark/monitor/perf-watcher.ts` + `perfItemCard`。
+- **完整设计 + 多人协作 + 深层机会**：见 `docs/perf-integration.md`。
+
+---
+
 ## 15. 抓屏 & 按键遥控（TUI 场景兜底）
 
 ### `/screen` · agent screen

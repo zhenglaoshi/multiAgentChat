@@ -20,6 +20,7 @@ import { logger } from 'multiagent-orchestrator';
 import { startHealthCheck } from 'multiagent-im-lark';
 import { startSystemEventsProbe } from 'multiagent-im-lark';
 import { startTapdWatcher } from 'multiagent-im-lark';
+import { startPerfWatcher } from 'multiagent-im-lark';
 import { startReportScheduler } from 'multiagent-im-lark';
 import { attachWatcherToLark } from 'multiagent-im-lark';
 import { installWsWatchdog } from 'multiagent-im-lark';
@@ -1272,6 +1273,7 @@ async function main() {
         }
       : undefined,
   );
+  startPerfWatcher(lark.client);
   startReportScheduler(lark.client);
   await ensureSkillInstalled();
   await installClaudeCodeHooks();

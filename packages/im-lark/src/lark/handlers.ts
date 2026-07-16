@@ -50,6 +50,7 @@ const CLAUDE_TUI_REMINDER = [
 import { patchCard, sendCardReturnId, sendImage } from './api.js';
 import { ackCard, askCard, batchProgressCard, browseCard, chainProgressCard, planCard, progressCard, receiptCard, tapdClaimCard, type BatchTaskItem, type ChainStepItem } from './cards.js';
 import { generatePlan, getPlan } from 'multiagent-orchestrator';
+import { getPerfItem, markPerfSnoozed, markPerfIgnoredForever } from 'multiagent-orchestrator';
 import { readdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname, basename } from 'node:path';
@@ -1252,6 +1253,52 @@ async function handleCardAction(
       }
     })();
     return { toast: { type: 'success', content: `派发步骤 ${step + 1}` } };
+  }
+
+  if (action === 'perf-claim') {
+    const id = value['id'] as string | undefined;
+    if (!id) return { toast: { type: 'error', content: '缺 id' } };
+    const item = getPerfItem(id);
+    if (!item) return { toast: { type: 'error', content: '该建议已过期（dev 重启会清空缓存），等下一轮 watcher 重推' } };
+    const ctx = { messageId: 'perf-claim', chatId };
+    const parts: string[] = [
+      `【performance 性能建议 · ${item.priority}】${item.title}`,
+    ];
+    if (item.localPath) parts.push(`仓库路径：${item.localPath}（先 cd 过去）`);
+    else if (item.repo) parts.push(`仓库：${item.repo}`);
+    if (item.database || item.collection) parts.push(`命名空间：${[item.database, item.collection].filter(Boolean).join('.')}`);
+    if (item.rootCause) parts.push(`根因：${item.rootCause}`);
+    if (item.rationale) parts.push(`说明：${item.rationale}`);
+    if (item.indexCommand) parts.push(`建议索引：${item.indexCommand}`);
+    if (item.codeFile) parts.push(`涉及文件：${item.codeFile}${item.codePermalink ? `（${item.codePermalink}）` : ''}`);
+    if (item.codeChange) parts.push(`建议改动：${item.codeChange}`);
+    parts.push('请定位并修复该性能问题；**验证只用本地/测试环境，严禁连线上库/生产**。改完把方案+改动摘要用 `agent lark send-text` 回我；涉及加索引/改库先 `agent request-approval`。');
+    const prompt = parts.join('\n');
+    (async () => {
+      try {
+        await sendToActiveTab(client, ctx, prompt);
+        void sendText(client, chatId, `🔧 已认领「${item.title.slice(0, 40)}」→ 已把上下文发到 active tab（没设就先 /use @xxx）`);
+      } catch (e) {
+        void sendText(client, chatId, `❌ 认领派发失败：${(e as Error).message}`);
+      }
+    })();
+    return { toast: { type: 'success', content: '已认领，派发中' } };
+  }
+
+  if (action === 'perf-snooze') {
+    const id = value['id'] as string | undefined;
+    if (!id) return { toast: { type: 'error', content: '缺 id' } };
+    await markPerfSnoozed(id);
+    await patchOrigToReceipt(client, data, '🕐 已稍后提醒', '3 小时后再推', 'grey');
+    return { toast: { type: 'info', content: '🕐 3 小时后再提醒' } };
+  }
+
+  if (action === 'perf-not-mine') {
+    const id = value['id'] as string | undefined;
+    if (!id) return { toast: { type: 'error', content: '缺 id' } };
+    await markPerfIgnoredForever(id);
+    await patchOrigToReceipt(client, data, '🙈 已标记：不再提醒此项', undefined, 'grey');
+    return { toast: { type: 'info', content: '🙈 不再提醒' } };
   }
 
   if (action === 'use-tab') {
