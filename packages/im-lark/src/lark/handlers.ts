@@ -1865,6 +1865,7 @@ end run
       const claim = await orch.loadClaim(id);
       if (claim) { claim.status = 'ignored'; await orch.saveClaim(claim); }
     }
+    await patchOrigToReceipt(client, data, '✅ 已忽略此项', undefined, 'grey');
     return { toast: { type: 'info', content: '已忽略' } };
   }
 
@@ -1873,6 +1874,7 @@ end run
     if (!id) return { toast: { type: 'error', content: '缺 id' } };
     const orch = await import('multiagent-orchestrator');
     await orch.markSnoozed(id);
+    await patchOrigToReceipt(client, data, '🕐 已稍后提醒', '3 小时后再推', 'grey');
     return { toast: { type: 'info', content: '🕐 3 小时后再提醒' } };
   }
 
@@ -1881,7 +1883,8 @@ end run
     if (!id) return { toast: { type: 'error', content: '缺 id' } };
     const orch = await import('multiagent-orchestrator');
     await orch.markIgnoredForever(id);
-    return { toast: { type: 'info', content: '🙈 不再提醒（如需重新指派请在 TAPD 改处理人）' } };
+    await patchOrigToReceipt(client, data, '🙈 已标记：不再提醒此项', '如需重新指派请在 TAPD 改处理人/开发负责人', 'grey');
+    return { toast: { type: 'info', content: '🙈 不再提醒' } };
   }
 
   if (action === 'tapd-claim-go') {
@@ -2033,29 +2036,30 @@ end run
     const operator = data.operator?.open_id ?? 'unknown';
     const by = `feishu:${operator}`;
 
+    // 这些分支返回 { toast, card }：card.action.trigger 会把 card 塞进回调响应
+    // 直接替换被点的卡片（即时刷新），toast 同帧弹出。不再走异步 patchCard，
+    // 避免"toast 盖掉 patch"的老坑，也消除点击后的空窗。
     if (action === 'ask.pick') {
       const index = value['index'] as number | undefined;
       if (typeof index !== 'number') return { toast: { type: 'error', content: '缺 index' } };
       const picked = req.options[index] ?? '';
       const updated = await asks.answer(askId, { kind: 'single', index, value: picked }, by);
-      if (updated?.cardMessageId) {
-        void patchCard(client, updated.cardMessageId, askCard(updated));
-      }
-      return { toast: { type: 'success', content: `已选：${picked}` } };
+      return {
+        toast: { type: 'success', content: `✅ 已选：${picked}` },
+        card: updated ? askCard(updated) : undefined,
+      };
     }
 
     if (action === 'ask.toggle') {
       const index = value['index'] as number | undefined;
       if (typeof index !== 'number') return { toast: { type: 'error', content: '缺 index' } };
       const updated = asks.toggle(askId, index);
-      if (updated?.cardMessageId) {
-        void patchCard(client, updated.cardMessageId, askCard(updated));
-      }
       return {
         toast: {
           type: 'info',
           content: updated ? `已选 ${updated.selection.length} 项` : '状态刷新',
         },
+        card: updated ? askCard(updated) : undefined,
       };
     }
 
@@ -2063,18 +2067,18 @@ end run
       const indices = [...req.selection];
       const values = indices.map((i) => req.options[i] ?? '');
       const updated = await asks.answer(askId, { kind: 'multi', indices, values }, by);
-      if (updated?.cardMessageId) {
-        void patchCard(client, updated.cardMessageId, askCard(updated));
-      }
-      return { toast: { type: 'success', content: `已提交（${indices.length} 项）` } };
+      return {
+        toast: { type: 'success', content: `✅ 已提交（${indices.length} 项）` },
+        card: updated ? askCard(updated) : undefined,
+      };
     }
 
     // ask.cancel
     const updated = await asks.cancel(askId, by);
-    if (updated?.cardMessageId) {
-      void patchCard(client, updated.cardMessageId, askCard(updated));
-    }
-    return { toast: { type: 'success', content: '已取消' } };
+    return {
+      toast: { type: 'success', content: '⊘ 已取消' },
+      card: updated ? askCard(updated) : undefined,
+    };
   }
 
   // ── form（多问题向导）卡片操作 ──
@@ -2084,10 +2088,10 @@ end run
     const req = asks.get(askId);
     if (!req || req.status !== 'pending') return { toast: { type: 'error', content: 'ask 已完成或不存在' } };
     const by = `feishu:${data.operator?.open_id ?? 'unknown'}`;
-    const patch = (r?: { cardMessageId?: string } | undefined) => {
+    // 表单操作后仍 pending 时用 asks.get 取当前态建卡；已 resolve 的分支用返回值建卡。
+    const curCard = () => {
       const cur = asks.get(askId);
-      if (cur?.cardMessageId) void patchCard(client, cur.cardMessageId, askCard(cur));
-      void r;
+      return cur ? askCard(cur) : undefined;
     };
 
     if (action === 'ask.form-toggle') {
@@ -2097,25 +2101,22 @@ end run
       const updated = asks.toggleForm(askId, q, i);
       // 不自动前进：留在本题让用户看到 🔘/☑ 变化，再手动「下一题」或「提交」
       const on = (updated?.formSelection?.[q]?.length ?? 0) > 0;
-      patch();
-      return { toast: { type: 'info', content: on ? '已选' : '已取消选择' } };
+      return { toast: { type: 'info', content: on ? '已选' : '已取消选择' }, card: curCard() };
     }
 
     if (action === 'ask.form-nav') {
       const to = Number(value['to']);
       if (!Number.isInteger(to)) return { toast: { type: 'error', content: '缺 to' } };
       asks.setFormCursor(askId, to);
-      patch();
-      return { toast: { type: 'info', content: '已切换' } };
+      return { toast: { type: 'info', content: '已切换' }, card: curCard() };
     }
 
     if (action === 'ask.form-text') {
       const q = Number(value['q']);
       if (!Number.isInteger(q)) return { toast: { type: 'error', content: '缺 q' } };
       const armed = asks.armFormText(askId, q);
-      patch();
       return armed
-        ? { toast: { type: 'info', content: '请在对话里直接回复文字' } }
+        ? { toast: { type: 'info', content: '请在对话里直接回复文字' }, card: curCard() }
         : { toast: { type: 'error', content: '本题不支持自由输入' } };
     }
 
@@ -2125,17 +2126,17 @@ end run
         // 有单选题没选 → 跳到第一个缺的题
         const first = res.missing[0] ?? 0;
         asks.setFormCursor(askId, first);
-        patch();
-        return { toast: { type: 'error', content: `第 ${first + 1} 题还没选` } };
+        return { toast: { type: 'error', content: `第 ${first + 1} 题还没选` }, card: curCard() };
       }
-      if (res && res.ok) patch();
+      if (res && res.ok) {
+        return { toast: { type: 'success', content: '✅ 已提交' }, card: askCard(res.request) };
+      }
       return { toast: { type: 'success', content: '✅ 已提交' } };
     }
 
     // ask.form-cancel
     const cancelled = await asks.cancel(askId, by);
-    if (cancelled?.cardMessageId) void patchCard(client, cancelled.cardMessageId, askCard(cancelled));
-    return { toast: { type: 'success', content: '已取消' } };
+    return { toast: { type: 'success', content: '⊘ 已取消' }, card: cancelled ? askCard(cancelled) : undefined };
   }
 
   if (action === 'approve' || action === 'reject') {
@@ -2484,6 +2485,27 @@ export function buildEventDispatcher(client: Lark.Client): Lark.EventDispatcher 
     'card.action.trigger': async (data: CardActionEvent) => {
       recordInbound();
       const chatId = getChatId(data);
+
+      // ── ask.* 类卡片：同步处理 + 回调响应里同时返回 toast + 更新后的卡片 ──
+      // 飞书回调响应带 card（type:'raw'）时会用它替换被点的卡片 → 即时刷新；
+      // 同帧带 toast 弹提示。二者共存，不再依赖异步 patchCard，消除点击后的空窗。
+      // （asks.* 均为本地内存操作，能在回调窗口内同步完成。）
+      // 注意：这条例外只对 ask.* 成立——其它卡片仍必须走下面的 fire-and-forget，
+      // 见 docs/features.md：普通卡片单独 return { toast } 会盖掉异步 patchCard。
+      const actionName = data.action?.value?.['action'];
+      if (typeof actionName === 'string' && actionName.startsWith('ask.')) {
+        try {
+          const result = await handleCardAction(client, data);
+          const resp: { toast?: unknown; card?: unknown } = {};
+          if (result?.toast) resp.toast = result.toast;
+          if (result?.card) resp.card = { type: 'raw', data: result.card };
+          return resp;
+        } catch (e) {
+          logger.error('ask card action failed', e);
+          return { toast: { type: 'error', content: `失败：${(e as Error).message}` } };
+        }
+      }
+
       // fire-and-forget：立即返回空响应，重活异步。**不能返回 toast** —— 飞书收到回调 toast
       // 响应后会把卡片当"已处理、无更新"，盖掉我们另发的 patchCard（标记不刷新）。
       (async () => {
