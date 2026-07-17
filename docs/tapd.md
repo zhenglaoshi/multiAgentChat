@@ -63,16 +63,20 @@ claude mcp get tapd     # 应 ✔ Connected
           按钮：[🌿 认领并建分支] [🔗 打开 TAPD] [🙈 忽略]
 3. 认领   点认领 → 拉 bug 详情 → 弹 repo 多选卡
           候选 repo = /pin 书签 + 最近用过的 cwd + 全机 git 仓库索引(dir-index，自带后台刷新，新人装完即有)；点按钮打勾(可多选，卡片原地 patch)
-4. 脏检查 点[🚀 建分支并开工]→ 先查每个选中 repo 工作区：
-            全干净 → 直接切
-            有脏的 → 弹策略卡（只作用于脏 repo）：
-              📦 暂存后切 stash  → git stash -u 再切，WIP 可 git stash pop 恢复
-              🌿 worktree 隔离   → 新目录 <repo>-<分支> 切，当前工作区+WIP 完全不动
-              ➡️ 照切带过去      → WIP 跟到 bug 分支
-              ⏭ 跳过脏 repo      → 只切干净的
-5. 切分支 每个选中 repo 切同名分支：缺陷 fix_<id后6>，需求 feat_<id后6>
-          （从各自当前 HEAD；分支已存在则直接 checkout）
-6. 开工   开【一个】claude tab（cwd=主 repo，或 worktree 路径），自动过 trust 弹窗，
+          卡上还有 [🏷 类型]（三选一，见下）/ [🔁 基准]（HEAD/master/develop/当前分支）/ [切成 SOP/直接修]
+3b.类型   [🏷 类型] 三选一（决定工作目录策略，与 SOP/直接修 正交）：
+            🐞 线上bug(fix)  → 建 ~/ihealth-work/fix_<id6>/ 隔离目录（worktree）
+            ✨ 新需求(feature) → 建 ~/ihealth-work/feature_<id6>/ 隔离目录（worktree）
+            🔧 开发中(indev)  → 各 repo 当前分支原地改，不建目录
+          缺省由 base/sop 派生（base=当前分支→indev，否则 缺陷→fix / 需求→feature）
+4. 建目录 点[🚀 建分支并开工] → 按类型准备工作区（prepareTaskWorkspace）：
+            fix/feature → <TASK_WORKROOT 默认 ~/ihealth-work>/<fix|feature>_<id6>/ 下，
+                          每个选中 repo 用 **git worktree**（本地有源，秒建省盘，**共享 repo 纹丝不动**）
+                          或 clone（本地无源）拉进子目录，切 fix_/feat_<id6> 分支
+            indev       → 各 repo 当前分支原地改（不建目录，分支报告准确）
+          ★ worktree 模式下共享 repo 不被触碰 → 不再需要脏工作区 stash/carry 策略
+5. 记录   saveWorkTask 落一条 目录↔分支↔干啥↔来源 记录 → `/worktasks`（`/wt`）可列/搜/[📂 打开]
+6. 开工   开【一个】claude tab（cwd=worktree 主 repo 目录，或 indev 的原 repo），自动过 trust 弹窗，
           注入上下文：标题 / TAPD 链接 / 涉及的所有 repo(都在同名分支) / 描述(去 HTML)
           claude 在这一个会话里跨 repo 干活（cd / git -C），各自提交(commit 带 TAPD #id)
 7. 回写   修完 → claude 先 agent request-approval 征得你同意 → 用 tapd MCP 把 #id

@@ -17,6 +17,14 @@ export interface TapdClaim {
   /** true → 开工时跑 SOP（多 stage 编排）；false → 普通任务直接修。默认：需求 true / 缺陷 false。 */
   sop: boolean;
   /**
+   * 任务类型（决定工作目录策略，与 sop 正交）：
+   *  - 'fix'      线上bug → ~/ihealth-work/fix_<id6>/ worktree 隔离目录
+   *  - 'feature'  新需求 → feature_<id6>/ worktree 隔离目录
+   *  - 'indev'    开发中 → 各 repo 当前分支原地改，不建目录
+   * 未设时由 base/sop 派生（兼容旧 claim）：base=current→indev，否则 sop?feature:fix。
+   */
+  kind?: 'fix' | 'feature' | 'indev';
+  /**
    * 分支基准：
    *  - 'current'  在当前分支直接改，不建新分支（测试阶段 bug：基于被测分支）
    *  - 'head'     从当前 HEAD 切 fix_/feat_（默认）
@@ -48,6 +56,19 @@ export const TAPD_STAGE_LABEL: Record<TapdStage, string> = {
   'awaiting-approval': '待审批回写',
   resolved: '已解决',
   failed: '卡住/失败',
+};
+
+/** 解析 claim 的任务类型：优先显式 kind，否则由 base/sop 派生（兼容旧 claim）。 */
+export function resolveClaimKind(claim: Pick<TapdClaim, 'kind' | 'base' | 'sop'>): 'fix' | 'feature' | 'indev' {
+  if (claim.kind) return claim.kind;
+  if (claim.base === 'current') return 'indev';
+  return claim.sop ? 'feature' : 'fix';
+}
+
+export const TAPD_KIND_LABEL: Record<'fix' | 'feature' | 'indev', string> = {
+  fix: '🐞 线上bug',
+  feature: '✨ 新需求',
+  indev: '🔧 开发中(原地改)',
 };
 
 async function ensureDir(): Promise<void> {

@@ -1,5 +1,5 @@
-import type { ApprovalRequest, AskRequest, PerfItem, Plan, TapdItem, IntegrationStatus, Integration } from 'multiagent-orchestrator';
-import { tapdSummary } from 'multiagent-orchestrator';
+import type { ApprovalRequest, AskRequest, PerfItem, Plan, TapdItem, IntegrationStatus, Integration, WorkTask } from 'multiagent-orchestrator';
+import { tapdSummary, TAPD_KIND_LABEL } from 'multiagent-orchestrator';
 import { inferTabStatus, type TabStatusInfo } from 'multiagent-host-mac';
 import type { TerminalTab } from 'multiagent-host-mac';
 
@@ -2272,7 +2272,7 @@ const TAPD_BASE_LABEL: Record<string, string> = {
 };
 
 export function tapdRepoPickerCard(
-  claim: { id: string; branch: string; title: string; system: string; selectedRepos: string[]; sop?: boolean; base?: string },
+  claim: { id: string; branch: string; title: string; system: string; selectedRepos: string[]; sop?: boolean; base?: string; kind?: 'fix' | 'feature' | 'indev' },
   candidates: { path: string; label: string }[],
   home: string,
 ) {
@@ -2280,6 +2280,9 @@ export function tapdRepoPickerCard(
   const kindLabel = claim.system === 'bug' ? '缺陷' : '需求';
   const modeLabel = claim.sop ? 'SOP 编排（多 stage）' : '直接修（普通任务）';
   const baseLabel = TAPD_BASE_LABEL[claim.base ?? 'head'] ?? '从当前 HEAD 切';
+  // 任务类型（决定目录策略）：显式 kind 优先，否则由 base/sop 派生
+  const taskKind = claim.kind ?? (claim.base === 'current' ? 'indev' : (claim.sop ? 'feature' : 'fix'));
+  const taskKindLabel = TAPD_KIND_LABEL[taskKind];
 
   const repoButtons = candidates.slice(0, 10).map((c) => ({
     tag: 'button',
@@ -2313,10 +2316,16 @@ export function tapdRepoPickerCard(
     { tag: 'div', text: { tag: 'lark_md', content: `已选 repo：${selList}` } },
     ...rows,
     { tag: 'hr' },
-    { tag: 'div', text: { tag: 'lark_md', content: `模式：**${modeLabel}**　·　基准：**${baseLabel}**` } },
+    { tag: 'div', text: { tag: 'lark_md', content: `类型：**${taskKindLabel}**　·　模式：**${modeLabel}**　·　基准：**${baseLabel}**${taskKind === 'indev' ? '' : `\n<font color='grey'>→ 建 \`~/ihealth-work/${taskKind === 'feature' ? 'feature' : 'fix'}_${claim.branch.split('_')[1] ?? ''}/\` 隔离目录（worktree）</font>`}` } },
     {
       tag: 'action',
       actions: [
+        {
+          tag: 'button',
+          text: { tag: 'plain_text', content: `🏷 类型：${taskKindLabel}` },
+          type: 'default',
+          value: { action: 'tapd-cycle-kind', id: claim.id },
+        },
         {
           tag: 'button',
           text: { tag: 'plain_text', content: `🔁 基准：${baseLabel}` },
@@ -2489,6 +2498,57 @@ export function planCard(plan: Plan) {
  * performance-platform 慢查询/性能建议通知卡（P0=红 / P1=橙 / P2=蓝）。
  * [🔧 认领修复] → perf-claim（开 tab 注入根因+索引命令+改动文件让 claude 修）。
  */
+/** 任务工作目录列表卡：每条带「📂 打开」按钮，点击在该任务的 worktree 目录开新 tab。 */
+export function worktasksCard(tasks: WorkTask[], home: string, query?: string) {
+  const kindIcon = (k: string) => (k === 'fix' ? '🐞' : k === 'feature' ? '✨' : '🔧');
+  const elements: unknown[] = [
+    {
+      tag: 'div',
+      text: {
+        tag: 'lark_md',
+        content: query ? `🔍 匹配 **"${query}"**（${tasks.length}）` : `📁 **任务工作目录**（最近 ${tasks.length}）`,
+      },
+    },
+  ];
+  for (const t of tasks.slice(0, 10)) {
+    const dir = t.taskDir ? homeify(t.taskDir, home) : (t.repos[0] ? homeify(t.repos[0], home) : '(原地改)');
+    elements.push({ tag: 'hr' });
+    elements.push({
+      tag: 'div',
+      text: {
+        tag: 'lark_md',
+        content: `${kindIcon(t.kind)} **${truncate(t.title, 60)}**\n<font color='grey'>\`${t.branch}\` · ${dir}${t.source ? ` · ${t.source}` : ''}</font>`,
+      },
+    });
+    const actions: unknown[] = [];
+    if (t.repos.length > 0) {
+      actions.push({
+        tag: 'button',
+        text: { tag: 'plain_text', content: '📂 打开' },
+        type: 'primary',
+        value: { action: 'worktask-open', id: t.id },
+      });
+    }
+    if (t.tapdUrl) {
+      actions.push({
+        tag: 'button',
+        text: { tag: 'plain_text', content: '🔗 TAPD' },
+        type: 'default',
+        multi_url: { url: t.tapdUrl, pc_url: t.tapdUrl, ios_url: t.tapdUrl, android_url: t.tapdUrl },
+      });
+    }
+    if (actions.length > 0) elements.push({ tag: 'action', actions });
+  }
+  if (tasks.length > 10) {
+    elements.push({ tag: 'div', text: { tag: 'lark_md', content: `<font color='grey'>… 还有 ${tasks.length - 10} 条，用 \`/worktasks <关键词>\` 收窄</font>` } });
+  }
+  return {
+    config: { wide_screen_mode: true },
+    header: { template: 'blue', title: { tag: 'plain_text', content: '📁 任务工作目录' } },
+    elements,
+  };
+}
+
 export function perfItemCard(item: PerfItem) {
   const template = item.priority === 'P0' ? 'red' : item.priority === 'P1' ? 'orange' : 'blue';
 
@@ -2510,6 +2570,12 @@ export function perfItemCard(item: PerfItem) {
       text: { tag: 'plain_text', content: '🔧 认领修复' },
       type: 'primary',
       value: { action: 'perf-claim', id: item.id },
+    },
+    {
+      tag: 'button',
+      text: { tag: 'plain_text', content: '📋 认领并建需求' },
+      type: 'default',
+      value: { action: 'perf-claim-story', id: item.id },
     },
   ];
   if (item.codePermalink) {

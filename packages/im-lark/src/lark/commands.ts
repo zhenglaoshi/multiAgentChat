@@ -328,6 +328,7 @@ const HELP_TEXT = [
   '  **/tapd**                     列指派给我的未结束 TAPD 缺陷/需求（主动查）',
   '  **/report** day|week|month|year [--brief]  工作总结：日/周=简报md，月/年=PPT(加 --brief 出简报)',
   '  **/r**  /recall [关键词]      搜任务历史；不带关键词 = 最近 10 条',
+  '  **/wt** /worktasks [关键词]   列/搜任务工作目录（目录↔分支↔干啥；TAPD/perf 认领时自动落记录）',
   '       /watch on/off            本地任务监听（你在 Mac 直接发的命令也推送到飞书）',
   '  **/wd** 或 /web /webdash        web dashboard 访问 URL（公网/LAN/mDNS/localhost 多路径）',
   '  **/quiet on/off**              静默模式：长任务只发首次+完成，中间不刷进度卡',
@@ -1473,6 +1474,17 @@ export async function handleCommand(
       }
     }
     return { kind: 'text', text: lines.join('\n') };
+  }
+
+  if (name === 'worktasks' || name === 'wt') {
+    const orch = await import('multiagent-orchestrator');
+    const { worktasksCard } = await import('./cards.js');
+    const q = rest.trim();
+    const tasks = q ? await orch.searchWorkTasks(q, 20) : await orch.listWorkTasks(20);
+    if (tasks.length === 0) {
+      return { kind: 'text', text: q ? `🔍 没找到 "${q}" 相关的任务工作目录` : '(还没有任务工作目录记录；TAPD/perf 认领时自动落记录)' };
+    }
+    return { kind: 'card', card: worktasksCard(tasks, process.env['HOME'] ?? '', q || undefined) };
   }
 
   if (name === 'recall' || name === 'r') {

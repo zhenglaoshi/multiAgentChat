@@ -456,8 +456,11 @@ answer=$(agent lark ask form --title "确认几个选项" --spec-json '{
 `performance-platform-api` 出慢查询/性能优化建议（recommendation）→ 本项目 perf-watcher 轮询 → 推飞书卡 → 认领开 tab 修。**P1 = 只读**：拉取 + 推卡 + 认领派发；回写/校验闭环（P3）待 perf 侧加 CAS。
 
 - **启用**：`.env` 配 `PERF_API_URL` + `PERF_API_USER` + `PERF_API_PASS`（缺则不启）。可选 `PERF_TARGETS` / `PERF_PRIORITIES`（默认 P0,P1）/ `PERF_MY_REPOS`（多人归属过滤）/ `PERF_REPOS_BASE_DIR`（repo→本地路径）。
-- **流程**：轮询 `GET /api/recommendations?status=pending`（Basic auth）→ 按 target/优先级/归属过滤 + 去重 → 性能建议卡（P0 红/P1 橙，含根因+索引命令+改动文件+repo）→ [🔧认领修复] 把上下文注入 active tab 让 claude 修（**验证严禁连生产库**）→ [🕐稍后]/[🙈不是我的] 带回执。
-- **底层**：`orchestrator/perf/`（config/client/query/store）+ `im-lark/monitor/perf-watcher.ts` + `perfItemCard`。
+- **流程**：轮询 `GET /api/recommendations?status=pending`（Basic auth）→ 按 target/优先级/归属过滤 + 去重 → 性能建议卡（P0 红/P1 橙，含根因+索引命令+改动文件+repo）→ 认领（**验证严禁连生产库**）→ [🕐稍后]/[🙈不是我的] 带回执。
+- **两个认领按钮**：
+  - **[🔧 认领修复]**：把上下文注入 active tab 让 claude 直接修。
+  - **[📋 认领并建需求]**：先在 TAPD 建一条正式需求（创建人+开发负责人=你，挂「后端服务」项目「数据库优化」分类）→ 用 story 后6位建 `~/ihealth-work/fix_<story6>/` **worktree 隔离目录**开修 → 落 worktask 记录（`/worktasks` 可 [📂 打开]）。**perf→需求→目录→修 闭环**。配置 `PERF_TAPD_WORKSPACE_ID` / `PERF_TAPD_CATEGORY_ID`（复用 `TAPD_MCP_URL/TOKEN/NICK` 建需求）。见 §24 + `docs/perf-integration.md` §4 P2。
+- **底层**：`orchestrator/perf/`（config/client/query/store + `tapd-story.ts`）+ `im-lark/monitor/perf-watcher.ts` + `perfItemCard`。
 - **完整设计 + 多人协作 + 深层机会**：见 `docs/perf-integration.md`。
 
 ---
@@ -696,11 +699,12 @@ TAPD MCP 网关**（不经 LLM/CLI，5min 一轮）；工作 tab 里的 claude �
 ### 流程（点一次卡走完）
 1. **监听**：每 5min 拉「我的·当天·未结束」缺陷+需求，去重后推**差异化卡**（缺陷橙/红、需求蓝）
 2. **认领**：点卡 → 弹 **repo 多选卡**（候选=`/pin` 书签 + 最近 cwd），可勾多个（一个 bug 涉及多 repo）
-3. **选执行模式 & 基准**（卡上按钮切换）：
+3. **选类型 / 模式 / 基准**（卡上按钮切换）：
+   - **🏷 类型**（三选一，定工作目录策略）：🐞 线上bug(fix) / ✨ 新需求(feature) → 建 worktree 隔离目录；🔧 开发中(indev) → 原地改。与模式正交。详见 **§24**
    - 模式：**需求→SOP 编排**（Explore→需求分析→架构→审批gate→编码→测试→回归）/ **缺陷→普通任务**（直接修）
-   - 基准：**当前分支直接改**（测试 bug）/ **从 HEAD 切**（默认）/ **从 master、develop 切**（线上 bug hotfix）
-4. **脏工作区策略**（要切新分支且有未提交改动时弹）：暂存 stash / worktree 隔离 / 照切 / 跳过
-5. **开工**：每个选中 repo 切 `fix_<id后6>`/`feat_<id后6>` → 开**一个** claude tab（claude 跨 repo 编排）
+   - 基准：**从 HEAD 切**（默认）/ **从 master、develop 切**（线上 bug hotfix）/ **当前分支**（indev）
+4. **建工作目录**（`prepareTaskWorkspace`，见 §24）：fix/feature → `~/ihealth-work/<fix|feature>_<id6>/` 下每个 repo 用 **git worktree**（本地有源，共享 repo 不动）/ clone，切 `fix_/feat_<id6>`；indev → 原地改。→ worktree 隔离后**不再需要脏工作区 stash 策略**。落 `saveWorkTask` 记录（`/worktasks` 可 [📂 打开]）
+5. **开工**：开**一个** claude tab（cwd=worktree 主 repo 目录）跨 repo 编排
    注入：标题 / TAPD 链接 / 各 repo 工作分支 / 描述（保留图片标记）+ 指引它用 MCP 看评论/图片
 6. **验证 & 回写**：改完**本地验证**（严禁连线上库/生产）→ 不确定用 `agent lark ask` 问你 →
    验证过 + `agent request-approval` 批准 → 用 MCP 把状态流转到「已解决」+ 评论回填 commit/PR。**状态不自动改**。
@@ -722,6 +726,7 @@ TAPD_MCP_URL=https://mcp.xxx.com/servers/<id>/mcp
 TAPD_MCP_TOKEN=<Bearer JWT>          # 只进 .env
 TAPD_NICK=你的TAPD昵称                 # current_owner 过滤（token email 不自动解析）
 # 可选：TAPD_WORKSPACE_IDS（空=全部参与项目）/ TAPD_SYSTEMS=bug,story / TAPD_POLL_MS=300000
+# 任务工作目录（§24）：TASK_WORKROOT=~/ihealth-work（fix_/feature_ 隔离目录根）
 ```
 daemon 启动会幂等把 TAPD MCP 注册到 Claude Code（user scope）。
 
@@ -785,6 +790,30 @@ REPORT_MONTHLY_AT=1 09:00    # 每月 1 号 09:00 上月月报（PPT）
 
 ### 底层
 `orchestrator/integrations/`（registry 注册表 + envfile 读写/停用列表/状态 + skills 技能装 + careyclaw-key）；`connectStatusCard`/`connectFormCard`/`connectConfirmCard`/`careyclawKeyCard`；handlers `/connect`/`/careyclaw` + connect-*/careyclaw-key-* 卡动作；`agent connect` CLI。
+
+---
+
+## 24. 任务工作目录隔离 · worktree + `/worktasks`
+
+> 统一任务（TAPD 认领 / perf 认领并建需求）来了 → 按类型建独立目录 → git 拉依赖 repo → 切分支 → 落可搜记录。
+
+### 能力
+- **按类型建隔离目录**（`prepareTaskWorkspace`，env `TASK_WORKROOT` 默认 `~/ihealth-work`）：
+  - 🐞 线上bug(fix) → `~/ihealth-work/fix_<id6>/`
+  - ✨ 新需求(feature) → `~/ihealth-work/feature_<id6>/`
+  - 🔧 开发中(indev) → 各 repo 当前分支原地改，不建目录
+- **每个 repo 用 git worktree**（本地有源，秒建省盘、共享 repo 纹丝不动）或 clone（本地无源），切 `fix_/feat_<id6>` 分支。→ 多任务/多人并存不互相污染；worktree 模式下不再需要脏工作区 stash/carry。
+- **认领卡「🏷 类型」三选一**：显式选 fix/feature/indev，与「SOP 编排/直接修」正交（kind 定目录，sop 定编排）。缺省由 base/sop 派生。
+- **可搜记录 + 一键打开**：认领时 `saveWorkTask` 落一条 目录↔分支↔干啥↔来源(tapd/perf)↔TAPD链接 记录 → `/worktasks`（`/wt`）交互卡列/搜（标题/分支/repo/目录），每条带 **[📂 打开]**（在该任务 worktree 目录开新 tab 并设 active；多 repo 开主 repo；目录被清理会提示）+ [🔗 TAPD]。→ 直接「打开历史需求对应的目录」继续干。
+
+### repo 源怎么维护
+本地有源 → worktree（靠 dir-index 后台发现全机 git 仓库，零维护）；本地无源 → clone（暂需 gitUrl，未映射则清晰报错）。团队化再叠「按 org 约定拼 gitUrl」（待办 B4）。
+
+### perf 也接了目录隔离
+perf 建议卡 [📋 认领并建需求]：建 TAPD 需求（创建人+开发负责人=你，挂「后端服务」项目「数据库优化」分类）→ 用 story 后6位建 `fix_<story6>/` worktree 目录开修 → 落 worktask 记录。「perf→需求→目录→修」闭环。详见 `docs/perf-integration.md` §4 P2。
+
+### 底层
+`host-mac/task-workspace.ts`（`prepareTaskWorkspace`/`taskWorkroot`/`taskDirName`/`taskBranchName`）；`orchestrator/worktasks/`（save/list/get/search）；`orchestrator/tapd/claims.ts`（`TapdClaim.kind`/`resolveClaimKind`/`TAPD_KIND_LABEL`）；`orchestrator/perf/tapd-story.ts`（`createPerfStory`）；`worktasksCard` + handlers `finalizeTapdClaim`/`tapd-cycle-kind`/`perf-claim-story`/`worktask-open` + 助手 `openTaskWorktreeTab`。env：`TASK_WORKROOT` / `PERF_TAPD_WORKSPACE_ID` / `PERF_TAPD_CATEGORY_ID`。
 
 ---
 

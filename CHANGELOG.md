@@ -6,6 +6,23 @@
 
 ## [未发布]
 
+### 2026-07-17
+
+**新增**
+- **任务工作目录 Phase B2**：
+  - **perf「认领并建需求」接目录隔离**：建完 TAPD 需求后，用 **story 后6位**建 `~/ihealth-work/fix_<story6>/` worktree 隔离目录（dir↔需求对齐）→ 开新 tab 在里面修（含需求链接、`fix_<story6>` 分支）→ 落 worktask 记录（source=perf）；本地无该 repo 源则回退 active tab。至此「perf→建需求→建目录→修」闭环打通。（`openTaskWorktreeTab` 助手 + `perf-claim-story`）
+  - **TAPD 认领卡加「🏷 类型」三选一**：显式 fix(线上bug)/feature(新需求)/indev(开发中·原地改)，与 sop（SOP编排/直接修）**正交**；kind 决定目录策略（worktree 隔离 vs 原地），切类型时 base/sop 取合理默认、仍可微调。卡上显示将建的目录路径。派生兼容旧 claim（`resolveClaimKind`：base=current→indev，否则 sop?feature:fix）。（`TapdClaim.kind` + `tapd-cycle-kind` + `TAPD_KIND_LABEL`）
+- **任务工作目录接线（Phase B1+B3）**：TAPD 认领现在真正用 `prepareTaskWorkspace` 建**独立隔离目录** —— 线上bug→`~/ihealth-work/fix_<id6>/`、新需求→`feature_<id6>/`，每个选中 repo 在目录下用 **git worktree**（本地有源，秒建省盘，共享 repo 纹丝不动）拉进来并切 `fix_/feat_<id6>` 分支；「当前分支直接改」= indev 保持原地改（分支报告准确、不建目录）。认领后 `saveWorkTask` 落**目录↔分支↔干啥**记录，结果卡显示 `📁 <taskDir>`。（`finalizeTapdClaim` 改用 `prepareTaskWorkspace` + `saveWorkTask`）
+- **`/worktasks`（别名 `/wt`）命令 + 卡片「📂 打开」**：列/搜任务工作目录（按 标题/分支/repo/目录 关键词）→ 渲染成**交互卡**，每条带 **[📂 打开]**（`worktask-open`：在该任务的 worktree 目录开新 tab 并设为 active，多 repo 开主 repo 并列出其余；目录已被清理则提示）+ [🔗 TAPD] 链接。这样能直接「打开历史需求对应的目录」继续干。（`worktasksCard` + `worktask-open` handler + `getWorkTask`）
+  - repo 源策略：本地有源→worktree（零维护，靠 dir-index 发现）；本地无源→clone（暂需 gitUrl，未映射则清晰报错）。团队化再叠「按 org 约定拼 gitUrl」。
+  - ⏳ 未真机跑过一次完整认领（会开 tab + 建 worktree），待真实 TAPD 缺陷/需求验证；`/worktasks` 只读路径可即时验。
+- **perf 建议「📋 认领并建需求」**：性能建议卡新增独立按钮，认领时先在 TAPD 建一条正式需求（**创建人 + 开发负责人 = 认领者**），再把上下文（含需求链接）派发到 active tab 修。走 Node 侧 `TapdMcpClient.callTool('tapd-create-story-or-task')`（复用 TAPD MCP url/token，不经 tab 里的 claude）；幂等（建过复用 `item.tapdStoryId` 不重建）；失败回执飞书、不阻塞（可退回「🔧 认领修复」不建需求）。目标可 env 覆盖（`PERF_TAPD_WORKSPACE_ID` / `PERF_TAPD_CATEGORY_ID` / `PERF_TAPD_CATEGORY`）。（`orchestrator/perf/tapd-story.ts` + `perfItemCard` 按钮 + handler `perf-claim-story`）
+  - MCP 实测确认（workspace 36983849）：**「后端服务」是项目名本身**（非分类）；默认落「**数据库优化**」分类(id `1136983849001000190`，最契合 perf 慢查询/索引)；**priority_label 候选值是英文** High/Middle/Low（已改映射 P0→High/P1→Middle/P2→Low）；`需求类别` 仅 需求(`…045`)；`郑纪泉` 已确认是该项目成员（creator/developer 可用）。
+  - ⏳ 尚未真机建过一条（创建是对外写操作，待用户授权后跑一条测试需求验证返回信封 storyId 抽取 + 分类/优先级落对）。
+
+**文档**
+- **Codex 对接方案** `docs/codex-integration.md`（设计草案，未动手）：把「支持 Codex」拆成两条正交轴——**agent 种类**（codex vs claude，便宜，抽 `AgentAdapter`）× **宿主形态**（Terminal.app TUI vs Electron GUI，昂贵，抽 `HostBackend`）。结论：**Codex CLI = 一等公民**（复用 host 层，~1-2 天，核心是 `mchat-codex-notify` 回传钩子对标 Stop hook + config.toml `notify`）；**Codex 桌面版 = 桥接到 CLI**（同账号，不驱动 GUI）+ 可选只读回传桥；完整 GUI 驱动记档不投机做。含 Claude 专属耦合点清单（status/restart/guidance/slash 白名单）+ 分阶段计划 C0-C4 + 待验证项。
+
 ### 2026-07-15
 
 **新增**

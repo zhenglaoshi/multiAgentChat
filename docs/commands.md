@@ -141,6 +141,7 @@ Framework 会派任务到 active tab 的主 claude，让它生成结构化 JSON�
 /new [path]             # Mac 上开新 tab（不带路径弹选目录卡）
 /watch on / off         # 本地任务监听（非飞书发起的 shell 活动也推飞书）
 /recall <关键词>         # 搜 task memory；不带关键词 = 最近 10 条
+/worktasks 或 /wt [关键词] # 任务工作目录卡：列/搜（标题/分支/repo/目录），每条带 [📂 打开] 开历史需求目录 + [🔗 TAPD]
 /tapd                   # 列指派给我的未结束 TAPD 缺陷/需求（见 tapd.md）
 /report day|week|month|year [--brief]  # 工作总结：日/周=简报md，月/年=PPT(--brief 出简报)
 /help 或 /?             # 帮助
@@ -267,6 +268,9 @@ agent help                          # 完整命令清单
 | `AGENT_TASK_ID` | SOP 主 claude 可 export 这个避免每条 stage 命令都传 `--task-id` |
 | `LARK_APP_ID` | .env 里的飞书 App ID |
 | `LARK_APP_SECRET` | .env 里的飞书 App Secret |
+| `TASK_WORKROOT` | 任务工作目录根（默认 `~/ihealth-work`）；TAPD/perf 认领建 `fix_/feature_<id6>/` worktree 隔离目录用（见 features.md §24） |
+| `PERF_TAPD_WORKSPACE_ID` | perf「认领并建需求」建到哪个 TAPD 项目（默认 `36983849`「后端服务」） |
+| `PERF_TAPD_CATEGORY_ID` | 建的需求挂哪个分类（默认 `1136983849001000190`「数据库优化」）；留空=未分类 |
 
 ---
 

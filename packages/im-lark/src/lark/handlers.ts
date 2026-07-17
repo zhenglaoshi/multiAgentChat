@@ -52,7 +52,8 @@ import { patchCard, sendCardReturnId, sendImage } from './api.js';
 import { ackCard, askCard, batchProgressCard, browseCard, careyclawKeyCard, careyclawKeyFormCard, chainProgressCard, connectConfirmCard, connectFormCard, connectStatusCard, planCard, progressCard, receiptCard, tapdClaimCard, type BatchTaskItem, type ChainStepItem } from './cards.js';
 import { getCareyclawKeyStatus, setCareyclawKey } from 'multiagent-orchestrator';
 import { generatePlan, getPlan } from 'multiagent-orchestrator';
-import { getPerfItem, markPerfSnoozed, markPerfIgnoredForever } from 'multiagent-orchestrator';
+import { getPerfItem, savePerfItem, markPerfSnoozed, markPerfIgnoredForever, createPerfStory } from 'multiagent-orchestrator';
+import type { PerfItem } from 'multiagent-orchestrator';
 import { integrationStatuses, getIntegration, upsertEnvKeys, setIntegrationDisabled, installIntegrationSkills } from 'multiagent-orchestrator';
 import { utimesSync } from 'node:fs';
 
@@ -1147,16 +1148,29 @@ async function finalizeTapdClaim(
   const { ackCard } = await import('./cards.js');
   try {
     const baseMode = claim.base ?? 'head';
-    const results = [];
-    for (const repo of claim.selectedRepos) {
-      if (baseMode === 'current') {
-        // 不建新分支，在当前分支直接改
-        results.push(await hm.useCurrentBranch(repo));
-      } else {
-        // 从 HEAD / master / develop 切 fix_/feat_
-        const baseRef = baseMode === 'head' ? undefined : baseMode;
-        results.push(await hm.prepareBugBranch(repo, claim.branch, strategy as import('multiagent-host-mac').DirtyStrategy, baseRef));
-      }
+    const id6 = claim.id.slice(-6);
+    // kind：显式 claim.kind 优先（认领卡「🏷 类型」选），否则由 base/sop 派生（兼容旧 claim）
+    const kind: import('multiagent-host-mac').TaskKind = orch.resolveClaimKind(claim);
+    let results: { ok: boolean; repo: string; cwd: string; branch: string; action: string; reason?: string; note?: string }[] = [];
+    let taskDir: string | undefined;
+    if (kind === 'indev') {
+      // 开发中的 bug：在各 repo 当前分支原地改（分支报告准确，不建目录）
+      for (const repo of claim.selectedRepos) results.push(await hm.useCurrentBranch(repo));
+    } else {
+      // 线上bug/新需求：在 ~/ihealth-work/<fix|feature>_<id6>/ 下为每个 repo 建 worktree（本地有源）/ clone（无源）
+      const base = baseMode === 'head' ? undefined : baseMode; // master/develop 从主干切；head 用 HEAD
+      const repoPlans = claim.selectedRepos.map((p) => ({ name: p.split('/').filter(Boolean).pop() || p, sourcePath: p }));
+      const ws = await hm.prepareTaskWorkspace({ kind, id6, repos: repoPlans, ...(base ? { base } : {}) });
+      taskDir = ws.taskDir;
+      results = ws.repos.map((r, i) => ({
+        ok: r.ok,
+        repo: repoPlans[i]?.sourcePath ?? r.name,   // 源 repo 路径
+        cwd: r.cwd,                                  // worktree 工作目录（cwd!==repo → prompt 标 worktree）
+        branch: ws.branch,
+        action: r.ok ? 'created' : 'failed',
+        ...(r.via === 'clone' ? { note: 'clone' } : {}),
+        ...(r.reason ? { reason: r.reason } : {}),
+      }));
     }
     const okRepos = results.filter((r) => r.ok);
     if (okRepos.length === 0) {
@@ -1206,13 +1220,23 @@ async function finalizeTapdClaim(
     claim.stage = 'fixing'; claim.chatId = chatId; // A 生命周期
     // B：记住该项目的 repo/基准/模式，下次认领自动预选
     await orch.saveRepoMap(claim.workspaceId, { repos: claim.selectedRepos, base: claim.base, sop: claim.sop });
+    // 落 worktask 记录（目录↔任务↔分支，/worktasks 可搜）
+    await orch.saveWorkTask({
+      id: claim.id, id6, kind, title: claim.title,
+      ...(taskDir ? { taskDir } : {}),
+      branch: kind === 'indev' ? (okRepos[0]?.branch ?? claim.branch) : claim.branch,
+      repos: okRepos.map((r) => r.cwd),
+      base: claim.base, source: 'tapd', tapdUrl: claim.url,
+      createdAt: Date.now(),
+    }).catch((e) => logger.warn('saveWorkTask failed', { err: (e as Error).message }));
     const chat = await loadChat(chatId); chat.activeTty = tty; chat.lastActiveAt = Date.now(); await saveChat(chat);
     const lines = results.map((r) =>
       r.ok
         ? `✅ ${r.repo.split('/').pop()} → ${r.branch}（${r.action}）${r.note ? ` · ${r.note}` : ''}`
         : `❌ ${r.repo.split('/').pop()}：${r.reason ?? r.note ?? '失败'}`,
     );
-    claim.stageNote = `${modeNote}\n${lines.join('\n')}`;
+    const dirNote = taskDir ? `📁 ${taskDir}\n` : '';
+    claim.stageNote = `${modeNote}\n${dirNote}${lines.join('\n')}`;
     // A 生命周期卡：存 messageId 供后续 agent tapd stage patch
     const mid = await sendCardReturnId(client, chatId, tapdClaimCard(claim));
     if (mid) claim.cardMessageId = mid;
@@ -1220,6 +1244,57 @@ async function finalizeTapdClaim(
   } catch (e) {
     await sendTextMessage(client, chatId, `❌ TAPD 开工失败：${(e as Error).message}`).catch(() => {});
   }
+}
+
+/** 拼 perf 认领注入 tab 的 prompt；tapdUrl 有则附上已建的 TAPD 需求链接。 */
+function buildPerfClaimPrompt(item: PerfItem, tapdUrl?: string): string {
+  const parts: string[] = [
+    `【performance 性能建议 · ${item.priority}】${item.title}`,
+  ];
+  if (tapdUrl) parts.push(`已建 TAPD 需求：${tapdUrl}（修完在该需求下用 MCP 评论回填 commit/PR）`);
+  if (item.localPath) parts.push(`仓库路径：${item.localPath}（先 cd 过去）`);
+  else if (item.repo) parts.push(`仓库：${item.repo}`);
+  if (item.database || item.collection) parts.push(`命名空间：${[item.database, item.collection].filter(Boolean).join('.')}`);
+  if (item.rootCause) parts.push(`根因：${item.rootCause}`);
+  if (item.rationale) parts.push(`说明：${item.rationale}`);
+  if (item.indexCommand) parts.push(`建议索引：${item.indexCommand}`);
+  if (item.codeFile) parts.push(`涉及文件：${item.codeFile}${item.codePermalink ? `（${item.codePermalink}）` : ''}`);
+  if (item.codeChange) parts.push(`建议改动：${item.codeChange}`);
+  parts.push('请定位并修复该性能问题；**验证只用本地/测试环境，严禁连线上库/生产**。改完把方案+改动摘要用 `agent lark send-text` 回我；涉及加索引/改库先 `agent request-approval`。');
+  return parts.join('\n');
+}
+
+/**
+ * 为单个任务准备 worktree 隔离目录（~/ihealth-work/<kind>_<id6>/<repo>/）并开新 tab 跑 prompt。
+ * localPath 缺失或建目录失败 → 返回 { isolated:false }，调用方回退 active tab。落 worktask 记录。
+ */
+async function openTaskWorktreeTab(opts: {
+  kind: 'fix' | 'feature'; id6: string; localPath?: string; prompt: string;
+  chatId: string; title: string; id: string; source: 'perf' | 'tapd'; tapdUrl?: string;
+}): Promise<{ isolated: boolean; tty?: string; taskDir?: string }> {
+  if (!opts.localPath) return { isolated: false };
+  const hm = await import('multiagent-host-mac');
+  const orch = await import('multiagent-orchestrator');
+  const name = opts.localPath.split('/').filter(Boolean).pop() || opts.localPath;
+  const ws = await hm.prepareTaskWorkspace({ kind: opts.kind, id6: opts.id6, repos: [{ name, sourcePath: opts.localPath }] });
+  const ok = ws.repos.find((r) => r.ok);
+  if (!ok) return { isolated: false };
+  await orch.saveWorkTask({
+    id: opts.id, id6: opts.id6, kind: opts.kind, title: opts.title,
+    ...(ws.taskDir ? { taskDir: ws.taskDir } : {}),
+    branch: ws.branch, repos: [ok.cwd], source: opts.source,
+    ...(opts.tapdUrl ? { tapdUrl: opts.tapdUrl } : {}),
+    createdAt: Date.now(),
+  }).catch((e) => logger.warn('saveWorkTask (perf) failed', { err: (e as Error).message }));
+  const tty = await newTab({ cwd: ok.cwd });
+  await new Promise((r) => setTimeout(r, 1500));
+  await hm.launchClaudeInTab(tty, { continueSession: false });
+  await new Promise((r) => setTimeout(r, 1500));
+  await send(tty, opts.prompt);
+  await new Promise((r) => setTimeout(r, 600));
+  await forceEnter(tty).catch(() => {});
+  const chat = await loadChat(opts.chatId); chat.activeTty = tty; chat.lastActiveAt = Date.now(); await saveChat(chat);
+  return { isolated: true, tty, ...(ws.taskDir ? { taskDir: ws.taskDir } : {}) };
 }
 
 async function handleCardAction(
@@ -1391,19 +1466,7 @@ async function handleCardAction(
     const item = getPerfItem(id);
     if (!item) return { toast: { type: 'error', content: '该建议已过期（dev 重启会清空缓存），等下一轮 watcher 重推' } };
     const ctx = { messageId: 'perf-claim', chatId };
-    const parts: string[] = [
-      `【performance 性能建议 · ${item.priority}】${item.title}`,
-    ];
-    if (item.localPath) parts.push(`仓库路径：${item.localPath}（先 cd 过去）`);
-    else if (item.repo) parts.push(`仓库：${item.repo}`);
-    if (item.database || item.collection) parts.push(`命名空间：${[item.database, item.collection].filter(Boolean).join('.')}`);
-    if (item.rootCause) parts.push(`根因：${item.rootCause}`);
-    if (item.rationale) parts.push(`说明：${item.rationale}`);
-    if (item.indexCommand) parts.push(`建议索引：${item.indexCommand}`);
-    if (item.codeFile) parts.push(`涉及文件：${item.codeFile}${item.codePermalink ? `（${item.codePermalink}）` : ''}`);
-    if (item.codeChange) parts.push(`建议改动：${item.codeChange}`);
-    parts.push('请定位并修复该性能问题；**验证只用本地/测试环境，严禁连线上库/生产**。改完把方案+改动摘要用 `agent lark send-text` 回我；涉及加索引/改库先 `agent request-approval`。');
-    const prompt = parts.join('\n');
+    const prompt = buildPerfClaimPrompt(item);
     (async () => {
       try {
         await sendToActiveTab(client, ctx, prompt);
@@ -1413,6 +1476,53 @@ async function handleCardAction(
       }
     })();
     return { toast: { type: 'success', content: '已认领，派发中' } };
+  }
+
+  // 认领并创建需求：建一条 TAPD 需求（创建人+开发负责人=认领者，挂后端服务分类）→ 再派发修复
+  if (action === 'perf-claim-story') {
+    const id = value['id'] as string | undefined;
+    if (!id) return { toast: { type: 'error', content: '缺 id' } };
+    const item = getPerfItem(id);
+    if (!item) return { toast: { type: 'error', content: '该建议已过期（dev 重启会清空缓存），等下一轮 watcher 重推' } };
+    const ctx = { messageId: 'perf-claim-story', chatId };
+    (async () => {
+      try {
+        // 幂等：已建过就复用，不重建
+        let storyUrl = item.tapdStoryUrl;
+        if (item.tapdStoryId && storyUrl) {
+          void sendText(client, chatId, `📋 该建议已建过 TAPD 需求：${storyUrl}（复用，不重建）`);
+        } else {
+          const r = await createPerfStory(item);
+          if (!r.ok) {
+            void sendText(client, chatId, `❌ 建 TAPD 需求失败：${r.error}\n（可先「🔧 认领修复」不建需求；或等 MCP 网关恢复重试）`);
+            return;
+          }
+          storyUrl = r.url;
+          item.tapdStoryUrl = r.url;
+          if (r.storyId) item.tapdStoryId = r.storyId;
+          savePerfItem(item); // 回填缓存，防重建
+          void sendText(client, chatId, `📋 已建 TAPD 需求（创建人+开发负责人=你）：${r.url}`);
+        }
+        // 建完 → 用 story 后6位建隔离目录开 tab 修（本地有源）；无源回退 active tab
+        const prompt = buildPerfClaimPrompt(item, storyUrl);
+        const id6 = (item.tapdStoryId ?? item.id).slice(-6);
+        const wt = await openTaskWorktreeTab({
+          kind: 'fix', id6,
+          ...(item.localPath ? { localPath: item.localPath } : {}),
+          prompt, chatId, title: item.title, id: item.tapdStoryId ?? item.id, source: 'perf',
+          ...(storyUrl ? { tapdUrl: storyUrl } : {}),
+        });
+        if (wt.isolated) {
+          void sendText(client, chatId, `📁 已建隔离目录：${wt.taskDir}\n🔧 已在新 tab ${wt.tty} 开修「${item.title.slice(0, 40)}」（含需求链接，fix_${id6} 分支）`);
+        } else {
+          await sendToActiveTab(client, ctx, prompt);
+          void sendText(client, chatId, `🔧 已认领「${item.title.slice(0, 40)}」（本地无该 repo 源，未建隔离目录）→ 上下文已发 active tab（没设先 /use @xxx）`);
+        }
+      } catch (e) {
+        void sendText(client, chatId, `❌ 认领并建需求失败：${(e as Error).message}`);
+      }
+    })();
+    return { toast: { type: 'success', content: '建需求 + 派发中…' } };
   }
 
   if (action === 'perf-snooze') {
@@ -1458,6 +1568,31 @@ async function handleCardAction(
     return {
       toast: { type: 'success', content: `★ 切到 ${tab.tty}` },
     };
+  }
+
+  if (action === 'worktask-open') {
+    const id = value['id'] as string | undefined;
+    if (!id) return { toast: { type: 'error', content: '缺 id' } };
+    const orch = await import('multiagent-orchestrator');
+    const wt = await orch.getWorkTask(id);
+    if (!wt || wt.repos.length === 0) return { toast: { type: 'error', content: '记录已失效或无目录' } };
+    const cwd = wt.repos[0]!;
+    if (!existsSync(cwd)) {
+      void sendText(client, chatId, `⚠️ 目录已不存在（可能被清理/删除）：\n\`${cwd}\`\n分支 \`${wt.branch}\`，需要的话重新认领会重建。`);
+      return { toast: { type: 'error', content: '目录已不存在' } };
+    }
+    try {
+      const tty = await newTab({ cwd });
+      const chat = await loadChat(chatId); chat.activeTty = tty; chat.lastActiveAt = Date.now(); await saveChat(chat);
+      void recordCwd(cwd);
+      const extra = wt.repos.length > 1
+        ? `\n<font color='grey'>另 ${wt.repos.length - 1} 个 repo：${wt.repos.slice(1).map((r) => r.split('/').pop()).join('、')}</font>`
+        : '';
+      void sendText(client, chatId, `📂 已在新 tab \`${tty}\` 打开「${wt.title.slice(0, 40)}」\ncwd: \`${cwd}\`　·　分支 \`${wt.branch}\`　·　已设为 active${extra}`);
+      return { toast: { type: 'success', content: `📂 打开 ${tty}` } };
+    } catch (e) {
+      return { toast: { type: 'error', content: (e as Error).message } };
+    }
   }
 
   if (action === 'create-tab') {
@@ -2014,6 +2149,26 @@ end run
     const claim = await orch.loadClaim(id);
     if (!claim) return { toast: { type: 'error', content: '认领已失效' } };
     claim.sop = !claim.sop;
+    await orch.saveClaim(claim);
+    const candidates = await tapdRepoCandidates(hm);
+    return { card: tapdRepoPickerCard(claim, candidates, process.env['HOME'] ?? '') };
+  }
+
+  if (action === 'tapd-cycle-kind') {
+    const id = value['id'] as string | undefined;
+    if (!id) return { toast: { type: 'error', content: '缺 id' } };
+    const orch = await import('multiagent-orchestrator');
+    const hm = await import('multiagent-host-mac');
+    const { tapdRepoPickerCard } = await import('./cards.js');
+    const claim = await orch.loadClaim(id);
+    if (!claim) return { toast: { type: 'error', content: '认领已失效' } };
+    const order = ['fix', 'feature', 'indev'] as const;
+    const cur = order.indexOf(orch.resolveClaimKind(claim));
+    const next = order[(cur + 1) % order.length]!;
+    claim.kind = next;
+    // 让 base/sop 跟随 kind 取合理默认（sop 仍可用「切成」按钮微调，两者正交）
+    if (next === 'indev') { claim.base = 'current'; claim.sop = false; }
+    else { if (claim.base === 'current') claim.base = 'head'; claim.sop = next === 'feature'; }
     await orch.saveClaim(claim);
     const candidates = await tapdRepoCandidates(hm);
     return { card: tapdRepoPickerCard(claim, candidates, process.env['HOME'] ?? '') };

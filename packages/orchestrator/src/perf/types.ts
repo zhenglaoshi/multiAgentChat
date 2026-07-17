@@ -24,6 +24,8 @@ export interface PerfItem {
   createdAt?: number;
   windowDay?: string;
   updatedKey?: string;        // 变更检测用（status + windowDay），变了会再通知一次
+  tapdStoryId?: string;       // 「认领并建需求」建成后回填的 TAPD 需求 id（幂等，防重建）
+  tapdStoryUrl?: string;      // 对应 TAPD 需求详情链接
 }
 
 export interface PerfConfig {

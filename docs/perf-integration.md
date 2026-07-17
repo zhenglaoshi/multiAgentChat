@@ -49,7 +49,9 @@ perf-api  GET /api/recommendations?status=pending   (Basic auth 轮询, N min)
 ## 4. 分阶段计划
 
 - **P1 · 只读监听**：`orchestrator/perf/`（client + config + query）+ `im-lark/monitor/perf-watcher.ts` 轮询 pending recommendation → 推飞书卡（含根因/优先级/repo）。去重、按 P0/P1 与 target 过滤。不回写。
-- **P2 · 认领→开 tab 修**：认领卡 → repo 映射 → 开 tab 注入上下文（根因+索引命令+文件）。复用 TAPD 认领流。
+- **P2 · 认领→开 tab 修**：认领卡两个按钮 ——
+  - **[🔧 认领修复]**：repo 映射 → 上下文（根因+索引命令+文件）发到 active tab 直接修。
+  - **[📋 认领并建需求]**（2026-07 加）：先在 TAPD 建一条正式需求（**创建人+开发负责人=认领者**，挂 workspace `36983849`「后端服务」项目 / 默认「数据库优化」分类，Node 侧 `TapdMcpClient.callTool('tapd-create-story-or-task')`）→ 用 **story 后6位**建 `~/ihealth-work/fix_<story6>/` **worktree 隔离目录** → 开新 tab 在里面修（含需求链接）→ `saveWorkTask` 落记录（`/worktasks` 可 [📂 打开]）。本地无该 repo 源则回退 active tab。这样 perf 工作进了团队 PM 系统 + 目录隔离，「perf→建需求→建目录→修」闭环。配置：`PERF_TAPD_WORKSPACE_ID` / `PERF_TAPD_CATEGORY_ID`（默认数据库优化 `1136983849001000190`）。实现 `orchestrator/perf/tapd-story.ts`。
 - **P3 · 回写 + 校验闭环**：修完（审批后）`PATCH implemented + gitCommitUrl`；可选 `verify` 拉前后 p99 → 飞书回执"实测优化 X%"。企微同 TAPD 降级支持。
 
 ## 5. 待拍板 / 需提供
