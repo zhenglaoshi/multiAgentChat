@@ -54,7 +54,7 @@ import {
 } from 'multiagent-im-lark';
 import { sanitizeTerminalOutput } from 'multiagent-im-lark';
 import { buildImagePromptPrefix, buildImageOnlyPrompt } from 'multiagent-im-lark';
-import { isIntegrationDisabled } from 'multiagent-orchestrator';
+import { isIntegrationDisabled, INTEGRATIONS, ensureIntegrationSkills } from 'multiagent-orchestrator';
 
 /**
  * Upsert Claude Code hooks 到 ~/.claude/settings.json。
@@ -1294,6 +1294,8 @@ async function main() {
   startPerfWatcher(lark.client);
   if (!isIntegrationDisabled('report')) startReportScheduler(lark.client);
   await ensureSkillInstalled();
+  // skill 型对接（careyclaw 等）：缺失则幂等自动安装官方技能（失败静默，不阻塞启动）
+  for (const it of INTEGRATIONS) if (it.skillType) void ensureIntegrationSkills(it);
   await installClaudeCodeHooks();
   await ensureAgentOnPath();
 

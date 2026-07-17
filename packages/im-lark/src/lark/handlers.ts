@@ -51,7 +51,7 @@ import { patchCard, sendCardReturnId, sendImage } from './api.js';
 import { ackCard, askCard, batchProgressCard, browseCard, chainProgressCard, connectConfirmCard, connectFormCard, connectStatusCard, planCard, progressCard, receiptCard, tapdClaimCard, type BatchTaskItem, type ChainStepItem } from './cards.js';
 import { generatePlan, getPlan } from 'multiagent-orchestrator';
 import { getPerfItem, markPerfSnoozed, markPerfIgnoredForever } from 'multiagent-orchestrator';
-import { integrationStatuses, getIntegration, upsertEnvKeys, setIntegrationDisabled } from 'multiagent-orchestrator';
+import { integrationStatuses, getIntegration, upsertEnvKeys, setIntegrationDisabled, installIntegrationSkills } from 'multiagent-orchestrator';
 import { utimesSync } from 'node:fs';
 
 // /connect：某对接提交的配置值暂存（确认后才写 .env）。ephemeral。
@@ -1265,6 +1265,22 @@ async function handleCardAction(
     const key = value['key'] as string | undefined;
     const it = key ? getIntegration(key) : undefined;
     if (!it) return { toast: { type: 'error', content: '未知对接' } };
+    // skill 型：下载安装官方 Claude Code 技能，不填 env。
+    if (it.skillType) {
+      (async () => {
+        try {
+          const r = await installIntegrationSkills(it);
+          if (r.ok) {
+            void sendText(client, chatId, `📥 ${it.name} 技能已安装：${r.installed.join(' + ')}\n用法：飞书直接说「careyclaw 有没有查XX的接口 / 这个接口怎么调」检索试调，或「部署应用到 careyclaw 测试/生产」发布。首次会给你一个浏览器授权链接（点确认即可，无需填密钥）。`);
+          } else {
+            void sendText(client, chatId, `❌ ${it.name} 技能安装失败：${r.failed.join(', ')}（检查能否访问 bot.ihealthcn.com）`);
+          }
+        } catch (e) {
+          void sendText(client, chatId, `❌ 安装失败：${(e as Error).message}`);
+        }
+      })();
+      return { toast: { type: 'info', content: '安装技能中…' } };
+    }
     const form = connectFormCard(it);
     if (form) {
       void sendCard(client, chatId, form);

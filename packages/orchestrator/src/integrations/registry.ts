@@ -7,6 +7,12 @@ export interface IntegrationField {
   fixedValue?: string;    // 开关型（如 KNOWLEDGE_EXTRACT_ENABLED=1）：对接即写死此值，不需输入
 }
 
+/** skill 型对接需要安装的一个 Claude Code 技能。 */
+export interface IntegrationSkill {
+  name: string;   // 技能目录名（~/.claude/skills/<name>/SKILL.md）
+  url: string;    // 下载源
+}
+
 export interface Integration {
   key: string;
   name: string;
@@ -17,6 +23,9 @@ export interface Integration {
   anyOf?: boolean;
   /** 核心对接（飞书）不可"取消"，仅展示。 */
   core?: boolean;
+  /** skill 型对接：对接=装 Claude Code 技能（无 env / 无密钥；技能自带浏览器授权）。 */
+  skillType?: boolean;
+  skills?: IntegrationSkill[];
 }
 
 /** 本项目所有可选对接。状态由 .env 里对应 env 是否有值判定。 */
@@ -67,6 +76,15 @@ export const INTEGRATIONS: Integration[] = [
     key: 'web', name: 'Web 面板', group: '其他',
     desc: '内置 Web Dashboard',
     fields: [{ env: 'WEB_DASHBOARD_TOKEN', label: '访问 Token', secret: true }],
+  },
+  {
+    key: 'careyclaw', name: 'CareyClaw 平台(龙虾)', group: '其他',
+    desc: '检索/试调平台业务 API + 打包发布应用（装官方 Claude Code 技能，浏览器授权，无需密钥）',
+    fields: [], skillType: true,
+    skills: [
+      { name: 'careyclaw-apis', url: 'https://bot.ihealthcn.com/api/skills/cli/careyclaw-apis.md' },
+      { name: 'careyclaw-deploy', url: 'https://bot.ihealthcn.com/api/skills/cli/careyclaw-deploy.md' },
+    ],
   },
   {
     key: 'report', name: '定时工作报告', group: '其他', anyOf: true,

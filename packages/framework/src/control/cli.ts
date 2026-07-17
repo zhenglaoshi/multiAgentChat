@@ -1501,6 +1501,15 @@ async function cmdConnect(flags: Flags): Promise<void> {
 
   const it = getIntegration(key);
   if (!it) die(`未知对接：${key}（可选：${INTEGRATIONS.map((i) => i.key).join(' / ')}）`);
+  // skill 型：下载安装官方技能，不填 env
+  if (it.skillType) {
+    const { installIntegrationSkills } = await import('multiagent-orchestrator');
+    stderr.write(`安装「${it.name}」技能中…\n`);
+    const r = await installIntegrationSkills(it);
+    if (r.ok) stdout.write(`✓ 已安装技能：${r.installed.join(' + ')}\n  用法：在 claude/codex 里说「有没有查XX的接口」检索、「部署应用」发布（首次浏览器授权）。\n`);
+    else die(`技能安装失败：${r.failed.join(', ')}`);
+    return;
+  }
   const kv: Record<string, string> = {};
   for (const f of it.fields) if (f.fixedValue) kv[f.env] = f.fixedValue;
   const inputs = it.fields.filter((f) => !f.fixedValue);

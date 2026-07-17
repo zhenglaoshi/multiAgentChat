@@ -1,6 +1,7 @@
 import { readFile, writeFile, rename } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { INTEGRATIONS, type Integration } from './registry.js';
+import { skillsInstalled } from './skills.js';
 
 const ENV_PATH = resolve('./.env');
 
@@ -70,21 +71,26 @@ export interface IntegrationStatus {
   name: string;
   group: Integration['group'];
   desc: string;
-  connected: boolean;  // 配置齐全（env 都有值）
+  connected: boolean;  // 配置齐全（env 都有值）/ skill 型=技能已装
   disabled: boolean;   // 配置齐全但被手动停用（软关闭）
   core: boolean;
-  missing: string[];   // 缺哪些 env
+  skill: boolean;      // skill 型对接（装技能而非填 env，无停用）
+  missing: string[];   // 缺哪些 env / 技能
 }
 
-/** 读 .env 判定每个对接：配置齐全否 + 是否被停用。 */
+/** 读 .env / 技能安装状态 判定每个对接。skill 型看技能装没装；env 型看 .env。 */
 export async function integrationStatuses(): Promise<IntegrationStatus[]> {
   const env = await readEnvKeys();
   const has = (k: string) => !!(env[k] && env[k]!.trim());
   const disabledSet = new Set(parseList(env[DISABLED_ENV_KEY]));
-  return INTEGRATIONS.map((it) => {
+  return Promise.all(INTEGRATIONS.map(async (it) => {
+    if (it.skillType) {
+      const connected = await skillsInstalled(it);
+      return { key: it.key, name: it.name, group: it.group, desc: it.desc, connected, disabled: false, core: false, skill: true, missing: connected ? [] : (it.skills ?? []).map((s) => s.name) };
+    }
     const present = it.fields.filter((f) => has(f.env)).map((f) => f.env);
     const connected = it.anyOf ? present.length > 0 : present.length === it.fields.length;
     const missing = it.fields.filter((f) => !has(f.env)).map((f) => f.env);
-    return { key: it.key, name: it.name, group: it.group, desc: it.desc, connected, disabled: disabledSet.has(it.key), core: !!it.core, missing };
-  });
+    return { key: it.key, name: it.name, group: it.group, desc: it.desc, connected, disabled: disabledSet.has(it.key), core: !!it.core, skill: false, missing };
+  }));
 }
