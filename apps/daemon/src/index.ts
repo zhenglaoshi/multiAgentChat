@@ -21,6 +21,7 @@ import { startHealthCheck } from 'multiagent-im-lark';
 import { startSystemEventsProbe } from 'multiagent-im-lark';
 import { startTapdWatcher } from 'multiagent-im-lark';
 import { startPerfWatcher } from 'multiagent-im-lark';
+import { startCareyclawKeyReminder } from 'multiagent-im-lark';
 import { startReportScheduler } from 'multiagent-im-lark';
 import { attachWatcherToLark } from 'multiagent-im-lark';
 import { installWsWatchdog } from 'multiagent-im-lark';
@@ -1292,6 +1293,7 @@ async function main() {
       : undefined,
   );
   startPerfWatcher(lark.client);
+  startCareyclawKeyReminder(lark.client);
   if (!isIntegrationDisabled('report')) startReportScheduler(lark.client);
   await ensureSkillInstalled();
   // skill 型对接（careyclaw 等）：缺失则幂等自动安装官方技能（失败静默，不阻塞启动）

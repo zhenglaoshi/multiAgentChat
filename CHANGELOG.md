@@ -9,6 +9,7 @@
 ### 2026-07-15
 
 **新增**
+- **CareyClaw 调试密钥到期提醒 + 飞书更新**：`oct_dev_` 本地调试密钥刷新需短信（无法全自动）→ 折中做半自动：`/careyclaw` 查密钥状态；到期前 ≤2 天（含已过期）watcher 自动推飞书提醒卡（`careyclawKeyReminder`，每日去重）；卡上 [🔄更新密钥] → 飞书原生输入表单贴新密钥+到期日 → 存本项目 `.env`（`CAREYCLAW_DEV_KEY`/`_EXPIRES`）。刷新那步的短信在后台点，新密钥飞书贴回。（`orchestrator/integrations/careyclaw-key.ts`）
 - **CareyClaw 平台(龙虾) 对接**：平台开发者能力 = 两个官方 Claude Code 技能——`careyclaw-apis`（检索业务 API/mock/真实试调/开发者指南）+ `careyclaw-deploy`（打包 zip→OBS→submit/update 发布）；共用浏览器 OAuth 授权，无需 .env 密钥。本项目做「skill 型对接」：daemon 启动幂等自动装这两个技能（缺失才装，同时写 `~/.claude/skills` 和 `~/.agents/skills` 兼容 Claude Code/Codex）；`/connect`/`agent connect` 加 careyclaw 项（状态=技能装没装，[安装] 一键下载）。业务人员飞书说「careyclaw 有没有查XX的接口」/「部署应用」→ 注入 tab → 已装技能的 claude 自动干 → 结果回飞书。（`orchestrator/integrations/skills.ts` + registry skillType）
 - **首启飞书未对接的快速引导**（飞书是引导通道本身，故走本地）：① daemon 启动检测 `LARK_APP_ID/SECRET` 缺失 → 打醒目横幅提示 `./bin/agent connect lark`；② 新增 `agent connect [key]` CLI —— **socket-free、不依赖 daemon**，`agent connect` 列全部对接+状态，`agent connect lark` 交互式 readline 填 App ID/Secret → 写 `.env` → 提示重启。是 `/connect` 飞书卡的本地孪生（bootstrap 用）。
 - **对接管理面板 `/connect`（面向业务人员）**：开发类对接（TAPD/性能平台/知识提炼/企微/Web面板/报告）默认不启，`/connect` 列出所有对接 + 三态（✅已启用/⏸已停用·配置保留/⬜未对接）+ 对应按钮 [对接]/[停用]/[启用]。

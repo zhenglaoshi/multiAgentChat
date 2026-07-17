@@ -2623,3 +2623,55 @@ export function connectConfirmCard(key: string, name: string, lines: string[]) {
     ],
   };
 }
+
+// ==== CareyClaw 调试密钥 到期提醒 / 更新 ====
+
+/** 调试密钥状态卡（到期提醒也复用它）。带 [🔄更新密钥]（弹输入表单）+ [🔗去后台]。 */
+export function careyclawKeyCard(status: { hasKey: boolean; keyMasked?: string; expiresAt?: string; daysLeft?: number }, opts?: { remind?: boolean }) {
+  const expired = status.hasKey && typeof status.daysLeft === 'number' && status.daysLeft < 0;
+  const soon = status.hasKey && typeof status.daysLeft === 'number' && status.daysLeft >= 0 && status.daysLeft <= 2;
+  const template = expired ? 'red' : soon ? 'orange' : 'blue';
+  const title = opts?.remind
+    ? (expired ? '🔑 CareyClaw 调试密钥已过期' : `🔑 CareyClaw 调试密钥 ${status.daysLeft} 天后过期`)
+    : '🔑 CareyClaw 调试密钥';
+
+  const lines: string[] = [];
+  if (!status.hasKey) {
+    lines.push("<font color='grey'>还没设置调试密钥</font>");
+  } else {
+    lines.push(`当前：\`${status.keyMasked}\``);
+    if (status.expiresAt) {
+      const label = expired ? "<font color='red'>已过期</font>" : soon ? `<font color='orange'>剩 ${status.daysLeft} 天</font>` : `剩 ${status.daysLeft} 天`;
+      lines.push(`访问权限到期：${status.expiresAt}　${label}`);
+    }
+  }
+  lines.push('\n<font color=\'grey\'>更新步骤：平台后台「我的资料 → 开发者」点「刷新」走短信验证 → 复制新密钥 → 点下面「更新密钥」贴回。</font>');
+
+  return {
+    config: { wide_screen_mode: true },
+    header: { template, title: { tag: 'plain_text', content: title } },
+    elements: [
+      { tag: 'div', text: { tag: 'lark_md', content: lines.join('\n') } },
+      { tag: 'action', actions: [
+        { tag: 'button', text: { tag: 'plain_text', content: '🔄 更新密钥' }, type: 'primary', value: { action: 'careyclaw-key-update' } },
+        { tag: 'button', text: { tag: 'plain_text', content: '🔗 去后台' }, type: 'default', multi_url: { url: 'https://bot.ihealthcn.com', pc_url: 'https://bot.ihealthcn.com', ios_url: 'https://bot.ihealthcn.com', android_url: 'https://bot.ihealthcn.com' } },
+      ] },
+    ],
+  };
+}
+
+/** 更新调试密钥的输入表单卡（飞书 schema 2.0 form）。提交 → careyclaw-key-submit。 */
+export function careyclawKeyFormCard() {
+  return {
+    schema: '2.0',
+    header: { title: { tag: 'plain_text', content: '🔄 更新 CareyClaw 调试密钥' }, template: 'blue' },
+    body: { elements: [
+      { tag: 'markdown', content: '把后台刷新后拿到的新密钥贴进来（到期日可选，如 2026-08-16，用于到期提醒）。' },
+      { tag: 'form', name: 'ckform', elements: [
+        { tag: 'input', name: 'dev_key', label: { tag: 'plain_text', content: '调试密钥 (oct_dev_...) 🔒' }, placeholder: { tag: 'plain_text', content: 'oct_dev_...' } },
+        { tag: 'input', name: 'expires_at', label: { tag: 'plain_text', content: '访问权限到期日(可选)' }, placeholder: { tag: 'plain_text', content: '2026-08-16' } },
+        { tag: 'button', text: { tag: 'plain_text', content: '✅ 保存' }, type: 'primary', name: 'submit', form_action_type: 'submit', behaviors: [{ type: 'callback', value: { action: 'careyclaw-key-submit' } }] },
+      ] },
+    ] },
+  };
+}

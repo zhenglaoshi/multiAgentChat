@@ -48,7 +48,8 @@ const CLAUDE_TUI_REMINDER = [
   '⚠ 回到飞书 — 飞书看不见你的 TUI 屏幕。**先在 TUI 完整回答用户，然后再** `agent lark send-text "<同样一份摘要>"` 推到飞书（两个渠道并行，不能只推不答）。要用户从选项里选（单/多选）或填文本，**用 `agent lark ask single|multi|input`**（stdout 拿答案 JSON），不要用 AskUserQuestion 或在 TUI 里 wait 键盘。',
 ].join('\n');
 import { patchCard, sendCardReturnId, sendImage } from './api.js';
-import { ackCard, askCard, batchProgressCard, browseCard, chainProgressCard, connectConfirmCard, connectFormCard, connectStatusCard, planCard, progressCard, receiptCard, tapdClaimCard, type BatchTaskItem, type ChainStepItem } from './cards.js';
+import { ackCard, askCard, batchProgressCard, browseCard, careyclawKeyCard, careyclawKeyFormCard, chainProgressCard, connectConfirmCard, connectFormCard, connectStatusCard, planCard, progressCard, receiptCard, tapdClaimCard, type BatchTaskItem, type ChainStepItem } from './cards.js';
+import { getCareyclawKeyStatus, setCareyclawKey } from 'multiagent-orchestrator';
 import { generatePlan, getPlan } from 'multiagent-orchestrator';
 import { getPerfItem, markPerfSnoozed, markPerfIgnoredForever } from 'multiagent-orchestrator';
 import { integrationStatuses, getIntegration, upsertEnvKeys, setIntegrationDisabled, installIntegrationSkills } from 'multiagent-orchestrator';
@@ -1259,6 +1260,27 @@ async function handleCardAction(
       }
     })();
     return { toast: { type: 'success', content: `派发步骤 ${step + 1}` } };
+  }
+
+  if (action === 'careyclaw-key-update') {
+    void sendCard(client, chatId, careyclawKeyFormCard());
+    return { toast: { type: 'info', content: '打开更新表单' } };
+  }
+
+  if (action === 'careyclaw-key-submit') {
+    const fv = (data.action?.form_value ?? {}) as Record<string, unknown>;
+    const key = typeof fv['dev_key'] === 'string' ? (fv['dev_key'] as string).trim() : '';
+    const exp = typeof fv['expires_at'] === 'string' ? (fv['expires_at'] as string).trim() : '';
+    if (!key) return { toast: { type: 'error', content: '没填密钥' } };
+    (async () => {
+      try {
+        await setCareyclawKey(key, exp || undefined);
+        void sendText(client, chatId, `✅ CareyClaw 调试密钥已更新（存到本项目 .env）${exp ? `，到期日 ${exp}` : ''}。开发 careyclaw app 时，在那个项目里说"把 CAREYCLAW_DEV_KEY 写进 .env.local"即可用真实 API 调试。`);
+      } catch (e) {
+        void sendText(client, chatId, `❌ 更新失败：${(e as Error).message}`);
+      }
+    })();
+    return { toast: { type: 'success', content: '已保存' } };
   }
 
   if (action === 'connect-config') {
@@ -2548,6 +2570,17 @@ export function buildEventDispatcher(client: Lark.Client): Lark.EventDispatcher 
               }
             } catch (e) {
               void sendText(client, chat_id, `❌ 报告生成失败：${(e as Error).message}`);
+            }
+          })();
+          return;
+        }
+        if (cmdName === 'careyclaw' || cmdName === '龙虾') {
+          (async () => {
+            try {
+              const st = await getCareyclawKeyStatus();
+              await sendCard(client, chat_id, careyclawKeyCard(st));
+            } catch (e) {
+              void sendText(client, chat_id, `❌ /careyclaw 失败：${(e as Error).message}`);
             }
           })();
           return;

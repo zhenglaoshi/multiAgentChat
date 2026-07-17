@@ -19,6 +19,7 @@ export * from './monitor/sanitize.js';
 export * from './monitor/system-events-probe.js';
 export * from './monitor/tapd-watcher.js';
 export * from './monitor/perf-watcher.js';
+export * from './monitor/careyclaw-key-reminder.js';
 export * from './monitor/watcher.js';
 export * from './monitor/ws-watchdog.js';
 
