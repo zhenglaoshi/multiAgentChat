@@ -48,12 +48,17 @@ const CLAUDE_TUI_REMINDER = [
   '⚠ 回到飞书 — 飞书看不见你的 TUI 屏幕。**先在 TUI 完整回答用户，然后再** `agent lark send-text "<同样一份摘要>"` 推到飞书（两个渠道并行，不能只推不答）。要用户从选项里选（单/多选）或填文本，**用 `agent lark ask single|multi|input`**（stdout 拿答案 JSON），不要用 AskUserQuestion 或在 TUI 里 wait 键盘。',
 ].join('\n');
 import { patchCard, sendCardReturnId, sendImage } from './api.js';
-import { ackCard, askCard, batchProgressCard, browseCard, chainProgressCard, planCard, progressCard, receiptCard, tapdClaimCard, type BatchTaskItem, type ChainStepItem } from './cards.js';
+import { ackCard, askCard, batchProgressCard, browseCard, chainProgressCard, connectConfirmCard, connectFormCard, connectStatusCard, planCard, progressCard, receiptCard, tapdClaimCard, type BatchTaskItem, type ChainStepItem } from './cards.js';
 import { generatePlan, getPlan } from 'multiagent-orchestrator';
 import { getPerfItem, markPerfSnoozed, markPerfIgnoredForever } from 'multiagent-orchestrator';
+import { integrationStatuses, getIntegration, upsertEnvKeys } from 'multiagent-orchestrator';
+import { utimesSync } from 'node:fs';
+
+// /connect：某对接提交的配置值暂存（确认后才写 .env）。ephemeral。
+const connectStaging = new Map<string, Record<string, string>>();
 import { readdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { dirname, basename } from 'node:path';
+import { dirname, basename, resolve } from 'node:path';
 import { parseMessage, resolveTarget } from './target.js';
 import { buildImageOnlyPrompt, buildImagePromptPrefix, downloadInboundImages, parseImageKey, parsePost } from './resource.js';
 import { chainManager } from '../monitor/chains.js';
@@ -116,6 +121,7 @@ interface CardActionEvent {
     value?: Record<string, unknown>;
     option?: string;       // select_static 选中的 option value
     tag?: string;
+    form_value?: Record<string, unknown>;  // schema 2.0 表单提交：{ input_name: value }
   };
   // schema 1.x（旧）：顶层
   open_chat_id?: string;
@@ -1253,6 +1259,73 @@ async function handleCardAction(
       }
     })();
     return { toast: { type: 'success', content: `派发步骤 ${step + 1}` } };
+  }
+
+  if (action === 'connect-config') {
+    const key = value['key'] as string | undefined;
+    const it = key ? getIntegration(key) : undefined;
+    if (!it) return { toast: { type: 'error', content: '未知对接' } };
+    const form = connectFormCard(it);
+    if (form) {
+      void sendCard(client, chatId, form);
+    } else {
+      // 纯开关型（如知识提炼）：直接暂存固定值 → 确认
+      const kv: Record<string, string> = {};
+      for (const f of it.fields) if (f.fixedValue) kv[f.env] = f.fixedValue;
+      connectStaging.set(it.key, kv);
+      void sendCard(client, chatId, connectConfirmCard(it.key, it.name, Object.entries(kv).map(([k, v]) => `· ${k} = ${v}`)));
+    }
+    return { toast: { type: 'info', content: '打开配置…' } };
+  }
+
+  if (action === 'connect-submit') {
+    const key = value['key'] as string | undefined;
+    const it = key ? getIntegration(key) : undefined;
+    if (!it) return { toast: { type: 'error', content: '未知对接' } };
+    const fv = (data.action?.form_value ?? {}) as Record<string, unknown>;
+    const kv: Record<string, string> = {};
+    for (const f of it.fields) {
+      if (f.fixedValue) { kv[f.env] = f.fixedValue; continue; }
+      const v = fv[f.env];
+      if (typeof v === 'string' && v.trim()) kv[f.env] = v.trim();
+    }
+    if (Object.keys(kv).length === 0) return { toast: { type: 'error', content: '没填任何值' } };
+    connectStaging.set(it.key, kv);
+    // 脱敏展示
+    const lines = it.fields.filter((f) => kv[f.env] !== undefined).map((f) => {
+      const val = kv[f.env]!;
+      const shown = f.secret ? (val.length <= 4 ? '****' : val.slice(0, 2) + '***' + val.slice(-2)) : val;
+      return `· ${f.label}(${f.env}) = ${shown}`;
+    });
+    void sendCard(client, chatId, connectConfirmCard(it.key, it.name, lines));
+    return { toast: { type: 'success', content: '已收到，确认写入' } };
+  }
+
+  if (action === 'connect-apply') {
+    const key = value['key'] as string | undefined;
+    const it = key ? getIntegration(key) : undefined;
+    const kv = key ? connectStaging.get(key) : undefined;
+    if (!it || !kv || Object.keys(kv).length === 0) return { toast: { type: 'error', content: '配置已失效，请重新 /connect' } };
+    (async () => {
+      try {
+        await upsertEnvKeys(kv);
+        connectStaging.delete(key!);
+        await patchOrigToReceipt(client, data, `✅ 已写入 .env · ${it.name}`, '正在重启 dev 生效…', 'green');
+        void sendText(client, chatId, `🔌 ${it.name} 配置已写入 .env，正在重启 dev（约数秒）。重启后发 /connect 可确认状态变 ✅。`);
+        // 触发 tsx watch reload（新进程重跑 dotenv/config 读新 .env）
+        setTimeout(() => { try { const now = Date.now() / 1000; utimesSync(resolve('apps/daemon/src/index.ts'), now, now); } catch (e) { logger.warn('connect restart touch 失败', { err: (e as Error).message }); } }, 800);
+      } catch (e) {
+        void sendText(client, chatId, `❌ 写入 .env 失败：${(e as Error).message}`);
+      }
+    })();
+    return { toast: { type: 'success', content: '写入并重启中' } };
+  }
+
+  if (action === 'connect-cancel') {
+    const key = value['key'] as string | undefined;
+    if (key) connectStaging.delete(key);
+    await patchOrigToReceipt(client, data, '⊘ 已取消对接配置', undefined, 'grey');
+    return { toast: { type: 'info', content: '已取消' } };
   }
 
   if (action === 'perf-claim') {
@@ -2441,6 +2514,17 @@ export function buildEventDispatcher(client: Lark.Client): Lark.EventDispatcher 
               }
             } catch (e) {
               void sendText(client, chat_id, `❌ 报告生成失败：${(e as Error).message}`);
+            }
+          })();
+          return;
+        }
+        if (cmdName === 'connect' || cmdName === '对接') {
+          (async () => {
+            try {
+              const st = await integrationStatuses();
+              await sendCard(client, chat_id, connectStatusCard(st));
+            } catch (e) {
+              void sendText(client, chat_id, `❌ /connect 失败：${(e as Error).message}`);
             }
           })();
           return;

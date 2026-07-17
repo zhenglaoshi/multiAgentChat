@@ -9,6 +9,7 @@
 ### 2026-07-15
 
 **新增**
+- **对接管理面板 `/connect`（面向业务人员）**：开发类对接（TAPD/性能平台/知识提炼/企微/Web面板/报告）默认不启，`/connect` 列出所有对接 + ✅已对接/⬜未对接状态，未对接的跟 [对接] 按钮 → 弹**飞书原生输入表单卡**（schema 2.0 form+input）填 env → **确认卡**（密钥脱敏）→ 写入 `.env`（`upsertEnvKeys` 保留其余行）→ touch 重启（dotenv 重读生效）。注册表 `orchestrator/integrations`（registry + envfile 读写 + 状态判定，均单测通过）。（`connectStatusCard`/`connectFormCard`/`connectConfirmCard` + handlers `/connect` + connect-config/submit/apply/cancel）
 - **任务工作目录地基（Phase A）**：`host-mac/task-workspace.ts` 的 `prepareTaskWorkspace({kind,id6,repos,base})` —— 线上bug建 `<TASK_WORKROOT>/fix_<id6>/`、新需求建 `feature_<id6>/`，每个 repo 用 **git worktree**（本地有源·秒建省盘）或 clone（无源）拉进子目录；开发中bug（indev）不建目录、在现有 repo 当前分支直接改。分支名保留 `fix_<id6>`/`feat_<id6>`。`orchestrator/worktasks` 记目录↔摘要映射（save/list/search）。env `TASK_WORKROOT`（默认 `~/ihealth-work`）。worktree 逻辑单测通过。（认领卡任务类型选择 + 候选搜索修复 + `/worktasks` 命令为 Phase B）
 - **performance-platform 对接 P1（只读监听）** `PERF_*`：perf-watcher 轮询 `GET /api/recommendations?status=pending`（Basic auth）→ 按 target/优先级/归属过滤 + 去重 → 推飞书性能建议卡（根因+索引命令+改动文件+repo）；[🔧认领修复] 开 tab 注入上下文让 claude 修（验证严禁连生产库），[🕐稍后]/[🙈不是我的] 带回执。repo 由 codeChange.permalink / codeMatches / database→repos.json 解析。缺 PERF_API_URL/USER/PASS 不启。设计见 `docs/perf-integration.md`。（`orchestrator/perf/` + `im-lark/monitor/perf-watcher.ts` + `perfItemCard`）
 - **A3 Planner（v1·方案丙）** `/plan <目标>`：`claude -p` headless 把目标分解成 2-6 步可执行计划（复用知识提炼器 spawn 范式，不泄漏飞书）→ 飞书计划卡列步骤 → 每步一个「▶ 派发」按钮，点哪步就把该步 prompt 发给建议的 tab（解析不到则 active tab），逐步执行不自动串。计划内存态存储。（`orchestrator/planner/` + `planCard` + handlers `/plan`/`plan-dispatch`）

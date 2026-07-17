@@ -1,4 +1,4 @@
-import type { ApprovalRequest, AskRequest, PerfItem, Plan, TapdItem } from 'multiagent-orchestrator';
+import type { ApprovalRequest, AskRequest, PerfItem, Plan, TapdItem, IntegrationStatus, Integration } from 'multiagent-orchestrator';
 import { tapdSummary } from 'multiagent-orchestrator';
 import { inferTabStatus, type TabStatusInfo } from 'multiagent-host-mac';
 import type { TerminalTab } from 'multiagent-host-mac';
@@ -2532,6 +2532,81 @@ export function perfItemCard(item: PerfItem) {
       { tag: 'div', text: { tag: 'lark_md', content: lines.join('\n') } },
       { tag: 'hr' },
       { tag: 'action', actions },
+    ],
+  };
+}
+
+// ==== 对接管理面板（/connect）====
+
+/** 对接总览状态卡：按分组列出，未对接的跟 [对接] 按钮。 */
+export function connectStatusCard(statuses: IntegrationStatus[]) {
+  const groups = ['核心', '开发', '传输', '其他'] as const;
+  const elements: unknown[] = [
+    { tag: 'div', text: { tag: 'lark_md', content: '**本项目对接列表**（业务人员按需开启，开发类默认不启）' } },
+  ];
+  for (const g of groups) {
+    const items = statuses.filter((s) => s.group === g);
+    if (items.length === 0) continue;
+    elements.push({ tag: 'hr' });
+    elements.push({ tag: 'div', text: { tag: 'lark_md', content: `**${g}**` } });
+    for (const s of items) {
+      const badge = s.connected ? "<font color='green'>✅ 已对接</font>" : "<font color='grey'>⬜ 未对接</font>";
+      elements.push({ tag: 'div', text: { tag: 'lark_md', content: `${badge}　**${s.name}**\n<font color='grey'>${s.desc}</font>` } });
+      if (!s.connected && !s.core) {
+        elements.push({ tag: 'action', actions: [{ tag: 'button', text: { tag: 'plain_text', content: `🔌 对接 ${s.name}` }, type: 'primary', value: { action: 'connect-config', key: s.key } }] });
+      }
+    }
+  }
+  return {
+    config: { wide_screen_mode: true },
+    header: { template: 'blue', title: { tag: 'plain_text', content: '🔌 对接管理' } },
+    elements,
+  };
+}
+
+/**
+ * 某对接的配置输入表单卡（飞书 schema 2.0 form + input）。填完提交 → connect-submit。
+ * 纯开关型（只有 fixedValue 字段）→ 返回 null，由调用方直接走确认。
+ */
+export function connectFormCard(it: Integration): unknown | null {
+  const inputs = it.fields.filter((f) => !f.fixedValue);
+  if (inputs.length === 0) return null;
+  const formEls: unknown[] = inputs.map((f) => ({
+    tag: 'input',
+    name: f.env,
+    label: { tag: 'plain_text', content: `${f.label}${f.secret ? ' 🔒' : ''}` },
+    placeholder: { tag: 'plain_text', content: f.placeholder ?? (f.secret ? '粘贴密钥/令牌' : `填 ${f.env}`) },
+  }));
+  formEls.push({
+    tag: 'button',
+    text: { tag: 'plain_text', content: '✅ 提交配置' },
+    type: 'primary',
+    name: 'submit',
+    form_action_type: 'submit',
+    behaviors: [{ type: 'callback', value: { action: 'connect-submit', key: it.key } }],
+  });
+  return {
+    schema: '2.0',
+    header: { title: { tag: 'plain_text', content: `🔌 配置 · ${it.name}` }, template: 'blue' },
+    body: { elements: [
+      { tag: 'markdown', content: `${it.desc}\n\n填完点提交，确认后写入 .env 并重启生效。密钥仅写入本地 .env（gitignored），不外泄。` },
+      { tag: 'form', name: 'connectform', elements: formEls },
+    ] },
+  };
+}
+
+/** 写入前的确认卡（脱敏展示）。[确认写入并重启]/[取消]。 */
+export function connectConfirmCard(key: string, name: string, lines: string[]) {
+  return {
+    config: { wide_screen_mode: true },
+    header: { template: 'yellow', title: { tag: 'plain_text', content: `⚠️ 确认对接 · ${name}` } },
+    elements: [
+      { tag: 'div', text: { tag: 'lark_md', content: `将写入 .env（密钥已脱敏）：\n${lines.join('\n')}` } },
+      { tag: 'div', text: { tag: 'lark_md', content: "<font color='grey'>确认后写入并**重启 dev** 生效（约数秒）。</font>" } },
+      { tag: 'action', actions: [
+        { tag: 'button', text: { tag: 'plain_text', content: '✅ 确认写入并重启' }, type: 'primary', value: { action: 'connect-apply', key } },
+        { tag: 'button', text: { tag: 'plain_text', content: '⊘ 取消' }, type: 'default', value: { action: 'connect-cancel', key } },
+      ] },
     ],
   };
 }
