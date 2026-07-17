@@ -1199,6 +1199,23 @@ async function main() {
 
   // WS watchdog 必须在 startLarkBot 前安装 —— 它 monkey-patch console.log 截获 SDK 输出
   installWsWatchdog();
+  // 首次启动·飞书未配 → 醒目引导（飞书是引导通道本身，只能走本地终端/agent connect 提示）
+  if (!process.env['LARK_APP_ID'] || !process.env['LARK_APP_SECRET']) {
+    logger.error(
+      '\n' +
+      '╔══════════════════════════════════════════════════════════╗\n' +
+      '║  ⚡ 飞书还没对接 —— 本项目的主通道用不了                    ║\n' +
+      '║                                                            ║\n' +
+      '║  快速对接（任选其一）：                                     ║\n' +
+      '║   ① 运行：  ./bin/agent connect lark                        ║\n' +
+      '║      （交互式填 App ID / Secret，自动写入 .env）             ║\n' +
+      '║   ② 手动：  在 .env 填 LARK_APP_ID / LARK_APP_SECRET         ║\n' +
+      '║                                                            ║\n' +
+      '║  App ID/Secret 位置：飞书开发者后台 → 应用 → 凭证与基础信息  ║\n' +
+      '║  配好后重启 dev（npm run dev）即可                          ║\n' +
+      '╚══════════════════════════════════════════════════════════╝',
+    );
+  }
   const lark = startLarkBot();
 
   // ---- 企微 transport（可选）：仅在 .env 里配了 WECOM_* 时 attach ----

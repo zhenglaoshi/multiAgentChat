@@ -1476,6 +1476,53 @@ async function cmdStageRecall(flags: Flags): Promise<void> {
   }
 }
 
+/**
+ * `agent connect [key]` —— 本地对接引导（socket-free，不依赖 daemon）。
+ * 首次启动飞书未配时的快速对接入口：直接读写 .env，无需飞书通道。
+ */
+async function cmdConnect(flags: Flags): Promise<void> {
+  const { integrationStatuses, INTEGRATIONS, getIntegration, upsertEnvKeys } = await import('multiagent-orchestrator');
+  const key = flags.positional[0];
+  const statuses = await integrationStatuses();
+
+  if (!key) {
+    stdout.write('本项目对接列表（配置某项：agent connect <key>）：\n\n');
+    for (const s of statuses) {
+      const badge = !s.connected ? '⬜ 未对接' : s.disabled ? '⏸ 已停用' : '✅ 已启用';
+      stdout.write(`  ${badge}  ${s.key.padEnd(10)} ${s.name}\n`);
+    }
+    const lark = statuses.find((s) => s.key === 'lark');
+    if (lark && !lark.connected) {
+      stdout.write('\n⚡ 飞书(核心)未配置 —— 运行 `agent connect lark` 立即快速对接。\n');
+      stdout.write('   飞书 App ID/Secret 在：飞书开发者后台 → 你的应用 → 凭证与基础信息。\n');
+    }
+    return;
+  }
+
+  const it = getIntegration(key);
+  if (!it) die(`未知对接：${key}（可选：${INTEGRATIONS.map((i) => i.key).join(' / ')}）`);
+  const kv: Record<string, string> = {};
+  for (const f of it.fields) if (f.fixedValue) kv[f.env] = f.fixedValue;
+  const inputs = it.fields.filter((f) => !f.fixedValue);
+  if (inputs.length > 0) {
+    const readline = await import('node:readline/promises');
+    const rl = readline.createInterface({ input: stdin, output: stderr });
+    stderr.write(`\n配置「${it.name}」—— ${it.desc}\n（逐项输入，直接回车跳过某项）\n`);
+    for (const f of inputs) {
+      const ans = (await rl.question(`  ${f.label}${f.secret ? ' 🔒密钥' : ''} [${f.env}]: `)).trim();
+      if (ans) kv[f.env] = ans;
+    }
+    rl.close();
+  }
+  if (Object.keys(kv).length === 0) {
+    stderr.write('未输入任何值，已取消。\n');
+    return;
+  }
+  await upsertEnvKeys(kv);
+  stdout.write(`\n✓ 已写入 .env：${Object.keys(kv).join(', ')}\n`);
+  stdout.write(`  运行（或重启）\`npm run dev\` 生效。\n`);
+}
+
 async function cmdDoctor(): Promise<void> {
   const { runDoctor } = await import('./doctor.js');
   stderr.write('🩺 诊断中...\n\n');
@@ -1799,6 +1846,9 @@ async function main(): Promise<void> {
         return await cmdStageRecall(flags);
       case 'doctor':
         return await cmdDoctor();
+      case 'connect':
+      case 'onboard':
+        return await cmdConnect(flags);
       case 'subagent':
         return await cmdSubagent(flags);
       case 'knowledge':

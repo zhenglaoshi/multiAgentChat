@@ -9,6 +9,7 @@
 ### 2026-07-15
 
 **新增**
+- **首启飞书未对接的快速引导**（飞书是引导通道本身，故走本地）：① daemon 启动检测 `LARK_APP_ID/SECRET` 缺失 → 打醒目横幅提示 `./bin/agent connect lark`；② 新增 `agent connect [key]` CLI —— **socket-free、不依赖 daemon**，`agent connect` 列全部对接+状态，`agent connect lark` 交互式 readline 填 App ID/Secret → 写 `.env` → 提示重启。是 `/connect` 飞书卡的本地孪生（bootstrap 用）。
 - **对接管理面板 `/connect`（面向业务人员）**：开发类对接（TAPD/性能平台/知识提炼/企微/Web面板/报告）默认不启，`/connect` 列出所有对接 + 三态（✅已启用/⏸已停用·配置保留/⬜未对接）+ 对应按钮 [对接]/[停用]/[启用]。
   - **对接**：弹**飞书原生输入表单卡**（schema 2.0 form+input）填 env → **确认卡**（密钥脱敏）→ 写入 `.env`（`upsertEnvKeys` 保留其余行）→ touch 重启（dotenv 重读生效）。
   - **停用/启用**：软开关——把 key 加到 `.env` 的 `MCHAT_DISABLED_INTEGRATIONS` 列表（**不动该对接自己的配置 env**），各 gate（tapd/perf/knowledge/wecom/web/report）启动时检查 `isIntegrationDisabled` → 停用不删配置、可随时一键启用。重启生效。
