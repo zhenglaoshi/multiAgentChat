@@ -768,6 +768,26 @@ REPORT_MONTHLY_AT=1 09:00    # 每月 1 号 09:00 上月月报（PPT）
 
 ---
 
+## 23. 对接管理 · `/connect`（面向业务人员）+ 首启引导 + CareyClaw
+
+### 能力
+开发类对接（TAPD / 性能平台 / 知识提炼 / 企微 / Web面板 / 报告 / CareyClaw）**默认不启**，业务人员按需开。一站式管理：
+
+- **`/connect`（或 `/对接`）** → 状态卡：按分组列全部对接 + 三态（✅已启用 / ⏸已停用·配置保留 / ⬜未对接），每项对应按钮 [对接]/[停用]/[启用]。
+- **对接（env 型）**：[对接] → 飞书原生输入表单卡（schema 2.0 form+input）填 env → 确认卡（密钥脱敏）→ 写 `.env`（`upsertEnvKeys` 保留其余行）→ touch 重启（dotenv 重读生效）。
+- **停用/启用（软开关）**：停用 = key 加到 `.env` 的 `MCHAT_DISABLED_INTEGRATIONS` 列表，**不动该对接自己的配置 env**；各 gate 启动查 `isIntegrationDisabled`。可随时一键启用。
+- **首启飞书未对接引导**：飞书是引导通道本身 → 走本地。daemon 启动检测 `LARK_APP_ID/SECRET` 缺失 → 打醒目横幅指向 `agent connect lark`；`agent connect [key]` CLI（**socket-free、不依赖 daemon**）交互填 env。
+
+### CareyClaw 平台（龙虾）· skill 型对接
+- daemon 启动**幂等自动装**两个官方技能：`careyclaw-apis`（检索/试调平台业务 API）+ `careyclaw-deploy`（打包 zip 发布应用）；双路径写 `~/.claude/skills` + `~/.agents/skills`（兼容 Claude Code / Codex）。
+- 用浏览器 OAuth 授权，**无需 .env 密钥**。飞书说「龙虾/careyclaw 有没有XX接口 / 部署应用」→ 注入 tab → 技能自动干 → 结果回飞书（首次给授权链接）。
+- **调试密钥（`oct_dev_`）到期提醒**：仅用于本地开发你自己的 app 调真实 API（填进你 app 的 `.env.local`）；刷新需短信（无法全自动）→ `/careyclaw` 查状态、到期前 ≤2 天 watcher 自动推提醒卡、[🔄更新密钥] 飞书表单贴新密钥。
+
+### 底层
+`orchestrator/integrations/`（registry 注册表 + envfile 读写/停用列表/状态 + skills 技能装 + careyclaw-key）；`connectStatusCard`/`connectFormCard`/`connectConfirmCard`/`careyclawKeyCard`；handlers `/connect`/`/careyclaw` + connect-*/careyclaw-key-* 卡动作；`agent connect` CLI。
+
+---
+
 ## 已知的能力边界
 
 **能做**：
