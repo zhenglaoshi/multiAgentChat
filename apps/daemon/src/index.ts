@@ -54,6 +54,7 @@ import {
 } from 'multiagent-im-lark';
 import { sanitizeTerminalOutput } from 'multiagent-im-lark';
 import { buildImagePromptPrefix, buildImageOnlyPrompt } from 'multiagent-im-lark';
+import { isIntegrationDisabled } from 'multiagent-orchestrator';
 
 /**
  * Upsert Claude Code hooks 到 ~/.claude/settings.json。
@@ -736,8 +737,8 @@ async function dispatchWeComSlash(
  * 通过 env KNOWLEDGE_EXTRACT_ENABLED=1 打开（默认关闭以免第一次跑就消耗 subscription）。
  */
 function attachKnowledgeExtractor(): void {
-  if (process.env['KNOWLEDGE_EXTRACT_ENABLED'] !== '1') {
-    logger.info('knowledge extractor 未启用（设 KNOWLEDGE_EXTRACT_ENABLED=1 开启）');
+  if (process.env['KNOWLEDGE_EXTRACT_ENABLED'] !== '1' || isIntegrationDisabled('knowledge')) {
+    logger.info('knowledge extractor 未启用（设 KNOWLEDGE_EXTRACT_ENABLED=1 开启，且未被 /connect 停用）');
     return;
   }
   logger.info('knowledge extractor attached · 提取器已开 · claude -p 本地跑');
@@ -1204,7 +1205,7 @@ async function main() {
   // 需要在 startControlServer 之前起，让 server 拿到 transport 引用
   let wecom: WeComTransport | null = null;
   const wecomCfg = loadWeComConfig();
-  if (wecomCfg) {
+  if (wecomCfg && !isIntegrationDisabled('wecom')) {
     try {
       wecom = new WeComTransport(wecomCfg);
       await wecom.start();
@@ -1274,14 +1275,14 @@ async function main() {
       : undefined,
   );
   startPerfWatcher(lark.client);
-  startReportScheduler(lark.client);
+  if (!isIntegrationDisabled('report')) startReportScheduler(lark.client);
   await ensureSkillInstalled();
   await installClaudeCodeHooks();
   await ensureAgentOnPath();
 
   // ---- Web dashboard（可选）：仅在 WEB_DASHBOARD_TOKEN 设了时启用 ----
   const webCfg = loadWebDashboardConfig();
-  if (webCfg) {
+  if (webCfg && !isIntegrationDisabled('web')) {
     try {
       const dash = new WebDashboardServer(webCfg);
       await dash.start();

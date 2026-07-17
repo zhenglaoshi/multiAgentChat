@@ -1,4 +1,5 @@
 import type { PerfConfig } from './types.js';
+import { isIntegrationDisabled } from '../integrations/envfile.js';
 
 /**
  * 从 env 读 perf-platform 对接配置。缺 URL/USER/PASS 任一 → enabled=false（daemon 不启监听）。
@@ -34,6 +35,6 @@ export function loadPerfConfig(): PerfConfig {
     myRepos,
     reposBaseDir,
     pollMs,
-    enabled: Boolean(apiUrl && user && pass),
+    enabled: Boolean(apiUrl && user && pass) && !isIntegrationDisabled('perf'),
   };
 }

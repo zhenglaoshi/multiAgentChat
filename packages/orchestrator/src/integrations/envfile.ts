@@ -45,24 +45,46 @@ export async function upsertEnvKeys(kv: Record<string, string>): Promise<void> {
   await rename(tmp, ENV_PATH);
 }
 
+/** 停用列表的元键（独立于各对接自己的配置 env；停用不动配置，仅软关闭）。 */
+export const DISABLED_ENV_KEY = 'MCHAT_DISABLED_INTEGRATIONS';
+
+function parseList(v?: string): string[] {
+  return (v ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+}
+
+/** 运行时判定某对接是否被手动停用（gate 用，读 process.env）。 */
+export function isIntegrationDisabled(key: string): boolean {
+  return parseList(process.env[DISABLED_ENV_KEY]).includes(key);
+}
+
+/** 停用/启用某对接（改 .env 的停用列表，不动该对接的配置 env）。改完需重启生效。 */
+export async function setIntegrationDisabled(key: string, disabled: boolean): Promise<void> {
+  const env = await readEnvKeys();
+  const set = new Set(parseList(env[DISABLED_ENV_KEY]));
+  if (disabled) set.add(key); else set.delete(key);
+  await upsertEnvKeys({ [DISABLED_ENV_KEY]: [...set].join(',') });
+}
+
 export interface IntegrationStatus {
   key: string;
   name: string;
   group: Integration['group'];
   desc: string;
-  connected: boolean;
+  connected: boolean;  // 配置齐全（env 都有值）
+  disabled: boolean;   // 配置齐全但被手动停用（软关闭）
   core: boolean;
   missing: string[];   // 缺哪些 env
 }
 
-/** 读 .env 判定每个对接是否已配齐。 */
+/** 读 .env 判定每个对接：配置齐全否 + 是否被停用。 */
 export async function integrationStatuses(): Promise<IntegrationStatus[]> {
   const env = await readEnvKeys();
   const has = (k: string) => !!(env[k] && env[k]!.trim());
+  const disabledSet = new Set(parseList(env[DISABLED_ENV_KEY]));
   return INTEGRATIONS.map((it) => {
     const present = it.fields.filter((f) => has(f.env)).map((f) => f.env);
     const connected = it.anyOf ? present.length > 0 : present.length === it.fields.length;
     const missing = it.fields.filter((f) => !has(f.env)).map((f) => f.env);
-    return { key: it.key, name: it.name, group: it.group, desc: it.desc, connected, core: !!it.core, missing };
+    return { key: it.key, name: it.name, group: it.group, desc: it.desc, connected, disabled: disabledSet.has(it.key), core: !!it.core, missing };
   });
 }

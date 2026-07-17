@@ -1,4 +1,5 @@
 import type { TapdConfig, TapdSystem } from './types.js';
+import { isIntegrationDisabled } from '../integrations/envfile.js';
 
 /**
  * 从 env 读 TAPD 配置。缺 URL/TOKEN/NICK 任一 → enabled=false（daemon 不启监听）。
@@ -31,6 +32,6 @@ export function loadTapdConfig(): TapdConfig {
     workspaceIds,
     systems: systems.length ? systems : (['bug', 'story'] as TapdSystem[]),
     pollMs,
-    enabled: Boolean(mcpUrl && token && nick),
+    enabled: Boolean(mcpUrl && token && nick) && !isIntegrationDisabled('tapd'),
   };
 }

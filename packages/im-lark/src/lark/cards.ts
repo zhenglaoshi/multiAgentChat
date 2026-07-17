@@ -2550,11 +2550,22 @@ export function connectStatusCard(statuses: IntegrationStatus[]) {
     elements.push({ tag: 'hr' });
     elements.push({ tag: 'div', text: { tag: 'lark_md', content: `**${g}**` } });
     for (const s of items) {
-      const badge = s.connected ? "<font color='green'>✅ 已对接</font>" : "<font color='grey'>⬜ 未对接</font>";
+      const badge = !s.connected
+        ? "<font color='grey'>⬜ 未对接</font>"
+        : s.disabled
+          ? "<font color='orange'>⏸ 已停用（配置保留）</font>"
+          : "<font color='green'>✅ 已启用</font>";
       elements.push({ tag: 'div', text: { tag: 'lark_md', content: `${badge}　**${s.name}**\n<font color='grey'>${s.desc}</font>` } });
-      if (!s.connected && !s.core) {
-        elements.push({ tag: 'action', actions: [{ tag: 'button', text: { tag: 'plain_text', content: `🔌 对接 ${s.name}` }, type: 'primary', value: { action: 'connect-config', key: s.key } }] });
+      if (s.core) continue; // 核心(飞书)不可停用
+      let btn: unknown | null = null;
+      if (!s.connected) {
+        btn = { tag: 'button', text: { tag: 'plain_text', content: `🔌 对接` }, type: 'primary', value: { action: 'connect-config', key: s.key } };
+      } else if (s.disabled) {
+        btn = { tag: 'button', text: { tag: 'plain_text', content: `▶ 启用` }, type: 'primary', value: { action: 'connect-enable', key: s.key } };
+      } else {
+        btn = { tag: 'button', text: { tag: 'plain_text', content: `⏸ 停用` }, type: 'default', value: { action: 'connect-disable', key: s.key } };
       }
+      elements.push({ tag: 'action', actions: [btn] });
     }
   }
   return {

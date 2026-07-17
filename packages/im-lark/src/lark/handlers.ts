@@ -51,7 +51,7 @@ import { patchCard, sendCardReturnId, sendImage } from './api.js';
 import { ackCard, askCard, batchProgressCard, browseCard, chainProgressCard, connectConfirmCard, connectFormCard, connectStatusCard, planCard, progressCard, receiptCard, tapdClaimCard, type BatchTaskItem, type ChainStepItem } from './cards.js';
 import { generatePlan, getPlan } from 'multiagent-orchestrator';
 import { getPerfItem, markPerfSnoozed, markPerfIgnoredForever } from 'multiagent-orchestrator';
-import { integrationStatuses, getIntegration, upsertEnvKeys } from 'multiagent-orchestrator';
+import { integrationStatuses, getIntegration, upsertEnvKeys, setIntegrationDisabled } from 'multiagent-orchestrator';
 import { utimesSync } from 'node:fs';
 
 // /connect：某对接提交的配置值暂存（确认后才写 .env）。ephemeral。
@@ -1326,6 +1326,24 @@ async function handleCardAction(
     if (key) connectStaging.delete(key);
     await patchOrigToReceipt(client, data, '⊘ 已取消对接配置', undefined, 'grey');
     return { toast: { type: 'info', content: '已取消' } };
+  }
+
+  if (action === 'connect-disable' || action === 'connect-enable') {
+    const key = value['key'] as string | undefined;
+    const it = key ? getIntegration(key) : undefined;
+    if (!it) return { toast: { type: 'error', content: '未知对接' } };
+    const disable = action === 'connect-disable';
+    (async () => {
+      try {
+        await setIntegrationDisabled(key!, disable);   // 只改停用列表，不动该对接配置 env
+        await patchOrigToReceipt(client, data, `${disable ? '⏸ 已停用' : '▶ 已启用'} · ${it.name}`, `配置保留，重启 dev 生效…`, disable ? 'grey' : 'green');
+        void sendText(client, chatId, `${disable ? '⏸' : '▶'} ${it.name} 已${disable ? '停用（配置保留，可随时启用）' : '启用'}，正在重启 dev 生效。`);
+        setTimeout(() => { try { const now = Date.now() / 1000; utimesSync(resolve('apps/daemon/src/index.ts'), now, now); } catch (e) { logger.warn('connect toggle restart touch 失败', { err: (e as Error).message }); } }, 800);
+      } catch (e) {
+        void sendText(client, chatId, `❌ ${disable ? '停用' : '启用'}失败：${(e as Error).message}`);
+      }
+    })();
+    return { toast: { type: 'success', content: disable ? '停用中' : '启用中' } };
   }
 
   if (action === 'perf-claim') {
