@@ -1,6 +1,6 @@
 # performance-platform ↔ multiAgentChat 对接方案
 
-> 设计草案（未动手）。performance 负责**采集分析**，multiAgentChat 负责**对接、分发任务、驱动 claude 解决具体问题**。
+> 状态：**P1 只读监听 + P2 认领并建需求已落地**（`im-lark/monitor/perf-watcher.ts`、`orchestrator/perf/`含 `tapd-story.ts`、handler `perf-claim`/`perf-claim-story`）；P3 回写闭环待 perf 侧加 CAS。performance 负责**采集分析**，multiAgentChat 负责**对接、分发任务、驱动 claude 解决具体问题**。
 > 性能平台**以 `performance-platform-api`（后端服务）+ `performance-platform-web`（前端）为准**（plain `performance-platform` / Java `performanceapi` 不看）。本文 file:line 均指 `performance-platform-api`。
 
 > **关键对齐**：web 的「推荐追踪」页（`performance-platform-web/src/pages/Recommendations.tsx`）用的就是**同一套** `/api/recommendations` API 和 `RecommendationStatus`：`listRecommendations({status,target})` / `updateRecommendationStatus(id,{status:'implemented',implementedBy,gitCommitUrl,notes})` / `dismissed` / `verify`（见 `web/src/api/client.ts:136-147`）。→ multiAgentChat 就是这套 recommendation 生命周期的**「手机 + AI 前端」**，与 web dashboard **共用同一份状态**，飞书认领/修复 → web 页即时同步，天然一致。`implementedBy` 字段已存在（部分即 assignee），回写直接复用。
@@ -57,7 +57,7 @@ perf-api  GET /api/recommendations?status=pending   (Basic auth 轮询, N min)
 ## 5. 待拍板 / 需提供
 
 1. 数据源：`recommendations` 层（推荐）还是原始 `shapes/findings`？
-2. 配置（需用户给）：perf-api **base URL + Basic auth 账密** → `.env`（gitignored）；**REPOS_BASE_DIR** 本地仓库根。
+2. 配置（需用户给）：perf-api **base URL + Basic auth 账密** → `.env`（gitignored）；**`PERF_REPOS_BASE_DIR`** 本地仓库根。
 3. 回写：修完自动 `PATCH implemented + gitCommitUrl` 吗（走 `agent request-approval`）？是否自动 `verify`？
 4. 范围：P0 / P0+P1？哪些 target（backend/frontend/…）？
 5. 节奏：先文档（本篇）还是直接建 P1？

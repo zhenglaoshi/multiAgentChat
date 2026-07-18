@@ -1,8 +1,9 @@
 # 企业微信机器人配置 · 详细指南
 
-> **实施状态** · Day 1-5 骨架已合入，能收发文本/文件/图片 + 收消息 → tab 派发。
-> **未做（Day 6+）**：进度卡 render、Stop hook auto-push、chat state active/sticky、
-> ask/approval 卡、群聊 target、doctor 检测。飞书链路完全不受影响。
+> **实施状态** · 已与飞书 ~99% 对齐：收发文本/文件/图片 + 收消息→tab 派发 + ask/approval 卡
+> （`attachWeComAskListener`/`attachWeComApprovalListener`）+ cardAction 路由（`attachWeComCardActionRouter`）
+> + Stop hook auto-push（`attachWeComFinalListener`）+ `doctor` 企微健康检查（`doctor.ts runWeCom`）。
+> 企微 API 硬限制导致的少数降级：多选 ask 降级、SOP 进度卡 render 未做（低价值）。飞书链路完全不受影响。
 
 ---
 
@@ -240,16 +241,14 @@ daemon log 会有：
 
 ## 当前限制
 
-**Day 5 v1 版本已知短板**：
-- **必须 `@target text` 格式**：没有 activeTty / sticky（连发多命令要每次都 @）
-- **没有进度卡**：只回一条"✓ 已注入"文本，看不到长任务进度
-- **Stop hook 不自动推**：claude turn 结束不会自动推最后响应给企微
-- **没有 ask / approval 卡**：要用户选项 / 请求审批只能靠飞书或降级文本
-- **群聊 target 未接**：只支持 1v1 应用消息
-- **cardAction 只 log**：template_card 按钮点击不接 handler
-- **doctor 没加 wecom section**：agent doctor 看不到企微健康度
+**已补齐**（与飞书对齐）：ask/approval 卡、cardAction 路由、Stop hook auto-push、doctor 企微健康检查 —— 均已在 daemon attach（见文档头「实施状态」）。
 
-要**Day 6+ 补齐**上面这些，让 UX 接近飞书。
+**仍受企微 API 限制降级的少数项**：
+- **多选 ask 降级**：企微 button_interaction 卡不支持多选勾选提交，multi 降级为文本兜底
+- **SOP 进度卡 render 未做**：低价值，长任务进度靠文本摘要（`agent lark/wecom send-text` 分步推）
+- **群聊 target**：主要面向 1v1 应用消息场景
+
+飞书链路始终不受影响，企微为可选额外通道。
 
 ---
 

@@ -60,7 +60,7 @@ http://<mac-tailscale-name>:3940/#token=<WEB_DASHBOARD_TOKEN>
 ▸ **详情面板**（点了某 tab 才出）：
   - 派命令：输入框 + 「发送」按钮（跟飞书 `@target text` 效果一样，含 claude TUI forceEnter）
   - 📸 抓屏：一键调 `captureScreen` → base64 内嵌 PNG 直接看
-  - 📜 History：查看 tab 最近 60 行 tail
+  - 📜 History：查看 tab 最近 100 行 tail
   - ⏎ Enter · ⊘ Ctrl-C：常用按键快捷发
 
 ▸ **Pending 任务**：当前活跃 pending（含飞书/企微/local 触发的都在）
@@ -85,7 +85,7 @@ http://<mac-tailscale-name>:3940/#token=<WEB_DASHBOARD_TOKEN>
 | 页面加载但 API 全 401 | HTML 侧 JS 读 hash 出错 | 打开浏览器 DevTools console 看有没有报错 |
 | 手机连不上 | Tailscale VPN 没开 | 手机 Tailscale app 打开 toggle |
 | 抓屏失败 | Screen Recording 权限没授 | System Settings → Privacy → Screen Recording |
-| 抓屏图很大 | 4K/Retina 全窗口 png 可能 5MB+ | 未来加降采样；当前 base64 内嵌可能慢 |
+| 抓屏图很大 | 4K/Retina 全窗口 png 可能 5MB+ | 已降采样：`sips` → 1200px 宽 + JPEG 75%（Retina png 13MB → jpg 100-400KB） |
 
 ## 未做（下期）
 

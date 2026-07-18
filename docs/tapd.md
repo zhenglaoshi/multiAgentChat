@@ -12,7 +12,7 @@
 - **认领**：多选涉及的 repo（候选 = /pin 书签 + 最近 cwd + 全机 git 仓库索引，新人装完即有）
 - **一键认领**：记住每个项目上次的 repo/基准/模式，下次自动预选
 - **分支基准**：当前分支直接改（测试 bug）/ 从 HEAD / 从 master / 从 develop（线上 bug）
-- **脏工作区**：stash / worktree 隔离 / 照切 / 跳过（只在切新分支时问）
+- **脏工作区策略卡**：stash / worktree 隔离 / 照切 / 跳过（⚠ **已成遗留展示**：worktree 隔离模式下共享 repo 不被触碰，`tapd-go-strategy` 选项不影响结果，一律走 `prepareTaskWorkspace`）
 - **执行模式**：需求→SOP 编排（含 after-architect 审批 gate）/ 缺陷→普通任务，可互切
 - **一个 tab 多 repo**：跨 repo bug 一个 claude 会话协调，分支名一致
 - **上下文注入**：标题 + TAPD 链接 + 各 repo 工作分支 + 描述(保留图片标记) + 指引用 MCP 看评论/图片
@@ -60,7 +60,7 @@ claude mcp get tapd     # 应 ✔ Connected
             - 用 workflows-last-steps 拿"结束状态"，status 在其中的跳过（只留未结束）
           对没通知过/又更新了的（data/tapd/seen.json 去重，key=id，modified 变化会再通知）
 2. 通知   推飞书差异化卡：缺陷=橙(致命/严重升红)，需求=蓝
-          按钮：[🌿 认领并建分支] [🔗 打开 TAPD] [🙈 忽略]
+          按钮：[🌿 认领并建分支] [🔗 打开 TAPD] [🕐 稍后] [🙈 不是我的]
 3. 认领   点认领 → 拉 bug 详情 → 弹 repo 多选卡
           候选 repo = /pin 书签 + 最近用过的 cwd + 全机 git 仓库索引(dir-index，自带后台刷新，新人装完即有)；点按钮打勾(可多选，卡片原地 patch)
           卡上还有 [🏷 类型]（三选一，见下）/ [🔁 基准]（HEAD/master/develop/当前分支）/ [切成 SOP/直接修]
@@ -150,9 +150,11 @@ claude 在工作 tab 里通过 MCP 自取（P3 已把 MCP 配好）。
   - `packages/im-lark/src/monitor/tapd-watcher.ts` — 轮询循环 + 推卡
   - `packages/im-lark/src/lark/cards.ts` — `tapdItemCard` / `tapdRepoPickerCard` / `tapdDirtyCard`
   - `packages/im-lark/src/lark/handlers.ts` — card actions：`tapd-claim` / `tapd-pick-repo` /
-    `tapd-claim-go` / `tapd-go-strategy` / `tapd-ignore`
-  - `packages/host-mac/src/git.ts` — `gitWorkingState` / `gitCheckoutBranch` / `gitStashPush` /
-    `gitAddWorktree` / `prepareBugBranch`(按脏策略切分支)
+    `tapd-cycle-kind`(🏷类型三选一 fix/feature/indev) / `tapd-toggle-sop` / `tapd-cycle-base` /
+    `tapd-claim-go` / `tapd-go-strategy`(脏策略，worktree 模式下 no-op) / `tapd-snooze` / `tapd-not-mine` / `tapd-ignore`；
+    `finalizeTapdClaim` 开工
+  - `packages/host-mac/src/task-workspace.ts` — **主机制**：`prepareTaskWorkspace`(建 worktree 隔离目录) / `taskWorkroot` / `taskDirName` / `taskBranchName`
+  - `packages/host-mac/src/git.ts` — `gitWorkingState` / `useCurrentBranch`(indev 原地改) / `prepareBugBranch`(**旧脏策略路径，worktree 模式下已停用、无调用方**)
 
 ## MCP 工具（网关暴露 43 个，常用）
 

@@ -23,6 +23,8 @@
 - 三层解耦已抽的是 **传输**（`IMTransport`：lark/wecom）。**宿主没抽象**——`host-mac` 是唯一实现，daemon 直接 import。**agent 也没抽象**——全程假设 claude。
 
 ### 2.2 Claude Code 专属耦合点（要为 codex 适配的清单）
+> ⚠ 下表 file:line 是 **C1 前的 before 快照**（现已全部接线到 AgentAdapter，见 §6 落地记）；如 `status.ts` 的 `hasClaude`、`restart.ts` 的硬编码 `claude` 均已改走 adapter。表仅作"当时要改哪些"的记录。
+
 | # | 耦合点 | 位置 | 改动量 |
 |---|---|---|---|
 | 1 | **回传通道**（alt-screen 下唯一输出渠道） | `~/.claude/settings.json` hooks.Stop → `bin/mchat-stop-hook`；安装逻辑 `apps/daemon/src/index.ts:61-140` | 🔴 中（codex 需等价物） |
@@ -56,6 +58,7 @@ daemon = HostBackend × AgentAdapter × IMTransport
 
 ### 3.1 `AgentAdapter`（agent-agnostic，新增）
 把 §2.2 的差异收进一个接口，daemon 按 tab 检测结果选 adapter：
+> ⚠ 下方为**设计草图**；C1 已实现，**最终接口以 `packages/orchestrator/src/agents/types.ts` 为准**（实际差异：`resumeCommand` 折进 `launchCommand({continueSession})`；`installReturnChannel()` 方法改为数据字段 `returnChannel`，安装逻辑在 daemon `installCodexNotify()`；无 `systemGuidance`；`detect(procLower:string)` 单串；`skillDirs`→`skillDirsFromHome`；另有 `displayName`/`binaryName`/`unverified`）。
 ```ts
 interface AgentAdapter {
   kind: 'claude' | 'codex';

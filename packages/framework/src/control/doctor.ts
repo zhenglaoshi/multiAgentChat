@@ -50,15 +50,15 @@ const SOCKET_PATH = process.env['AGENT_SOCKET'] ?? join(homedir(), '.multiagent-
 function runNode(): DoctorResult {
   const v = process.version.replace(/^v/, '');
   const major = parseInt(v.split('.')[0]!, 10);
-  if (major >= 20) {
-    return { name: 'Node ≥ 20', severity: 'critical', status: 'pass', message: `${process.version}` };
+  if (major >= 22) {
+    return { name: 'Node ≥ 22', severity: 'critical', status: 'pass', message: `${process.version}` };
   }
   return {
-    name: 'Node ≥ 20',
+    name: 'Node ≥ 22',
     severity: 'critical',
     status: 'fail',
     message: `${process.version} 太老`,
-    hint: '装 Node 20+：nvm install 20 && nvm use 20',
+    hint: '装 Node 22+：nvm install 22 && nvm use 22',
   };
 }
 

@@ -558,7 +558,9 @@ daemon 启动时**自动**做的事，让新 PC 首次跑通只需要 3 步（�
 | 4 | `caffeinate` | 阻止 idle sleep |
 | 5 | `ensureSkillInstalled` | upsert `skills/multiagent-lark/SKILL.md` 到 `~/.claude/skills/`（源码更新自动同步）|
 | 6 | `installClaudeCodeHooks` | 往 `~/.claude/settings.json` 加 Stop + PreToolUse hooks（幂等）|
-| 7 | `ensureAgentOnPath` | `bin/agent` 无 sudo symlink 到 `~/.local/bin/agent` |
+| 7 | `installCodexNotify` | 若有 `~/.codex/config.toml` → 幂等 upsert `notify`（codex 回传通道，非破坏+备份）|
+| 8 | `ensureIntegrationSkills` | 幂等装 skillType 对接的官方技能（如 CareyClaw）到 `~/.claude/skills` + `~/.agents/skills` |
+| 9 | `ensureAgentOnPath` | `bin/agent` 无 sudo symlink 到 `~/.local/bin/agent` |
 
 用户唯一手动做：加 `~/.local/bin` 到 PATH（一次性 `echo 'export PATH=...' >> ~/.zshrc`）。
 

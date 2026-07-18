@@ -1742,7 +1742,7 @@ function printHelp() {
       '  agent lark send-file [--chat X] <path>   发文件（xlsx/pdf/zip/任意）',
       '  agent lark send-image [--chat X] <path>  发图片',
       '  agent lark which-chat                    看当前 tab 默认发哪个 chat',
-      '  agent lark ask <single|multi|input> --title "..." [--options "a,b,c"] [--timeout ms]',
+      '  agent lark ask <single|multi|input|form> --title "..." [--options "a,b,c" | --spec-json "{...}"] [--timeout ms]',
       '       弹飞书交互卡片，阻塞式拿答案（stdout JSON）；退出码 0/1/2 = 答完/取消/超时',
       '       例：agent lark ask single --title "选一个" --options "A,B,C"',
       '            agent lark ask multi  --title "勾几个" --options "1,2,3"',

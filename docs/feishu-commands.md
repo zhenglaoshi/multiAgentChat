@@ -60,7 +60,7 @@
 当前 tab 屏幕历史 tail
 
 ```
-/history                              # 默认 tail 50 行
+/history                              # 默认 tail 60 行
 /history -n 100                       # 指定行数
 ```
 
@@ -104,8 +104,8 @@
 
 ```
 /run <name>                           # 跑已存的模板（无参数）
-/run <name> pos1 pos2                 # 位置参数填 {{1}} {{2}}
-/run <name> key=value key2=value2     # 命名参数填 {{key}}
+/run <name> pos1 pos2                 # 位置参数填 {1} {2}
+/run <name> key=value key2=value2     # 命名参数填 {key}
 /run --sop <prompt>                   # 临时 SOP，不需预存模板
 /run --sop --stages a,b,c <prompt>    # 自定义 stage 序列
 /run --sop @<tab> <prompt>            # 绑定特定 tab
@@ -117,7 +117,7 @@
 
 ```
 /template                             # 列所有已保存模板（卡片）
-/template save <name> <prompt>        # 存模板；prompt 里可用 {{key}} 占位
+/template save <name> <prompt>        # 存模板；prompt 里可用 {key} 占位
 /template save <name> --stages a,b,c --gates after-b --loops b→c*2 <prompt>
                                       #   --stages: SDLC stage 序列
                                       #   --gates: 在某 stage 后加人工审批点

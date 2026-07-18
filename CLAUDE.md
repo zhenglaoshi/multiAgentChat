@@ -25,8 +25,10 @@ agent request-approval --title "git push --force" --body "..."  # 审批
 ## 整体结构
 
 > **pnpm monorepo**（不再是单 `src/`）。一个 `apps/daemon` 组装入口 + 5 个 `packages/*`。
-> 依赖方向：`daemon` → `im-lark`/`im-wecom` → `framework`/`host-mac`/`orchestrator`。
-> `framework`/`host-mac`/`orchestrator` 之间互不依赖（传输无关、宿主无关、编排无关三层解耦）。
+> 依赖 DAG（严格单向，以 package.json 为准，另见 docs/architecture.md）：
+> `daemon` → `framework` → `im-lark` → `host-mac` → `orchestrator`（叶子，无内部依赖）；
+> `framework` 还直接依赖 `host-mac`/`orchestrator`；`im-wecom` → `framework`+`orchestrator`。
+> `orchestrator` 传输无关+宿主无关（纯逻辑叶子）；`host-mac` 只依赖 orchestrator（用 logger 等）。
 > 包名：`multiagent-framework` / `multiagent-host-mac` / `multiagent-im-lark` / `multiagent-im-wecom` / `multiagent-orchestrator`。
 
 ```
@@ -58,8 +60,11 @@ packages/
 │       │   ├─ keys.ts      sendKeys / forceEnter（System Events key code 36 发真 Enter）
 │       │   ├─ probe.ts     probeSystemEvents（术语故障自检；恒 false 分支里放 key code 36）
 │       │   ├─ screen.ts    captureScreen（截 tab 可视区域）
-│       │   ├─ status.ts    inferTabStatus（idle/busy/claude/login/waiting/TUI）
+│       │   ├─ status.ts    inferTabStatus（走 AgentAdapter 识别 claude/codex；idle/busy/login/waiting/TUI）
+│       │   ├─ restart.ts   restart-all-claude-tabs（isClaudeTab + adapter.launchCommand，过 trust 弹窗）
 │       │   └─ types.ts     TerminalTab 类型
+│       ├─ git.ts           gitWorkingState/useCurrentBranch/prepareBugBranch（旧脏策略，worktree 模式下停用）
+│       ├─ task-workspace.ts prepareTaskWorkspace（fix_/feature_<id6>/ worktree 隔离目录）+ taskWorkroot/taskDirName/taskBranchName
 │       ├─ workspace.ts     ./data 目录管理
 │       ├─ recent-cwds.ts   最近用过的 cwd（new-tab dropdown）
 │       ├─ dir-index.ts     后台 refreshDirIndex 建目录索引（open/new 时补全）
@@ -86,7 +91,11 @@ packages/
 │       │   ├─ sanitize.ts  推送前清洗终端 noise（ANSI / 控制字符）
 │       │   ├─ health-check.ts  30s 调 lark token endpoint，失败 3 次自杀
 │       │   ├─ ws-watchdog.ts   monkey-patch console.log 截获 SDK [ws] 状态，判定 WS 死
-│       │   └─ system-events-probe.ts  每 2min 跑 probeSystemEvents，状态翻转时推飞书告警
+│       │   ├─ system-events-probe.ts  每 2min 跑 probeSystemEvents，状态翻转时推飞书告警
+│       │   ├─ tapd-watcher.ts  轮询 TAPD 指派/开发给我的缺陷需求 → 推认领卡
+│       │   ├─ perf-watcher.ts  轮询 performance 建议 → 推性能卡（配 PERF_* 启用）
+│       │   ├─ report-scheduler.ts 定时生成日/周/月报（配 REPORT_*_AT 启用）
+│       │   └─ careyclaw-key-reminder.ts  CareyClaw 调试密钥到期提醒
 │       └─ chats/           per-chat 状态（activeTty / watchAllTabs）store + types
 │
 ├─ im-wecom/                企业微信 transport（可选；配了 WECOM_* 才 attach）
@@ -101,7 +110,10 @@ packages/
         ├─ approval/        审批工作流（manager.create/resolve/list，5min auto-timeout）
         ├─ ask/             AskUserQuestion 交互问答（manager / types；含多问题表单 form）
         ├─ planner/         A3 Planner：generatePlan(claude -p 分解目标) + 内存计划库（/plan 用）
-        ├─ perf/            performance-platform 对接（P1 只读）：config/client(Basic auth)/query/store；perf-watcher 消费
+        ├─ perf/            performance 对接（P1 只读+P2 认领并建需求）：config/client/query/store/tapd-story(createPerfStory)
+        ├─ tapd/            TAPD 对接：client(MCP)/config/query/claims(TapdClaim.kind/resolveClaimKind)/prompt/repo-map/mcp-setup
+        ├─ integrations/    /connect 对接管理：registry(env/skill/agentType)/envfile(状态+停用)/skills/careyclaw-key
+        ├─ report/          日/周/月/年工作报告生成（配 REPORT_*_AT）
         ├─ subagents/       subagent 注册表（registry / types）
         ├─ knowledge/       shell 交互流自动提炼知识条目（extractor / heuristics / store / sanitize；缺 KNOWLEDGE_EXTRACT_ENABLED 不启用）
         ├─ worktasks/       任务工作目录记录（目录↔分支↔干啥，可搜；/worktasks 用）

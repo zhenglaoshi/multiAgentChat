@@ -20,7 +20,7 @@
 
 **常见原因**：
 - 之前 dev 没干净退出，socket 文件残留 → 删了：`rm ~/.multiagent-chat/agent.sock`（下次启动会重新建）
-- Node 版本不对 → `nvm use 20`
+- Node 版本不对 → `nvm use 22`（daemon 硬要求 Node ≥ 22）
 - 依赖没装完 → `pnpm install`
 
 ### daemon 起来但飞书收不到消息
@@ -182,7 +182,7 @@ agent lark which-chat   # 看当前 tab 默认发哪个 chat
 **原因**：飞书卡片 schema 版本或权限问题。
 
 **查**：
-- 飞书应用是否有 `im:message.send_as_bot` 权限
+- 飞书应用是否有 `im:message:send_as_bot` 权限
 - 卡片 schema 用的 2.0（本项目用 lark_md tag）
 
 ---

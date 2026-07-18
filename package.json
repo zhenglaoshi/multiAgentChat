@@ -5,7 +5,7 @@
   "description": "Local multi-agent orchestrator with mobile IM bridge (monorepo root)",
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "bin": {
     "agent": "./bin/agent"

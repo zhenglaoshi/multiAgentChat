@@ -184,6 +184,15 @@ agent lark send-card '<lark card json>'        # 发卡片
 agent lark which-chat                          # 看当前 tab 默认发哪个 chat
 ```
 
+**要用户从选项里选 / 填文本**（弹飞书交互卡，答案 JSON 从 stdout 回，退出码 0=answered/1=cancelled/2=timeout）：
+
+```bash
+agent lark ask single --title "选哪个?" --options "A,B,C"       # 单选（含逗号用 --options-json '["a,b","c"]'）
+agent lark ask multi  --title "勾选多个" --options "1,2,3"      # 多选
+agent lark ask input  --title "输入什么"                        # 文本（用户飞书回复即可）
+agent lark ask form   --title "标题" --spec-json '{"questions":[...]}'  # 多问题表单（每题单/多选，allowText 可自由输入）
+```
+
 **自动 chat 反查**：CLI 从当前 tty 反查触发任务的 chat，无需 `--chat`。若无 pending，退到 most-recent chat。
 
 ```bash

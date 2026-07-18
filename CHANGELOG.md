@@ -8,6 +8,16 @@
 
 ### 2026-07-18
 
+**文档**
+- **全文档审计并修正**（4 并行 agent 逐条对照代码）：改掉 ~20 处文档与实现的出入。
+  - **CLAUDE.md**：依赖方向纠正（原写反了 —— 实际 `orchestrator`(叶)←`host-mac`←`im-lark`←`framework`←`daemon`，`im-wecom`→framework+orchestrator，与 architecture.md 对齐）；结构树补全（orchestrator 加 `tapd/integrations/report`，host-mac 加 `restart.ts/git.ts/task-workspace.ts`，monitor 加 4 个 watcher）。
+  - **feishu-commands.md**（改 manifest 重生成）：占位符 `{{key}}`/`{{1}}` → 单花括号 `{key}`/`{1}`（双花括号会展开失效）；`/history` 默认 50→60。
+  - **Node 版本统一到 22**：`package.json` engines `>=20`→`>=22`、`doctor.ts` 检查 `>=20`→`>=22`（daemon 本就硬要求 22）；troubleshooting `nvm use 20`→`22`。
+  - **tapd.md**：主机制改为 `task-workspace.ts` 的 `prepareTaskWorkspace`，`prepareBugBranch` 标「旧脏策略已停用」；card-action 补 `tapd-cycle-kind` 等；通知卡按钮修正（稍后/不是我的）；脏策略卡标注 worktree 模式下 no-op。
+  - **perf-integration.md**：状态标语更新（P1+P2 已落地）；`REPOS_BASE_DIR`→`PERF_REPOS_BASE_DIR`。
+  - **web-dashboard.md**：抓屏降采样已实现（sips→1200px JPEG）；History 60→100。**wecom-bot-setup.md**：删已实现项的"未做"（ask/approval/stophook/cardaction/doctor 均已做）。**troubleshooting.md**：权限 `im:message.send_as_bot`→`:`。
+  - **codex-integration.md**：§2.2 标「C1 前快照」、§3.1 标「接口以 types.ts 为准」。**architecture.md**：DAG 补 im-wecom。**commands.md** + `cli.ts` printHelp：补 `agent lark ask form`。**features.md §17**：首启表补 `installCodexNotify`/`ensureIntegrationSkills`。
+
 **新增**
 - **Codex 对接 · C1 完成(AgentAdapter 抽象 + claude 消费端全接线)**：新建 `orchestrator/agents/` —— `AgentAdapter` 接口把"哪个编码 agent"的差异（进程识别 / 登录文案 / 启动·续接命令 / 内建 slash 白名单 / skill 目录 / 回传通道规格）收进一处；`claudeAdapter`（忠实还原现有散落值）+ `codexAdapter` + registry（`detectAgentFromProcs`/`getAgentAdapter`/`listAgentAdapters`）。**四个消费端全部接线，claude 行为 byte-identical（typecheck + `agent tabs` 实测双验证）**：
   - `host-mac/status.ts`：agent 识别 → `detectAgentFromProcs`；登录态 → `agent.loginPatterns`（删本地 `LOGIN_PATTERNS`）

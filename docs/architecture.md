@@ -78,7 +78,8 @@ daemon ──→ framework ──→ im-lark ──→ host-mac ──→ orches
 - `host-mac` 只依赖 orchestrator（用 logger）
 - `im-lark` 依赖 orchestrator + host-mac
 - `framework` 依赖上面三个
-- `daemon` 是唯一装配层，wire 全部
+- `im-wecom`（企微 transport，可选）依赖 framework + orchestrator
+- `daemon` 是唯一装配层，wire 全部（含可选 im-wecom）
 
 TypeScript project references 强制这个方向；跨包 relative import 会编译错。
 
