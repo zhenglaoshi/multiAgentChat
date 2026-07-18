@@ -817,6 +817,24 @@ perf 建议卡 [📋 认领并建需求]：建 TAPD 需求（创建人+开发负
 
 ---
 
+## 25. 多 agent 支持 · Codex CLI（对标 Claude Code）
+
+> 团队里有人用 Claude Code、有人用 Codex CLI。本项目从"绑死 claude"解耦成"多 agent adapter 驱动"，Codex CLI 是一等公民（同宿主 Terminal.app）。设计见 `docs/codex-integration.md`。
+
+### 能力
+- **`AgentAdapter` 抽象**（`orchestrator/agents/`）：把"哪个 agent"的差异（进程识别 / 登录文案 / 启动·续接命令 / 内建 slash 白名单 / skill 目录 / 回传通道规格）收进一处。`claudeAdapter`（忠实还原现有行为，byte-identical）+ `codexAdapter` + registry（`detectAgentFromProcs`）。tab 状态、启动、slash 转发都按识别到的 agent 分派。
+- **回传通道**（alt-screen 下 agent 响应推回飞书）：claude 用 `~/.claude/settings.json` Stop hook（`mchat-stop-hook`）；**codex 用 `~/.codex/config.toml` 的 `notify`（`bin/mchat-codex-notify`）** —— turn 结束 codex 以 argv JSON 调脚本 → 抽 `last-assistant-message` → `agent lark send-text`。daemon 启动幂等 upsert（非破坏、备份 `.mchat.bak`）。
+- **`/connect` 加 codex 项**（`agentType`）：检测 CLI 装没装 / 登录没 / notify 钩子装没装 + 给下一步引导。`agent connect codex`（socket-free）同款。就绪 = 三者全绿。
+- **桌面版 Codex**：不驱动 GUI，走"桥接到 CLI"（同账号装 CLI）。完整 GUI 驱动（`host-codex-app`）记档不投机做。
+
+### 状态
+C1（抽象）+ C2（回传通道）+ C3（/connect 引导）已完成，claude 行为始终不变。**唯一剩**：codex `login` 后跑一轮验 `notify` payload 字段名（`/tmp/mchat-codex-notify.log` 记原始 payload）→ 摘 `codexAdapter.unverified`。
+
+### 底层
+`orchestrator/agents/`（`types`/`claude`/`codex`/`registry`/`codex-status`）；`bin/mchat-codex-notify`；daemon `installCodexNotify()`；`host-mac/status.ts`·`restart.ts`、`im-lark/commands.ts` 消费端；registry `agentType:'codex'` + `connectStatusCard`/`connect-config`/`agent connect codex`。
+
+---
+
 ## 已知的能力边界
 
 **能做**：

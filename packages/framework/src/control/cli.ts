@@ -1510,6 +1510,17 @@ async function cmdConnect(flags: Flags): Promise<void> {
     else die(`技能安装失败：${r.failed.join(', ')}`);
     return;
   }
+  // agent 型（codex）：检测 CLI/登录/notify + 给引导，不填 env
+  if (it.agentType === 'codex') {
+    const { codexAgentStatus, codexNextStep } = await import('multiagent-orchestrator');
+    const st = await codexAgentStatus();
+    stdout.write(`「${it.name}」状态：\n`);
+    stdout.write(`  ${st.installed ? '✓' : '✗'} CLI 安装${st.binPath ? `（${st.binPath}）` : ''}\n`);
+    stdout.write(`  ${st.loggedIn ? '✓' : '✗'} 登录${st.loginDetail ? `（${st.loginDetail}）` : ''}\n`);
+    stdout.write(`  ${st.notifyHooked ? '✓' : '✗'} notify 回传钩子\n`);
+    stdout.write(`\n👉 ${codexNextStep(st)}\n`);
+    return;
+  }
   const kv: Record<string, string> = {};
   for (const f of it.fields) if (f.fixedValue) kv[f.env] = f.fixedValue;
   const inputs = it.fields.filter((f) => !f.fixedValue);

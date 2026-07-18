@@ -255,6 +255,9 @@ agent knowledge extract-last [-t /dev/ttysXXX] [-n 200]
 agent doctor                        # 12 项健康检查
 agent install-skill                 # 装 multiagent-lark skill 到 ~/.claude/skills/
 agent uninstall-skill
+agent connect                       # 列全部对接 + 状态（socket-free，bootstrap 用）
+agent connect lark                  # 交互式填飞书 App ID/Secret → 写 .env
+agent connect codex                 # 检测 Codex CLI 装没装/登录没/notify 钩子 + 给引导（多 agent，见 features §25）
 agent help                          # 完整命令清单
 ```
 

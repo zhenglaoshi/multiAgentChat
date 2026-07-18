@@ -120,12 +120,12 @@ interface HostBackend {
 |---|---|---|---|
 | **C1** | 抽 `AgentAdapter`（`orchestrator/agents/`：interface + claude + codex + registry）+ claude 消费端接线（status/restart/commands）| — | ✅ **已完成**（claude byte-identical，实测验证） |
 | **C0** | 抽 `HostBackend` 接口（纯重构） | — | 降级/暂缓（仅 Codex **桌面** GUI 才需要；CLI 复用现有 Terminal 宿主，不需要） |
-| **C2** | Codex CLI adapter 运行时：`bin/mchat-codex-notify` + daemon upsert `~/.codex/config.toml` 的 `notify` + 真机 turn 验 payload + 回传安装/状态标签按 adapter 分派 | C1 ✅ | 🔓 **已解锁**（codex CLI 已装+登录） |
-| **C3** | `/connect` 加 codex 项 + `agent connect codex` 引导（含桌面→CLI 桥接） | C2 | 待做 |
+| **C2** | Codex CLI 回传通道：`bin/mchat-codex-notify` + daemon `installCodexNotify()` upsert `~/.codex/config.toml` 的 `notify` + 状态标签按 `agent.kind` 分派 | C1 ✅ | ✅ **已完成**（实测已 upsert；仅 notify payload 待真机 turn 验） |
+| **C3** | codex 作为 `agentType` 对接：`/connect` 列 codex（检测 CLI/登录/notify + 引导）+ `agent connect codex` CLI | C2 ✅ | ✅ **已完成**（实测 `agent connect codex` 出真实三态） |
 | **C4**（可选） | 桌面版只读回传桥（验证 notify 对桌面触发后再定） | §6 验证 | 待定 |
 | **C-future** | `host-codex-app`（Electron GUI 驱动） | 有刚需才启 | 记档 |
 
-C1 已拿到解耦收益（所有 agent 专属逻辑从 `orchestrator/agents/` 一处流出）。C0（HostBackend）只对**桌面 App** 有意义，Codex CLI 走"桥接到 CLI"，故降级暂缓。下一步 C2 把 Codex CLI 运行时接通。
+**Codex CLI 对接闭环达成（C1+C2+C3）**，claude 行为始终 byte-identical。所有 agent 专属逻辑从 `orchestrator/agents/` 一处流出。C0（HostBackend）只对**桌面 App** 有意义（CLI 走"桥接到 CLI"），降级暂缓。**唯一剩**：codex `login` 后跑一轮验 notify payload（`/tmp/mchat-codex-notify.log` 会记原始 payload）→ 摘 `codexAdapter.unverified`。
 
 ## 6. 待拍板 / 需提供 / 需验证
 
@@ -140,7 +140,10 @@ C1 已拿到解耦收益（所有 agent 专属逻辑从 `orchestrator/agents/` �
 2. **`notify` payload schema**（`type=agent-turn-complete` / `last-assistant-message` 字段名、触发时机）——**C2 里跑一次真机 turn（配 notify 脚本）落实**，是 `codexAdapter.unverified` 仅剩的一处。
 3. **桌面版是否执行 `config.toml` 的 `notify`**（决定 C4 只读桥）——需一台真跑桌面版的机器测。
 
-> C1 落地记：`AgentAdapter` 接口 + `claudeAdapter`（忠实还原）+ `codexAdapter`（`unverified` 仅剩 notify payload）+ registry 已实现于 `packages/orchestrator/src/agents/`；claude 消费端（`host-mac/status.ts`/`restart.ts`、`im-lark/commands.ts`）已全部接线，byte-identical。
+> 落地记（实现文件索引）：
+> - **C1**：`packages/orchestrator/src/agents/`（`types`/`claude`/`codex`/`registry`）；消费端 `host-mac/status.ts`（识别+登录+标签）/`restart.ts`（isClaudeTab+启动命令）、`im-lark/commands.ts`（slash 白名单）。
+> - **C2**：`bin/mchat-codex-notify`（ESM notify 钩子）+ `apps/daemon/src/index.ts` 的 `installCodexNotify()`（TOML upsert，非破坏+备份）。
+> - **C3**：`orchestrator/agents/codex-status.ts`（`codexAgentStatus`/`codexNextStep`）+ registry `agentType:'codex'` + `envfile.ts` 状态计算 + `connectStatusCard` agent 分支 + handlers `connect-config` agent 分支 + `cli.ts` `agent connect codex`。
 
 ## 7. 与现有约定的衔接
 

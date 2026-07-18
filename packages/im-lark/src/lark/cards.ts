@@ -2617,17 +2617,18 @@ export function connectStatusCard(statuses: IntegrationStatus[]) {
     elements.push({ tag: 'div', text: { tag: 'lark_md', content: `**${g}**` } });
     for (const s of items) {
       const badge = !s.connected
-        ? (s.skill ? "<font color='grey'>⬜ 未安装</font>" : "<font color='grey'>⬜ 未对接</font>")
+        ? (s.skill ? "<font color='grey'>⬜ 未安装</font>" : s.agent ? "<font color='grey'>⬜ 未就绪</font>" : "<font color='grey'>⬜ 未对接</font>")
         : s.disabled
           ? "<font color='orange'>⏸ 已停用（配置保留）</font>"
-          : (s.skill ? "<font color='green'>✅ 已安装</font>" : "<font color='green'>✅ 已启用</font>");
-      elements.push({ tag: 'div', text: { tag: 'lark_md', content: `${badge}　**${s.name}**\n<font color='grey'>${s.desc}</font>` } });
+          : (s.skill ? "<font color='green'>✅ 已安装</font>" : s.agent ? "<font color='green'>✅ 就绪</font>" : "<font color='green'>✅ 已启用</font>");
+      const todo = s.agent && s.missing.length ? ` · <font color='orange'>待办：${s.missing.join('、')}</font>` : '';
+      elements.push({ tag: 'div', text: { tag: 'lark_md', content: `${badge}　**${s.name}**\n<font color='grey'>${s.desc}</font>${todo}` } });
       if (s.core) continue; // 核心(飞书)不可停用
       let btn: unknown | null = null;
       if (!s.connected) {
-        btn = { tag: 'button', text: { tag: 'plain_text', content: s.skill ? `📥 安装` : `🔌 对接` }, type: 'primary', value: { action: 'connect-config', key: s.key } };
-      } else if (s.skill) {
-        continue; // skill 型已装：无需停用（技能不占资源），如需更新技能自带自更新
+        btn = { tag: 'button', text: { tag: 'plain_text', content: s.skill ? `📥 安装` : s.agent ? `📋 查看引导` : `🔌 对接` }, type: 'primary', value: { action: 'connect-config', key: s.key } };
+      } else if (s.skill || s.agent) {
+        continue; // skill 型已装 / agent 型已就绪：无需停用
       } else if (s.disabled) {
         btn = { tag: 'button', text: { tag: 'plain_text', content: `▶ 启用` }, type: 'primary', value: { action: 'connect-enable', key: s.key } };
       } else {

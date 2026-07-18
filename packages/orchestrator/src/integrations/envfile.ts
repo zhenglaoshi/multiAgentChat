@@ -2,6 +2,7 @@ import { readFile, writeFile, rename } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { INTEGRATIONS, type Integration } from './registry.js';
 import { skillsInstalled } from './skills.js';
+import { codexAgentStatus } from '../agents/codex-status.js';
 
 const ENV_PATH = resolve('./.env');
 
@@ -75,7 +76,8 @@ export interface IntegrationStatus {
   disabled: boolean;   // 配置齐全但被手动停用（软关闭）
   core: boolean;
   skill: boolean;      // skill 型对接（装技能而非填 env，无停用）
-  missing: string[];   // 缺哪些 env / 技能
+  agent?: boolean;     // agent 型对接（检测 CLI/登录/notify，如 codex）
+  missing: string[];   // 缺哪些 env / 技能 / 前置条件
 }
 
 /** 读 .env / 技能安装状态 判定每个对接。skill 型看技能装没装；env 型看 .env。 */
@@ -87,6 +89,15 @@ export async function integrationStatuses(): Promise<IntegrationStatus[]> {
     if (it.skillType) {
       const connected = await skillsInstalled(it);
       return { key: it.key, name: it.name, group: it.group, desc: it.desc, connected, disabled: false, core: false, skill: true, missing: connected ? [] : (it.skills ?? []).map((s) => s.name) };
+    }
+    if (it.agentType === 'codex') {
+      const st = await codexAgentStatus();
+      const connected = st.installed && st.loggedIn && st.notifyHooked; // 全绿才算就绪
+      const missing: string[] = [];
+      if (!st.installed) missing.push('codex CLI 未安装');
+      else if (!st.loggedIn) missing.push('codex 未登录');
+      if (st.installed && !st.notifyHooked) missing.push('notify 钩子未装');
+      return { key: it.key, name: it.name, group: it.group, desc: it.desc, connected, disabled: false, core: false, skill: false, agent: true, missing };
     }
     const present = it.fields.filter((f) => has(f.env)).map((f) => f.env);
     const connected = it.anyOf ? present.length > 0 : present.length === it.fields.length;

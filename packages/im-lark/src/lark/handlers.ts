@@ -1379,6 +1379,27 @@ async function handleCardAction(
       })();
       return { toast: { type: 'info', content: '安装技能中…' } };
     }
+    // agent 型（codex）：检测状态 + 发引导，不填 env 不装技能
+    if (it.agentType === 'codex') {
+      (async () => {
+        try {
+          const { codexAgentStatus, codexNextStep } = await import('multiagent-orchestrator');
+          const st = await codexAgentStatus();
+          const lines = [
+            `**${it.name}** 状态：`,
+            `${st.installed ? '✅' : '⬜'} CLI 安装${st.binPath ? `（${st.binPath}）` : ''}`,
+            `${st.loggedIn ? '✅' : '⬜'} 登录${st.loginDetail ? `（${st.loginDetail}）` : ''}`,
+            `${st.notifyHooked ? '✅' : '⬜'} notify 回传钩子`,
+            '',
+            `👉 ${codexNextStep(st)}`,
+          ];
+          void sendText(client, chatId, lines.join('\n'));
+        } catch (e) {
+          void sendText(client, chatId, `❌ codex 状态检测失败：${(e as Error).message}`);
+        }
+      })();
+      return { toast: { type: 'info', content: '检测 codex 状态…' } };
+    }
     const form = connectFormCard(it);
     if (form) {
       void sendCard(client, chatId, form);

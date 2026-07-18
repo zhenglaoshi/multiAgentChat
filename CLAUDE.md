@@ -295,6 +295,8 @@ npm run typecheck
 - Web Dashboard（apps/daemon/web-dashboard，配 WEB_DASHBOARD_TOKEN 启用）
 - Knowledge Extraction（orchestrator/knowledge，shell 交互流自动提炼；KNOWLEDGE_EXTRACT_ENABLED=1 启用）
 - System Events 术语故障自检告警（见上「关键约定」）
+- 任务工作目录隔离（worktree + `/worktasks` + perf 认领并建需求；`orchestrator/worktasks` + `host-mac/task-workspace.ts`，见 features §24）
+- 多 agent 支持 · Codex CLI（`AgentAdapter` 抽象 + `mchat-codex-notify` 回传 + `/connect` codex 项；C1+C2+C3 ✅，剩 codex 登录后验 notify payload。见 docs/codex-integration.md / features §25）
 
 进行中 / 待办：
 - A 路线 · 编排：A1 任务模板（/template + /run ✅）、A2 任务链（chains.ts ✅）、A3 Planner（v1·方案丙 ✅ `/plan`；甲多tab自动串/乙单tab SOP 待叠加）

@@ -26,6 +26,8 @@ export interface Integration {
   /** skill 型对接：对接=装 Claude Code 技能（无 env / 无密钥；技能自带浏览器授权）。 */
   skillType?: boolean;
   skills?: IntegrationSkill[];
+  /** agent 型对接：不填 env 不装技能，"对接"=检测 CLI 装没装/登录没/notify 钩子装没装 + 给引导（如 codex）。 */
+  agentType?: 'codex';
 }
 
 /** 本项目所有可选对接。状态由 .env 里对应 env 是否有值判定。 */
@@ -60,6 +62,11 @@ export const INTEGRATIONS: Integration[] = [
     key: 'knowledge', name: '知识提炼', group: '开发',
     desc: 'shell 交互流自动提炼知识条目',
     fields: [{ env: 'KNOWLEDGE_EXTRACT_ENABLED', label: '开启', fixedValue: '1' }],
+  },
+  {
+    key: 'codex', name: 'Codex CLI (多 agent)', group: '开发',
+    desc: '让 codex tab 也能远程调度 + 响应回传飞书（对标 claude）。检测 CLI/登录/notify 钩子',
+    fields: [], agentType: 'codex',
   },
   {
     key: 'wecom', name: '企业微信', group: '传输',

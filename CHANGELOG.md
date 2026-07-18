@@ -19,7 +19,12 @@
   - **`bin/mchat-codex-notify`**（ESM，对标 `mchat-stop-hook`）：codex turn 结束以**单 argv 参数**传 JSON 调本脚本 → 按 `type=agent-turn-complete` 过滤 → 抽 `last-assistant-message` → fire-and-forget `agent lark send-text --auto`。防御式解析（argv 优先/stdin 兜底、字段名多候选、跳 `codex exec` headless、meta 过滤、长度降噪）；**抽不到消息时落原始 payload 到 `/tmp/mchat-codex-notify.log`** 供未验证期核对格式。冒烟测试通过。
   - **daemon `installCodexNotify()`**：幂等 upsert `notify = ["<脚本绝对路径>"]` 到 `~/.codex/config.toml`（顶层 key 插最前，合法 TOML；**非破坏**：已有别人的 notify 只告警不覆盖；写前备份 `.mchat.bak`）。实测已写入。
   - status.ts 状态标签用 `agent.kind` 参数化（claude 逐字不变，codex tab 显示"🤖 codex 跑着"/"🔐 codex 需要登录 → codex login"）。
-  - ⏳ 仅剩：跑一次**真机 codex turn** 确认 notify payload 字段名/触发时机（需登录+token，本轮暂缓）→ 从日志核对后摘 `codexAdapter.unverified`。C3：`/connect` 加 codex 项 + `agent connect codex` 引导。
+  - ⏳ 仅剩：跑一次**真机 codex turn** 确认 notify payload 字段名/触发时机（需登录+token，本轮暂缓）→ 从日志核对后摘 `codexAdapter.unverified`。
+- **Codex 对接 · C3(/connect 加 codex 项)**：codex 作为新的 **`agentType`** 对接（既非 env 型也非 skill 型）——「对接」=检测 CLI 装没装 / 登录没 / notify 钩子装没装 + 给下一步引导（`codexAgentStatus`/`codexNextStep`，`orchestrator/agents/codex-status.ts`）。就绪 = 三者全绿。
+  - `/connect` 面板列出 codex（badge ✅就绪/⬜未就绪 + 待办明细），[📋 查看引导] 按钮把状态+下一步推飞书；
+  - `agent connect codex` CLI（socket-free）打印三项状态 + 引导；
+  - **实测**：`agent connect codex` → CLI✓（/…/codex）/ 登录✗（当前登出）/ notify✓ → "已装未登录：跑一次 codex login"。
+  - 至此 Codex CLI 对接闭环：C1 抽象 + C2 回传通道 + C3 引导。剩 codex 登录后跑一轮验 notify payload。设计见 `docs/codex-integration.md`。
 
 ### 2026-07-17
 
