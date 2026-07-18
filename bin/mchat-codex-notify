@@ -1,0 +1,129 @@
+#!/usr/bin/env node
+/*
+ * multiAgentChat — Codex CLI notify hook（对标 claude 的 mchat-stop-hook）
+ *
+ * ~/.codex/config.toml 的 `notify = ["<本脚本绝对路径>"]` 指向本脚本。Codex 在
+ * turn 结束（type=agent-turn-complete）时以**单个 argv 参数**传一段 JSON 调本脚本
+ * （注意：codex 走 argv，不是 stdin —— 与 claude Stop hook 不同）。本脚本抽最后一条
+ * assistant 消息，通过 `bin/agent lark send-text --auto` 推到飞书；daemon 依 chat 的
+ * watchAllTabs 决定放行。
+ *
+ * Fire-and-forget：spawn detached，立即 exit 0，不阻塞 codex。异常全吞（exit 0）。
+ *
+ * ⚠ notify 的 payload 确切字段名/结构**尚未本机真机验证**（codex 未跑过真 turn）。
+ *   本脚本按 OpenAI Codex 文档（type / last-assistant-message）写，并做**防御式解析**：
+ *   - argv 优先、stdin 兜底；消息字段名多候选；
+ *   - **抽不到消息时把原始 payload 落 /tmp/mchat-codex-notify.log**，便于首个真 turn 后核对格式。
+ *   设 MCHAT_HOOK_DEBUG=1 打开全量调试日志。
+ *
+ * NOTE: 必须用 ESM（monorepo root "type":"module"，require() 会 crash）。
+ */
+import { spawn, execFileSync } from 'node:child_process';
+import { appendFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const MAX_TEXT_LEN = 3500;
+const MIN_TEXT_LEN = (() => {
+  const v = process.env['MCHAT_STOP_MIN_LEN'];
+  if (v === undefined) return 40;
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 ? n : 40;
+})();
+const DEBUG = process.env['MCHAT_HOOK_DEBUG'] === '1';
+const LOG = '/tmp/mchat-codex-notify.log';
+
+function dbg(msg) {
+  if (!DEBUG) return;
+  try { appendFileSync(LOG, `[${new Date().toISOString()}] ${msg}\n`); } catch {}
+}
+// 未验证期专用：无论 DEBUG 与否，抽不到消息时都落一次原始 payload，供核对格式。
+function logRaw(reason, raw) {
+  try { appendFileSync(LOG, `[${new Date().toISOString()}] ${reason}: ${String(raw).slice(0, 2000)}\n`); } catch {}
+}
+
+/* 是否 headless / 内部会话（codex exec 或本项目内部 spawn）—— 不推飞书。 */
+function isHeadlessSession() {
+  if (process.env['MCHAT_INTERNAL_SESSION'] === '1') return true;
+  try {
+    const cmd = execFileSync('ps', ['-o', 'command=', '-p', String(process.ppid)], { encoding: 'utf8' }).trim();
+    if (/(^|\s)codex\s+(exec|e)(\s|$)/.test(cmd)) return true;   // codex 非交互
+    if (/(^|\s)(-p|--print)(\s|$)/.test(cmd)) return true;
+  } catch { /* 拿不准 → 照旧推 */ }
+  return false;
+}
+
+/* 内容特征过滤：拦知识提取/协作效率评估器的 meta 输出（与 stop-hook 一致）。 */
+function looksLikeInternalMeta(text) {
+  if (process.env['MCHAT_STOP_NO_META_FILTER'] === '1') return false;
+  if (/prompt_quality/.test(text)) return true;
+  if (/corrections/.test(text) && /one_shot/.test(text)) return true;
+  if (/协作效率/.test(text)) return true;
+  if (/(提炼|提取)[^。\n]{0,8}知识条目/.test(text) && /(请提供|缺少输入|粘贴过来)/.test(text)) return true;
+  return false;
+}
+
+/* 从 codex payload 抽最后一条 assistant 消息（字段名多候选，防御式）。 */
+function extractMessage(payload) {
+  if (!payload || typeof payload !== 'object') return undefined;
+  const cand = payload['last-assistant-message']
+    ?? payload['last_assistant_message']
+    ?? payload['last-agent-message']
+    ?? payload['assistant-message']
+    ?? payload['message'];
+  return typeof cand === 'string' ? cand : undefined;
+}
+
+function handle(raw) {
+  try {
+    if (!raw || !String(raw).trim()) return process.exit(0);
+    let payload;
+    try { payload = JSON.parse(raw); } catch { logRaw('parse-fail (非 JSON)', raw); return process.exit(0); }
+
+    // 只在 turn 结束事件推（其它事件类型如通知/审批跳过）；无 type 字段则不拦。
+    const type = payload['type'] ?? payload['event'];
+    if (type && type !== 'agent-turn-complete') { dbg(`skip: type=${type}`); return process.exit(0); }
+
+    if (isHeadlessSession()) { dbg(`skip: headless (ppid=${process.ppid})`); return process.exit(0); }
+
+    let text = extractMessage(payload);
+    if (typeof text !== 'string' || !text.trim()) {
+      // 抽不到消息 → 落原始 payload，供核对 notify 实际字段名（未验证期关键）
+      logRaw('no-message (核对字段名)', raw);
+      return process.exit(0);
+    }
+    if (looksLikeInternalMeta(text)) { dbg('skip: internal-tool meta'); return process.exit(0); }
+    const trimmedLen = text.trim().length;
+    if (trimmedLen < MIN_TEXT_LEN) { dbg(`skip: too short (${trimmedLen})`); return process.exit(0); }
+    if (text.length > MAX_TEXT_LEN) text = text.slice(0, MAX_TEXT_LEN) + '\n\n…(truncated)';
+
+    const agentBin = resolve(HERE, 'agent');
+    const args = ['lark', 'send-text', '--auto', '--origin-pid', String(process.ppid)];
+    const cwd = payload['cwd'] ?? payload['workdir'] ?? payload['cwd-path'];
+    if (typeof cwd === 'string' && cwd) args.push('--origin-cwd', cwd);
+    dbg(`spawn: text.len=${text.length} ppid=${process.ppid} cwd=${cwd ?? ''}`);
+    const proc = spawn(agentBin, args, { stdio: ['pipe', 'ignore', 'ignore'], detached: true });
+    proc.on('error', (e) => dbg('spawn error: ' + e.message));
+    proc.stdin.end(text);
+    proc.unref();
+    process.exit(0);
+  } catch (e) {
+    dbg('caught: ' + (e && e.message));
+    process.exit(0);
+  }
+}
+
+// codex 走 argv（末位 = JSON 串）；兜底读 stdin（万一走 stdin）。
+const argvPayload = process.argv.slice(2).find((a) => a.trim().startsWith('{'));
+if (argvPayload) {
+  handle(argvPayload);
+} else {
+  let raw = '';
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', (c) => { raw += c; });
+  process.stdin.on('error', () => process.exit(0));
+  process.stdin.on('end', () => handle(raw));
+  // stdin 可能不来（codex 只给 argv 且无 stdin）→ 200ms 后放弃
+  setTimeout(() => { if (!raw) { dbg('no argv & no stdin'); process.exit(0); } }, 200);
+}

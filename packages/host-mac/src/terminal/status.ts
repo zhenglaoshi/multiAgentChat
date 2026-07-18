@@ -56,20 +56,20 @@ export function inferTabStatus(
       if (agent.loginPatterns.some((re) => re.test(historyTail))) {
         return {
           kind: 'claude-login',
-          label: '🔐 claude 需要登录',
+          label: `🔐 ${agent.kind} 需要登录`,
           icon: '🔐',
-          detail: '运行 `claude /login` 或重启 claude',
+          detail: agent.kind === 'codex' ? '运行 `codex login` 或重启 codex' : '运行 `claude /login` 或重启 claude',
         };
       }
       if (WAITING_PATTERNS.some((re) => re.test(historyTail))) {
         return {
           kind: 'claude-waiting',
-          label: '⏳ claude 等输入',
+          label: `⏳ ${agent.kind} 等输入`,
           icon: '⏳',
         };
       }
     }
-    return { kind: 'claude-active', label: '🤖 claude 跑着', icon: '🤖' };
+    return { kind: 'claude-active', label: `🤖 ${agent.kind} 跑着`, icon: '🤖' };
   }
 
   if (!tab.busy) {

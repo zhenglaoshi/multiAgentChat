@@ -158,6 +158,52 @@ async function installClaudeCodeHooks(): Promise<void> {
 }
 
 /**
+ * 幂等把 Codex CLI 的回传通道装到 ~/.codex/config.toml 的 `notify`（对标 claude 的 Stop hook）。
+ * codex 未配置（无 ~/.codex/config.toml）→ 跳过。
+ * TOML 顶层 key 必须在任何 [table] 之前 → notify 插到文件最前。
+ * 幂等 + 非破坏：已是本脚本 → 跳过；无 notify → 插入；**已有别人的 notify → 只告警不覆盖**
+ * （codex 仅支持一个 notify 程序，不擅自清用户配置）。
+ */
+async function installCodexNotify(): Promise<void> {
+  const configPath = join(homedir(), '.codex', 'config.toml');
+  if (!existsSync(configPath)) {
+    logger.info('Codex config.toml not found — notify 未安装（codex CLI 未配置，跳过）', { configPath });
+    return;
+  }
+  const HERE = fileURLToPath(new URL('.', import.meta.url));
+  const binDir = resolve(HERE, '..', '..', '..', 'bin');
+  const notifyPath = resolve(binDir, 'mchat-codex-notify');
+  if (!existsSync(notifyPath)) {
+    logger.warn('bin/mchat-codex-notify not found', { notifyPath });
+    return;
+  }
+  try {
+    const raw = await readFile(configPath, 'utf8');
+    const notifyLineRe = /^\s*notify\s*=.*$/m;
+    const existing = raw.match(notifyLineRe);
+    if (existing && existing[0].includes(notifyPath)) {
+      logger.info('codex notify up-to-date', { notifyPath });
+      return;
+    }
+    if (existing) {
+      logger.warn('codex config.toml 已有其它 notify，未覆盖（codex 仅支持一个 notify 程序）。要回传飞书请手动把 notify 指向 bin/mchat-codex-notify', {
+        existing: existing[0].trim(),
+        notifyPath,
+      });
+      return;
+    }
+    // 顶层 key 插到文件最前（第一个 [table] 之前）
+    const desired = `notify = ["${notifyPath}"]`;
+    const next = `${desired}\n\n${raw}`;
+    await writeFile(configPath + '.mchat.bak', raw, 'utf8').catch(() => {});
+    await writeFile(configPath, next, 'utf8');
+    logger.info('codex notify upserted 到 ~/.codex/config.toml（备份 .mchat.bak）', { notifyPath });
+  } catch (e) {
+    logger.warn('failed to upsert codex notify', { err: (e as Error).message });
+  }
+}
+
+/**
  * 幂等把 skills/multiagent-lark/SKILL.md upsert 到 ~/.claude/skills/multiagent-lark/。
  * 内容相同 → 跳过；不同 → 覆盖（用户改了源码后重启 daemon 自动同步）。
  */
@@ -1299,6 +1345,7 @@ async function main() {
   // skill 型对接（careyclaw 等）：缺失则幂等自动安装官方技能（失败静默，不阻塞启动）
   for (const it of INTEGRATIONS) if (it.skillType) void ensureIntegrationSkills(it);
   await installClaudeCodeHooks();
+  await installCodexNotify();
   await ensureAgentOnPath();
 
   // ---- Web dashboard（可选）：仅在 WEB_DASHBOARD_TOKEN 设了时启用 ----
