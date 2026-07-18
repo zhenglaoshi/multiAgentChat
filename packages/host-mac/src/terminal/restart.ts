@@ -1,14 +1,13 @@
 import { forceEnter, listTabs, send } from './tabs.js';
 import { sendKeys } from './keys.js';
 import type { TerminalTab } from './types.js';
+import { detectAgentFromProcs, getAgentAdapter } from 'multiagent-orchestrator';
 
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** 与 status.ts 的判定一致：进程列表里有没有在跑 claude。 */
+/** 与 status.ts 的判定一致：进程列表里有没有在跑 agent（claude/codex）。走 AgentAdapter registry。 */
 export function isClaudeTab(tab: TerminalTab): boolean {
-  return tab.processes.some(
-    (p) => p === 'claude' || p === 'claude-code' || p.endsWith('/claude'),
-  );
+  return detectAgentFromProcs(tab.processes) !== null;
 }
 
 export interface RestartClaudeOptions {
@@ -101,7 +100,8 @@ export async function launchClaudeInTab(
 ): Promise<{ ok: boolean; command?: string; reason?: string }> {
   const continueSession = opts.continueSession ?? false;
   const acceptTrust = opts.acceptTrust ?? true;
-  const command = continueSession ? 'claude --continue' : 'claude';
+  // 启动命令走 claude adapter（行为不变；未来按 tab 的 agent 种类分派）
+  const command = getAgentAdapter('claude')!.launchCommand({ continueSession });
 
   const res = await send(tty, command);
   if (!res.ok) return { ok: false, reason: res.reason ?? '未知' };

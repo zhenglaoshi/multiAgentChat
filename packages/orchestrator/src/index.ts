@@ -7,6 +7,7 @@ export * from './ask/index.js';
 export * from './planner/index.js';
 export * from './perf/index.js';
 export * from './worktasks/index.js';
+export * from './agents/index.js';
 export * from './integrations/index.js';
 export * from './subagents/index.js';
 export * from './knowledge/index.js';

@@ -1,4 +1,5 @@
 import type { TerminalTab } from './types.js';
+import { detectAgentFromProcs } from 'multiagent-orchestrator';
 
 export type TabStatusKind =
   | 'shell-idle'       // shell prompt 闲（没 claude）
@@ -23,17 +24,7 @@ const TUI_PROCS = new Set([
   'fzf', 'tmux', 'screen', 'mc', 'ranger', 'nnn', 'lf',
 ]);
 
-const LOGIN_PATTERNS: RegExp[] = [
-  /Please\s+(log|sign)\s*in/i,
-  /You\s+(need\s+to\s+)?log\s*in/i,
-  /Sign\s+in\s+to\s+Claude/i,
-  /console\.anthropic\.com\/login/i,
-  /Authentication\s+required/i,
-  /Not\s+(yet\s+)?authenticated/i,
-  /OAuth\s+token/i,
-  /run\s+`?claude\s+\/login/i,
-  /run\s+`?claude\s+(auth|login)/i,
-];
+// 登录态识别文案已移入 AgentAdapter（claude/codex 各自的 loginPatterns），见 orchestrator/agents
 
 const WAITING_PATTERNS: RegExp[] = [
   /^\s*[☐☒○●⊙◯◉]/m,
@@ -50,9 +41,9 @@ export function inferTabStatus(
   historyTail?: string,
 ): TabStatusInfo {
   const procs = tab.processes.map((p) => p.toLowerCase());
-  const hasClaude = procs.some(
-    (p) => p === 'claude' || p === 'claude-code' || p.endsWith('/claude'),
-  );
+  // agent 识别走 AgentAdapter registry：claude 逻辑逐字不变，顺带认 codex（多 agent 解耦）
+  const agent = detectAgentFromProcs(tab.processes);
+  const hasClaude = agent !== null;
 
   // TUI 优先（vim/htop 等独占）
   const tuiProc = tab.processes.find((p) => TUI_PROCS.has(p.toLowerCase()));
@@ -60,9 +51,9 @@ export function inferTabStatus(
     return { kind: 'tui', label: `TUI: ${tuiProc}`, icon: '⚠️' };
   }
 
-  if (hasClaude) {
+  if (agent) {
     if (historyTail) {
-      if (LOGIN_PATTERNS.some((re) => re.test(historyTail))) {
+      if (agent.loginPatterns.some((re) => re.test(historyTail))) {
         return {
           kind: 'claude-login',
           label: '🔐 claude 需要登录',

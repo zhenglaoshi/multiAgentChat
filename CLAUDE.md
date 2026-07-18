@@ -103,7 +103,9 @@ packages/
         ├─ planner/         A3 Planner：generatePlan(claude -p 分解目标) + 内存计划库（/plan 用）
         ├─ perf/            performance-platform 对接（P1 只读）：config/client(Basic auth)/query/store；perf-watcher 消费
         ├─ subagents/       subagent 注册表（registry / types）
-        └─ knowledge/       shell 交互流自动提炼知识条目（extractor / heuristics / store / sanitize；缺 KNOWLEDGE_EXTRACT_ENABLED 不启用）
+        ├─ knowledge/       shell 交互流自动提炼知识条目（extractor / heuristics / store / sanitize；缺 KNOWLEDGE_EXTRACT_ENABLED 不启用）
+        ├─ worktasks/       任务工作目录记录（目录↔分支↔干啥，可搜；/worktasks 用）
+        └─ agents/          AgentAdapter 抽象（claude/codex：进程识别/登录文案/启动命令/slash白名单/回传通道规格）；多 agent 解耦，见 docs/codex-integration.md
 
 skills/multiagent-lark/SKILL.md    →  会 symlink/copy 到 ~/.claude/skills/
 bin/agent                          →  CLI 入口（npx tsx packages/framework/src/control/cli.ts）

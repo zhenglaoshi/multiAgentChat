@@ -3,6 +3,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import { homedir, hostname, networkInterfaces } from 'node:os';
 import { join, resolve } from 'node:path';
 import { approvals } from 'multiagent-orchestrator';
+import { getAgentAdapter } from 'multiagent-orchestrator';
 import { loadChat, saveChat } from '../chats/store.js';
 import { recall, tokenize } from 'multiagent-orchestrator';
 import { memoryStore } from 'multiagent-orchestrator';
@@ -122,17 +123,10 @@ export function stripForwardSlash(text: string): string {
  * 注意：这些命令名跟 mchat 内建**不冲突**（我们已避开）。如果哪天 mchat 加了
  * 同名命令，白名单里那条要移除或改约定。
  */
-const CLAUDE_CODE_NATIVE_SLASH = new Set([
-  // 注意：`/help` 不在白名单 —— mchat 自己有 /help 优先响应，
-  // 想看 Claude Code 的 help 用 `//help` 强制转发到 tab
-  'config', 'model', 'clear', 'agents', 'skills', 'permissions',
-  'cost', 'doctor', 'compact', 'export', 'memory', 'resume',
-  'review', 'vim', 'ide', 'mcp', 'add-dir', 'allowed-tools',
-  'init', 'todo', 'status', 'logout', 'login', 'bug', 'release-notes',
-  'security-review', 'pr-comments',
-  // 也顺手过一些常见 skill 命令名（用户装 skill 后 skill 有自己的 slash 触发）
-  'loop', 'schedule', 'goal', 'ultrathink',
-]);
+// 内建 slash 白名单从 claude adapter 取（单一真源，见 orchestrator/agents/claude.ts）。
+// 注意：`/help` 不在白名单 —— mchat 自己有 /help 优先响应，想看 Claude Code 的 help 用 `//help`。
+// 未来按 active tab 的 agent 种类选对应 adapter 的白名单（codex 内建 slash 不同）。
+const CLAUDE_CODE_NATIVE_SLASH = new Set(getAgentAdapter('claude')!.builtinSlashCommands);
 
 export function isClaudeNativeSlash(name: string): boolean {
   return CLAUDE_CODE_NATIVE_SLASH.has(name.toLowerCase());

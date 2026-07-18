@@ -118,23 +118,29 @@ interface HostBackend {
 
 | 阶段 | 内容 | 依赖 | 状态 |
 |---|---|---|---|
-| **C0** | 抽 `HostBackend` 接口（纯重构，行为不变，单测护航） | — | 待做 |
-| **C1** | 抽 `AgentAdapter` + claude adapter（把现有硬编码搬进去，行为不变） | C0 | 待做 |
-| **C2** | Codex CLI adapter：`mchat-codex-notify` + upsert config.toml + detect/login/launch | C1 + §6 待查 | 待做 |
+| **C1** | 抽 `AgentAdapter`（`orchestrator/agents/`：interface + claude + codex + registry）+ claude 消费端接线（status/restart/commands）| — | ✅ **已完成**（claude byte-identical，实测验证） |
+| **C0** | 抽 `HostBackend` 接口（纯重构） | — | 降级/暂缓（仅 Codex **桌面** GUI 才需要；CLI 复用现有 Terminal 宿主，不需要） |
+| **C2** | Codex CLI adapter 运行时：`bin/mchat-codex-notify` + daemon upsert `~/.codex/config.toml` 的 `notify` + 真机 turn 验 payload + 回传安装/状态标签按 adapter 分派 | C1 ✅ | 🔓 **已解锁**（codex CLI 已装+登录） |
 | **C3** | `/connect` 加 codex 项 + `agent connect codex` 引导（含桌面→CLI 桥接） | C2 | 待做 |
 | **C4**（可选） | 桌面版只读回传桥（验证 notify 对桌面触发后再定） | §6 验证 | 待定 |
 | **C-future** | `host-codex-app`（Electron GUI 驱动） | 有刚需才启 | 记档 |
 
-先做 C0→C1 拿到解耦收益（顺带让未来任何 agent/宿主都好接），再 C2→C3 把 Codex CLI 接通。
+C1 已拿到解耦收益（所有 agent 专属逻辑从 `orchestrator/agents/` 一处流出）。C0（HostBackend）只对**桌面 App** 有意义，Codex CLI 走"桥接到 CLI"，故降级暂缓。下一步 C2 把 Codex CLI 运行时接通。
 
 ## 6. 待拍板 / 需提供 / 需验证
 
-1. **同事的 Codex 是 CLI 还是桌面?**（gating——但即使桌面，答案已是「桥接到 CLI」，不再是死路）
-2. **Codex CLI 的 `notify` payload schema**（字段名、是否含最后消息全文、cwd、session id）——查 codex 官方文档。
-3. **Codex CLI 的启动 / 续接命令**（`codex` 之外，resume/continue 怎么写）。
-4. **桌面版是否执行 `config.toml` 的 `notify`**（决定 C4 只读桥是否成立）——在一台真跑桌面版的机器上测。
-5. **Codex CLI 的分发方式**（npm `@openai/codex` / brew / 其它）——写进 `agent connect codex` 的引导。
-6. Codex 是否有 headless（对标 `claude -p`）——若有，planner/knowledge 也能按用户偏好切；否则统一用本机 claude 跑后台，不阻塞。
+已核实（codex-cli 0.144.5，`codex --help`）：
+- ✅ **启动 / 续接命令**：交互式 `codex`；续接 `codex resume --last`。
+- ✅ **分发方式**：`npm i -g @openai/codex`（也有 brew `codex`）。本机已装+API key 登录。
+- ✅ **headless**（对标 `claude -p`）：`codex exec`（别名 `e`）非交互跑。
+- ✅ **进程名/config**：进程名 `codex`；config = `~/.codex/config.toml`。
+
+仍待：
+1. **同事的 Codex 是 CLI 还是桌面?**（gating——即使桌面答案也是「桥接到 CLI」，不是死路）
+2. **`notify` payload schema**（`type=agent-turn-complete` / `last-assistant-message` 字段名、触发时机）——**C2 里跑一次真机 turn（配 notify 脚本）落实**，是 `codexAdapter.unverified` 仅剩的一处。
+3. **桌面版是否执行 `config.toml` 的 `notify`**（决定 C4 只读桥）——需一台真跑桌面版的机器测。
+
+> C1 落地记：`AgentAdapter` 接口 + `claudeAdapter`（忠实还原）+ `codexAdapter`（`unverified` 仅剩 notify payload）+ registry 已实现于 `packages/orchestrator/src/agents/`；claude 消费端（`host-mac/status.ts`/`restart.ts`、`im-lark/commands.ts`）已全部接线，byte-identical。
 
 ## 7. 与现有约定的衔接
 

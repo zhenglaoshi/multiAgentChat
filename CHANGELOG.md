@@ -6,6 +6,17 @@
 
 ## [未发布]
 
+### 2026-07-18
+
+**新增**
+- **Codex 对接 · C1 完成(AgentAdapter 抽象 + claude 消费端全接线)**：新建 `orchestrator/agents/` —— `AgentAdapter` 接口把"哪个编码 agent"的差异（进程识别 / 登录文案 / 启动·续接命令 / 内建 slash 白名单 / skill 目录 / 回传通道规格）收进一处；`claudeAdapter`（忠实还原现有散落值）+ `codexAdapter` + registry（`detectAgentFromProcs`/`getAgentAdapter`/`listAgentAdapters`）。**四个消费端全部接线，claude 行为 byte-identical（typecheck + `agent tabs` 实测双验证）**：
+  - `host-mac/status.ts`：agent 识别 → `detectAgentFromProcs`；登录态 → `agent.loginPatterns`（删本地 `LOGIN_PATTERNS`）
+  - `host-mac/restart.ts`：`isClaudeTab` → `detectAgentFromProcs`；启动命令 → `getAgentAdapter('claude').launchCommand`
+  - `im-lark/commands.ts`：内建 slash 白名单 → `claudeAdapter.builtinSlashCommands`（单一真源）
+  - 顺带认 codex tab（进程名 `codex`）。
+- **装 codex CLI + 核对 codex adapter**：`npm i -g @openai/codex`（codex-cli 0.144.5，已 API key 登录）。`codex --help` 验证并修正 adapter：进程名 `codex`、续接 `codex resume --last`（原写 `resume`）、`login`/`exec` 子命令、config=`~/.codex/config.toml`。仅剩 `notify` payload 格式（argv JSON · `type=agent-turn-complete` · `last-assistant-message`）待 C2 真机 turn 验证（`unverified` 标记收窄至此）。
+  - ⏳ 待办 C2：写 `bin/mchat-codex-notify` + daemon 幂等 upsert `~/.codex/config.toml` 的 `notify` + 真机 turn 验 payload；C3：`/connect` 加 codex 项。设计见 `docs/codex-integration.md`。
+
 ### 2026-07-17
 
 **新增**
