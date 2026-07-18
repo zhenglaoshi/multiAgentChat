@@ -103,6 +103,8 @@ interface HostBackend {
 
 ## 4. Codex 桌面版：为什么不驱动 GUI，怎么办
 
+> **结论（当前状态）**：桌面版**不直接支持**，是设计决定不是遗漏。**Codex CLI = 一等公民**（C1+C2+C3 已做）；**桌面版 = 桥接到 CLI**（同账号装 CLI，几分钟）。纯桌面版本身最多有个**未验证的只读回传桥**（只出不进），远程发指令那半边架构上做不了。完整 GUI 驱动记档不开工。
+
 ### 4.1 为什么不做一等公民
 - 不在 Terminal tab 里 → `do script` / `history of tab` **全部失效**，整个 host 层不适用。
 - 驱动 Electron 只有两条脏路：**CDP**（`--remote-debugging-port` 重启 app 后戳私有 DOM，每次 app 更新可能崩）或 **macOS Accessibility**（AXUIElement 读/点，脆且慢）。
@@ -111,8 +113,10 @@ interface HostBackend {
 
 ### 4.2 推荐：桥接到 CLI（+ 可选只读回传桥）
 - **桥接**：`agent connect codex` 检测到桌面版 → 引导同事装 Codex CLI（同账号 `~/.codex/auth.json`，几分钟）。桌面留着手动用，多agent 调度走 CLI。
-- **可选·只读桥（80/20）**：`notify` 是引擎级钩子。若桌面版也执行 `config.toml` 的 `notify`（§2.3 待验证），则**无需驱动 GUI 即可把桌面会话结果推飞书**（只出不进：能看结果、不能远程发指令）。这是极便宜的增值。
-- **完整 GUI 驱动**（`host-codex-app`）→ 仅当同事坚决拒绝 CLI 且业务刚需时才做；先记档，不投机开发。
+- **可选·只读桥（80/20，半就位）**：`notify` 是**引擎级**钩子，且桌面版与 CLI **共用 `~/.codex/config.toml`**。C2 已把 `notify = ["…/mchat-codex-notify"]` upsert 进这份共用 config → **如果桌面版也执行 `config.toml` 的 `notify`**，那用桌面版跑对话时响应**可能也会自动推飞书**（只出不进：看结果，不能远程发指令），无需额外开发。
+  - ⏳ **未验证**：需一台**真跑着桌面 App** 的机器（本机 `/Applications/Codex.app` 当前不存在，只有 `~/.codex` 残留）跑一轮，看 `mchat-codex-notify` 是否被触发（`/tmp/mchat-codex-notify.log` 会记）。成立则白捡；不成立则桌面版无回传。
+  - **输入注入（远程发指令给桌面版）无解** —— 这半边不因 notify 而改变。
+- **完整 GUI 驱动**（`host-codex-app`：CDP/Accessibility 驱动 Electron）→ 仅当同事坚决拒绝 CLI 且业务刚需时才做；先记档，不投机开发。
 
 ## 5. 分阶段计划
 
@@ -122,8 +126,8 @@ interface HostBackend {
 | **C0** | 抽 `HostBackend` 接口（纯重构） | — | 降级/暂缓（仅 Codex **桌面** GUI 才需要；CLI 复用现有 Terminal 宿主，不需要） |
 | **C2** | Codex CLI 回传通道：`bin/mchat-codex-notify` + daemon `installCodexNotify()` upsert `~/.codex/config.toml` 的 `notify` + 状态标签按 `agent.kind` 分派 | C1 ✅ | ✅ **已完成**（实测已 upsert；仅 notify payload 待真机 turn 验） |
 | **C3** | codex 作为 `agentType` 对接：`/connect` 列 codex（检测 CLI/登录/notify + 引导）+ `agent connect codex` CLI | C2 ✅ | ✅ **已完成**（实测 `agent connect codex` 出真实三态） |
-| **C4**（可选） | 桌面版只读回传桥（验证 notify 对桌面触发后再定） | §6 验证 | 待定 |
-| **C-future** | `host-codex-app`（Electron GUI 驱动） | 有刚需才启 | 记档 |
+| **C4**（可选） | 桌面版只读回传桥：notify 已 upsert 进共用 config.toml → **半就位**，待一台真跑桌面 App 的机器验证是否触发（见 §4.2） | §6 验证 | 半就位·待验 |
+| **C-future** | `host-codex-app`（Electron GUI 驱动，输入注入） | 有刚需才启 | 记档不做 |
 
 **Codex CLI 对接闭环达成（C1+C2+C3）**，claude 行为始终 byte-identical。所有 agent 专属逻辑从 `orchestrator/agents/` 一处流出。C0（HostBackend）只对**桌面 App** 有意义（CLI 走"桥接到 CLI"），降级暂缓。**唯一剩**：codex `login` 后跑一轮验 notify payload（`/tmp/mchat-codex-notify.log` 会记原始 payload）→ 摘 `codexAdapter.unverified`。
 
