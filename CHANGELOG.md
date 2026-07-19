@@ -8,6 +8,10 @@
 
 ### 2026-07-19
 
+**修复**
+- **卡片点击"没反应"（一整类 toast 盖 patch bug）**：`/shells` 切 tab（`use-tab`）等**一整类 card action** 违反了 CLAUDE.md 铁律——`await patchCard(...)` 后又 `return { toast }`，飞书把卡当"已处理无更新"、盖掉 patch → 卡不刷新、**点了像没反应**。用户因此切 active tab 看不到反馈 → 不确定切到哪 → 后续消息发错 shell。**统一改成 patch fire-and-forget + `return {}`（10 个 handler）**：`use-tab` / `send-to-tab` / `send-to-tab-arm` / `arm-active-reply` / send-answer / `connect-apply`·`connect-cancel`·`connect-disable/enable` / `perf-snooze`·`perf-not-mine` / `tapd-ignore`·`tapd-snooze`·`tapd-not-mine`。
+- **active tab 被删后消息误路由**：派发到 active tab 时若 `activeTty` 指向已关闭/删除的 tab，现在**清掉失效 activeTty** 并提示"已清除，用 `/shells` 重选"（此前只报"已不存在"、stale tty 残留，易让后续消息继续发向死 shell）。
+
 **新增**
 - **SOP loop 根因诊断 + 不收敛保护（可靠性#6）**：把失败回环从"盲重试"升级成"带诊断针对性修 + 修不好叫人"。
   - **诊断带进重试**：loop 触发时 `loopback` 响应带上 `diagnosis`（`--fail --note` 的根因）；CLI 提醒主 claude **务必把诊断带进重跑 subagent 的 prompt**，别盲改。wrapper prompt 要求 `--fail --note` 写清根因（哪个用例/期望 vs 实际/疑似原因）。

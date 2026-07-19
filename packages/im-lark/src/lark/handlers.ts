@@ -358,7 +358,10 @@ async function dispatchTweakSubagent(
   const tabs = await listTabs();
   const tab = tabs.find((t) => t.tty === chat.activeTty);
   if (!tab) {
-    await replyText(client, ctx, `❌ ★ ${chat.activeTty} 在 Terminal 已不存在`);
+    const stale = chat.activeTty;
+    delete chat.activeTty;
+    await saveChat(chat).catch(() => {});
+    await replyText(client, ctx, `❌ ★ ${stale} 已不在（可能被关闭/删除），已清除。\n用 \`/shells\` 重选一个 active tab 再发。`);
     return;
   }
   const sessionId = `satweak-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
@@ -441,7 +444,11 @@ async function dispatchGenSubagent(
   const tabs = await listTabs();
   const tab = tabs.find((t) => t.tty === chat.activeTty);
   if (!tab) {
-    await replyText(client, ctx, `❌ ★ ${chat.activeTty} 在 Terminal 已不存在`);
+    // active tab 已被删/关 → 清掉失效 activeTty，避免后续消息继续发向已不存在的 shell（误路由）
+    const stale = chat.activeTty;
+    delete chat.activeTty;
+    await saveChat(chat).catch(() => {});
+    await replyText(client, ctx, `❌ ★ ${stale} 已不在（可能被关闭/删除），已清除。\n用 \`/shells\` 重选一个 active tab 再发。`);
     return;
   }
   const sessionId = `sagen-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
@@ -1453,14 +1460,14 @@ async function handleCardAction(
         void sendText(client, chatId, `❌ 写入 .env 失败：${(e as Error).message}`);
       }
     })();
-    return { toast: { type: 'success', content: '写入并重启中' } };
+    return {}; // return toast 会盖掉 IIFE 里的 patchCard（CLAUDE.md）；靠卡刷新 + sendText 反馈
   }
 
   if (action === 'connect-cancel') {
     const key = value['key'] as string | undefined;
     if (key) connectStaging.delete(key);
-    await patchOrigToReceipt(client, data, '⊘ 已取消对接配置', undefined, 'grey');
-    return { toast: { type: 'info', content: '已取消' } };
+    void patchOrigToReceipt(client, data, '⊘ 已取消对接配置', undefined, 'grey');
+    return {};
   }
 
   if (action === 'connect-disable' || action === 'connect-enable') {
@@ -1478,7 +1485,7 @@ async function handleCardAction(
         void sendText(client, chatId, `❌ ${disable ? '停用' : '启用'}失败：${(e as Error).message}`);
       }
     })();
-    return { toast: { type: 'success', content: disable ? '停用中' : '启用中' } };
+    return {}; // 同上：靠卡刷新 + sendText 反馈，不 return toast
   }
 
   if (action === 'perf-claim') {
@@ -1550,16 +1557,16 @@ async function handleCardAction(
     const id = value['id'] as string | undefined;
     if (!id) return { toast: { type: 'error', content: '缺 id' } };
     await markPerfSnoozed(id);
-    await patchOrigToReceipt(client, data, '🕐 已稍后提醒', '3 小时后再推', 'grey');
-    return { toast: { type: 'info', content: '🕐 3 小时后再提醒' } };
+    void patchOrigToReceipt(client, data, '🕐 已稍后提醒', '3 小时后再推', 'grey');
+    return {};
   }
 
   if (action === 'perf-not-mine') {
     const id = value['id'] as string | undefined;
     if (!id) return { toast: { type: 'error', content: '缺 id' } };
     await markPerfIgnoredForever(id);
-    await patchOrigToReceipt(client, data, '🙈 已标记：不再提醒此项', undefined, 'grey');
-    return { toast: { type: 'info', content: '🙈 不再提醒' } };
+    void patchOrigToReceipt(client, data, '🙈 已标记：不再提醒此项', undefined, 'grey');
+    return {};
   }
 
   if (action === 'use-tab') {
@@ -1579,16 +1586,15 @@ async function handleCardAction(
     delete chat.recentReplyAt;
     await saveChat(chat);
     if (tab.cwd) void recordCwd(tab.cwd);
-    // patch 原卡为回执，不再新发 ackCard 避免 timeline 堆卡
-    await patchOrigToReceipt(
+    // patch 原卡为回执做反馈（**fire-and-forget**）；**绝不能 return { toast }** ——
+    // 飞书收到 toast 响应会把卡当"已处理无更新"，盖掉这个 patch → 点了像没反应（CLAUDE.md 坑）。
+    void patchOrigToReceipt(
       client,
       data,
       `⭐ 已切到 ${tab.tty}`,
       tab.cwd ? `cwd: \`${tab.cwd}\`` : undefined,
     );
-    return {
-      toast: { type: 'success', content: `★ 切到 ${tab.tty}` },
-    };
+    return {};
   }
 
   if (action === 'worktask-open') {
@@ -1711,14 +1717,13 @@ async function handleCardAction(
           }),
         };
       }
-      await patchOrigToReceipt(
+      // fire-and-forget patch；return {} 让卡刷新生效（return toast 会盖掉 patch，见 CLAUDE.md）
+      void patchOrigToReceipt(
         client,
         data,
         `✓ 已回答『${label.length > 20 ? label.slice(0, 20) + '…' : label}』→ ${tty}`,
       );
-      return {
-        toast: { type: 'success', content: `→ 已发送到 ${tty}` },
-      };
+      return {};
     } catch (e) {
       return { toast: { type: 'error', content: (e as Error).message } };
     }
@@ -1746,16 +1751,14 @@ async function handleCardAction(
     delete chat.recentReplyTty;
     delete chat.recentReplyAt;
     await saveChat(chat);
-    await patchOrigToReceipt(
+    void patchOrigToReceipt(
       client,
       data,
       `⏳ 下一条文本发到 active（${chat.activeTty}）`,
       `${tab.cwd ? `cwd: \`${tab.cwd}\`\n` : ''}<font color='grey'>在下方 chat 直接输入即可</font>`,
       'blue',
     );
-    return {
-      toast: { type: 'info', content: `⏳ 等你输入 → active ${chat.activeTty}` },
-    };
+    return {};
   }
 
   // 「→ 发一条」按钮：不发消息，只 arm 一个 pendingAnswerTty（复用 AskUserQuestion
@@ -1771,16 +1774,14 @@ async function handleCardAction(
     chat.pendingAnswerTty = tty;
     chat.pendingAnswerAt = Date.now();
     await saveChat(chat);
-    await patchOrigToReceipt(
+    void patchOrigToReceipt(
       client,
       data,
       `⏳ 下一条文本发到 ${tty}`,
       `${tab.cwd ? `cwd: \`${tab.cwd}\`\n` : ''}<font color='grey'>在下方 chat 直接输入即可（10 min 内 one-shot 生效）</font>`,
       'blue',
     );
-    return {
-      toast: { type: 'info', content: `⏳ 等你输入 → ${tty}` },
-    };
+    return {};
   }
 
   if (action === 'send-to-tab') {
@@ -1801,15 +1802,13 @@ async function handleCardAction(
         };
       }
       const shown = text === '' ? '⏎ Enter' : text;
-      // patch 原卡为回执，去掉按钮避免重复点击
-      await patchOrigToReceipt(
+      // patch 原卡为回执（fire-and-forget）；return {} 让 patch 生效（return toast 会盖掉它）
+      void patchOrigToReceipt(
         client,
         data,
         `✓ 已回答『${shown.length > 20 ? shown.slice(0, 20) + '…' : shown}』→ ${tty}`,
       );
-      return {
-        toast: { type: 'success', content: `→ 已发送到 ${tty}` },
-      };
+      return {};
     } catch (e) {
       return {
         toast: { type: 'error', content: (e as Error).message },
@@ -2218,8 +2217,8 @@ end run
       const claim = await orch.loadClaim(id);
       if (claim) { claim.status = 'ignored'; await orch.saveClaim(claim); }
     }
-    await patchOrigToReceipt(client, data, '✅ 已忽略此项', undefined, 'grey');
-    return { toast: { type: 'info', content: '已忽略' } };
+    void patchOrigToReceipt(client, data, '✅ 已忽略此项', undefined, 'grey');
+    return {};
   }
 
   if (action === 'tapd-snooze') {
@@ -2227,8 +2226,8 @@ end run
     if (!id) return { toast: { type: 'error', content: '缺 id' } };
     const orch = await import('multiagent-orchestrator');
     await orch.markSnoozed(id);
-    await patchOrigToReceipt(client, data, '🕐 已稍后提醒', '3 小时后再推', 'grey');
-    return { toast: { type: 'info', content: '🕐 3 小时后再提醒' } };
+    void patchOrigToReceipt(client, data, '🕐 已稍后提醒', '3 小时后再推', 'grey');
+    return {};
   }
 
   if (action === 'tapd-not-mine') {
@@ -2236,8 +2235,8 @@ end run
     if (!id) return { toast: { type: 'error', content: '缺 id' } };
     const orch = await import('multiagent-orchestrator');
     await orch.markIgnoredForever(id);
-    await patchOrigToReceipt(client, data, '🙈 已标记：不再提醒此项', '如需重新指派请在 TAPD 改处理人/开发负责人', 'grey');
-    return { toast: { type: 'info', content: '🙈 不再提醒' } };
+    void patchOrigToReceipt(client, data, '🙈 已标记：不再提醒此项', '如需重新指派请在 TAPD 改处理人/开发负责人', 'grey');
+    return {};
   }
 
   if (action === 'tapd-claim-go') {
