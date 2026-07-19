@@ -92,9 +92,11 @@ agent lark send-file ./output.xlsx
 - 声明 `stages: ['explore', 'architect', 'coder', 'tester']`
 - 每个 stage 对应一个 subagent（Claude Code 内置或自定义 `~/.claude/agents/*.md`）
 - 关键节点 `gates: ['after-architect']` 会推审批卡到飞书，人工批准才继续
-- 失败自动回环 `loops: [{on: 'tester', retryFrom: 'coder', maxRetries: 2}]`
-- 主 claude 可 `--skip` 判定跳过不必要 stage
-- 每 stage 通过 artifact 文件传递结果（`./docs/tasks/<task-id>/<stage>.md`）
+- 失败自动回环 `loops: [{on: 'tester', retryFrom: 'coder', maxRetries: 2}]`（回环带失败诊断，不盲重试；耗尽转 gate 交人）
+- 主 claude 可 `--skip` 判定跳过不必要 stage；开工前一道 `plan-review` 计划确认（可轻否决）
+- 每 stage 通过 artifact 文件传递结果（`./docs/tasks/<task-id>/<stage>.md`），`--end` 按骨架轻校验
+- **`--start` 由 Task hook 自动打点**（不靠主 claude 记性）；stage 名匹配大小写不敏感
+- **卡在 gate 时给该 tab 发消息 → 自动排队**（不丢失）+ 重推审批卡；审批+任务跑完后自动继续执行队列（见 sop.md）
 
 ### 什么时候用
 - 大改动（要走 SDLC 流程）

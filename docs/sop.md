@@ -57,6 +57,11 @@ Gate 触发时：
 - 你在飞书点批准 → CLI 返回 `approved` → 主 claude 继续
 - 拒绝 → task → failed
 
+**卡在 gate 时给该 tab 发新消息 → 自动排队（不丢失）**：
+- 期间 claude 被 gate 阻塞、收不到新消息。给该 tab 发消息 → framework 检测到 `awaiting-gate` 的 SOP → **把消息排队**（per-tty FIFO，上限 10）而非静默丢失，并**重推那张待审批卡** + 回执"⏸ 正卡 gate 等审批，已排队（第 N 条），审批+当前任务跑完后自动执行"。
+- **审批解锁 → SOP 继续跑完 → 任务 `done`/`failed`（tab 真空闲）时自动 flush 队列**，按序重发排队消息（每条 1.5s 间隔，带"▶️ 队列继续"提示）。flush 用 `task:done/failed` 触发（不是 gate-resolve，因为审批后 SOP 可能还有 stage）。
+- 避免"发消息没反应、以为系统坏了"。（`dispatchSendToTab` 队列 + `flushGatedQueue`）
+
 ### Loop（失败回环）
 Stage 失败自动重试到早期 stage。声明 `loops: [{ on: 'tester', retryFrom: 'coder', maxRetries: 2 }]`。
 
