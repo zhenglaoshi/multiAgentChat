@@ -9,6 +9,7 @@
 ### 2026-07-19
 
 **修复**
+- **空消息注入 tab（tab 里的 claude 回"收到的消息是空的没内容"刷屏）**：只发了 `@目标`、图片没配文字、或内容被 @提及/mention strip 成空时，`dispatchSendToTab` 仍会注入 `[本次任务]\n(空)` → tab 里的 claude（尤其 careyclaw 等交互式）收到空输入就反复回"收到空消息 + 要继续告诉我下一步"。**在 `dispatchSendToTab` 入口加空内容防护**（所有飞书→tab 注入的中心汇聚点）：`!text.trim()` → 不注入 + 回执"⚠️ 消息内容为空，没发送（是不是只发了 @目标/图片没配文字）"，覆盖 ask-answer/sticky/active/named/chain/batch 全部路径。
 - **卡片点击"没反应"（一整类 toast 盖 patch bug）**：`/shells` 切 tab（`use-tab`）等**一整类 card action** 违反了 CLAUDE.md 铁律——`await patchCard(...)` 后又 `return { toast }`，飞书把卡当"已处理无更新"、盖掉 patch → 卡不刷新、**点了像没反应**。用户因此切 active tab 看不到反馈 → 不确定切到哪 → 后续消息发错 shell。**统一改成 patch fire-and-forget + `return {}`（10 个 handler）**：`use-tab` / `send-to-tab` / `send-to-tab-arm` / `arm-active-reply` / send-answer / `connect-apply`·`connect-cancel`·`connect-disable/enable` / `perf-snooze`·`perf-not-mine` / `tapd-ignore`·`tapd-snooze`·`tapd-not-mine`。
 - **active tab 被删后消息误路由**：派发到 active tab 时若 `activeTty` 指向已关闭/删除的 tab，现在**清掉失效 activeTty** 并提示"已清除，用 `/shells` 重选"（此前只报"已不存在"、stale tty 残留，易让后续消息继续发向死 shell）。
 

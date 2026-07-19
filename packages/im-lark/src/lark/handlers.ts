@@ -972,6 +972,13 @@ async function dispatchSendToTab(
   batchInfo?: BatchInfo,
   chainInfo?: ChainInfo,
 ): Promise<void> {
+  // 空内容防护：只发了 @目标 / 内容被 strip 空 / 空消息 → 别注入空 prompt，否则 tab 里的
+  // claude（尤其 careyclaw 这类交互式）会收到"[本次任务]\n(空)"→ 回"收到的消息是空的没内容"刷屏。
+  if (!text || !text.trim()) {
+    logger.warn('dispatchSendToTab: 空 text，跳过注入', { tty: tab.tty, targetLabel });
+    await replyText(client, ctx, `⚠️ 消息内容为空，没发送到 ${tab.tty}（是不是只发了 @目标、或图片没配文字？直接把要说的内容打出来）`).catch(() => {});
+    return;
+  }
   logger.info('dispatchSendToTab', {
     tty: tab.tty,
     busy: tab.busy,
