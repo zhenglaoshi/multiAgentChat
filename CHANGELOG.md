@@ -9,6 +9,9 @@
 ### 2026-07-19
 
 **新增**
+- **SOP loop 根因诊断 + 不收敛保护（可靠性#6）**：把失败回环从"盲重试"升级成"带诊断针对性修 + 修不好叫人"。
+  - **诊断带进重试**：loop 触发时 `loopback` 响应带上 `diagnosis`（`--fail --note` 的根因）；CLI 提醒主 claude **务必把诊断带进重跑 subagent 的 prompt**，别盲改。wrapper prompt 要求 `--fail --note` 写清根因（哪个用例/期望 vs 实际/疑似原因）。
+  - **不收敛保护**：重试**耗尽**时不再静默标 failed，而是**弹飞书 gate 问"再试一次吗"**（复用 approval，阻塞等）：批准 → `markStageRetry(force)` 突破 maxRetries 再回环一次（`loopback.forced=true`）；拒绝/超时 → 任务终止。（`markStageRetry` 加 `force` + server fail 分支 + `loopback.diagnosis/forced` + cli + sop-prompt）
 - **SOP 编排决策可观测 + 轻否决（可靠性#1）**：主 claude 的"跑哪些 stage / skip 哪些"决策原来不可见（执行才知道），现在开工前必过一道**计划确认**。
   - 新增 `agent task plan-review --task-id X`（op `task.planReview`）：server 从 task 的 stage 状态**自动生成**计划（将跑 + 跳过·含原因）→ 复用 approval 机制推飞书审批卡，短超时（默认 45s）可否决。**批准/超时 → `proceed`（开工）；拒绝 → `adjust`（主 agent 重新规划 skip，可 `agent lark ask` 问用户想跑什么）**。
   - SOP wrapper prompt 加"第二步：计划确认"（skip 定完、开工前调一次），把编排决策本身也变可观测/可干预。（`protocol task.planReview` + `server handleTaskPlanReview` + `cli plan-review` + `sop-prompt`）

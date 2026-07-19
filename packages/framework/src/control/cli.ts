@@ -1346,9 +1346,13 @@ async function cmdTask(flags: Flags): Promise<void> {
       }
     } else if (data.loopback) {
       const lb = data.loopback;
+      const forcedTag = lb.forced ? '（人工 gate 批准的额外重试）' : '';
       stderr.write(
-        `🔁 loopback: ${lb.failedStage} fail → 从 ${lb.retryFrom} 重跑（${lb.retryCount}/${lb.maxRetries}）\n`,
+        `🔁 loopback: ${lb.failedStage} fail → 从 ${lb.retryFrom} 重跑（${lb.retryCount}/${lb.maxRetries}）${forcedTag}\n`,
       );
+      if (lb.diagnosis) {
+        stderr.write(`   诊断：${lb.diagnosis}\n   ⚠ 重跑 ${lb.retryFrom} 时**务必把这条诊断带进 subagent 的 prompt**，针对性修，别盲改。\n`);
+      }
       // stdout 输出协议格式给主 claude 解析
       stdout.write(`loopback:${lb.retryFrom}\n`);
       exit(0);

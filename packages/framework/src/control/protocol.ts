@@ -606,6 +606,10 @@ export interface TaskStageData {
     retryFrom: string;
     retryCount: number;
     maxRetries: number;
+    /** 失败诊断（--fail --note 的根因）：主 claude 应把它带进 retryFrom subagent 的 prompt，针对性修 */
+    diagnosis?: string;
+    /** true = 这是不收敛 gate 人工批准的额外重试（已超默认 maxRetries） */
+    forced?: boolean;
   };
 }
 

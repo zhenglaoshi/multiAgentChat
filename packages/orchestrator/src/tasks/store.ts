@@ -244,6 +244,7 @@ export async function markStageRetry(
   failedStage: string,
   retryFrom: string,
   note?: string,
+  force = false,
 ): Promise<{ task: TaskState; retryCount: number; maxRetries: number } | null> {
   const task = await getTask(taskId);
   if (!task) return null;
@@ -254,7 +255,8 @@ export async function markStageRetry(
   }
   const prev = task.stageRetries[failedStage] ?? 0;
   const retryCount = prev + 1;
-  if (retryCount > rule.maxRetries) {
+  // force=true（不收敛 gate 人工批准的额外重试）跳过 max 检查
+  if (!force && retryCount > rule.maxRetries) {
     logger.warn('markStageRetry: exhausted', { taskId, failedStage, retryCount, max: rule.maxRetries });
     return null;
   }

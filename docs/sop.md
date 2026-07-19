@@ -60,9 +60,10 @@ Gate 触发时：
 ### Loop（失败回环）
 Stage 失败自动重试到早期 stage。声明 `loops: [{ on: 'tester', retryFrom: 'coder', maxRetries: 2 }]`。
 
-主 claude 调 `--fail`：
-- 命中 loop 且未耗尽 → framework reset `retryFrom` 到 `on` 之间所有 stage → stdout 返回 `loopback:coder` → 主 claude 从 coder 重跑
-- 未命中 loop 或已耗尽 → task → failed
+主 claude 调 `--fail --note "<根因>"`：
+- 命中 loop 且未耗尽 → framework reset `retryFrom` 到 `on` 之间所有 stage → `loopback:coder` + **诊断（`--fail --note`）** → 主 claude 从 coder 重跑，**务必把诊断带进 subagent prompt 针对性修**（不盲重试）
+- 命中 loop 但**已耗尽** → **弹飞书 gate 问"再试一次吗"**（不静默失败）：批准 → 突破 maxRetries 再回环一次；拒绝/超时 → task failed
+- 未命中 loop → task failed
 
 ### Skip
 主 claude 判断某 stage 不需要，`--skip` 跳过。状态变 `skipped`，不算失败、不触发 loop、下一 stage 的 artifact 输入来自更早的 stage。

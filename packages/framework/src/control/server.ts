@@ -950,6 +950,7 @@ async function handleTaskStage(
       if (loopRule) {
         const tried = existing.stageRetries[req.name] ?? 0;
         if (tried < loopRule.maxRetries) {
+          // 常规回环：带上失败诊断（req.note）让主 claude 针对性修，不盲重试
           const ret = await markStageRetry(req.taskId, req.name, loopRule.retryFrom, req.note);
           if (ret) {
             sendOk<TaskStageData>(sock, {
@@ -959,14 +960,48 @@ async function handleTaskStage(
                 retryFrom: loopRule.retryFrom,
                 retryCount: ret.retryCount,
                 maxRetries: ret.maxRetries,
+                ...(req.note ? { diagnosis: req.note } : {}),
               },
             });
             sock.end();
             return;
           }
+        } else {
+          // 不收敛保护：重试耗尽 → 转 gate 交人（再试一次 / 放弃），而非静默 fail
+          const { result } = await approvals.create({
+            title: `SOP loop 卡住 · ${existing.taskId}`,
+            body: [
+              `stage "${req.name}" 连续 ${loopRule.maxRetries} 次失败（每次回环到 ${loopRule.retryFrom} 都没修好）。`,
+              `最后一次诊断：${req.note ?? '(无)'}`,
+              '',
+              '✅ 批准 = 再回环试一次（你也可以先在 tab 里手动看看）；❌ 拒绝/超时 = 放弃，任务标失败',
+            ].join('\n'),
+            taskId: req.taskId,
+            chatId: existing.chatId,
+          });
+          const final = await result;
+          if (final.status === 'approved') {
+            const ret = await markStageRetry(req.taskId, req.name, loopRule.retryFrom, req.note, true);
+            if (ret) {
+              sendOk<TaskStageData>(sock, {
+                task: ret.task,
+                loopback: {
+                  failedStage: req.name,
+                  retryFrom: loopRule.retryFrom,
+                  retryCount: ret.retryCount,
+                  maxRetries: ret.maxRetries,
+                  forced: true,
+                  ...(req.note ? { diagnosis: req.note } : {}),
+                },
+              });
+              sock.end();
+              return;
+            }
+          }
+          logger.info('SOP loop 不收敛 gate：放弃', { taskId: req.taskId, stage: req.name, status: final.status });
         }
       }
-      // 没命中 / 已耗尽：走原路径标 failed
+      // 没命中 / 已耗尽且人工放弃：走原路径标 failed
       const patch: Parameters<typeof markStageEnd>[2] = { status: 'failed' };
       if (req.note !== undefined) patch.note = req.note;
       const task = await markStageEnd(req.taskId, req.name, patch);
