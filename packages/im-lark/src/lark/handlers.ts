@@ -7,7 +7,7 @@ import { recordCwd } from 'multiagent-host-mac';
 import { formatRecallPrefix, recall, tokenize } from 'multiagent-orchestrator';
 import { pendingTracker } from '../monitor/pending.js';
 import { recordInbound } from '../monitor/ws-watchdog.js';
-import { captureScreen, forceEnter, getHistory, getUserFocus, listTabs, newTab, send, sendKeys, sendKeysRaw } from 'multiagent-host-mac';
+import { captureScreen, forceEnter, getHistory, getUserFocus, launchClaudeInTab, listTabs, newTab, send, sendKeys, sendKeysRaw } from 'multiagent-host-mac';
 
 // SYSTEM_GUIDANCE 的去重 — per-tab，每 tty 6h 内最多注入一次
 // 这是 module-level 内存状态，dev 重启会清空（重启后第一次注入是合理的）
@@ -614,22 +614,40 @@ async function dispatchSopExecute(
         return;
       }
 
-      await new Promise((r) => setTimeout(r, 1200));
+      await new Promise((r) => setTimeout(r, 1500));
       try {
-        const r = await send(newTty, 'claude');
-        if (!r.ok) throw new Error(r.reason ?? 'send failed');
+        // 用 launchClaudeInTab（会双 forceEnter 过"信任此文件夹?"trust 弹窗）——
+        // 原来的 raw send('claude') 不过 trust：新目录首启时 trust 弹窗会吃掉随后发的 SOP wrapper，
+        // claude 只收到空回车 → 回"收到一条空消息"。对齐 TAPD 认领的开工流程。
+        const r = await launchClaudeInTab(newTty, { continueSession: false });
+        if (!r.ok) throw new Error(r.reason ?? 'launch failed');
       } catch (e) {
         await replyText(client, ctx, `❌ 新 tab ${newTty} 起 claude 失败：${(e as Error).message}`);
         return;
       }
-      await new Promise((r) => setTimeout(r, 8000));
 
-      const tabsAfter = await listTabs();
-      const found = tabsAfter.find((t) => t.tty === newTty);
+      // 轮询等 claude 进程真的起来（确认 launch 成功，不是盲等固定秒数），最多 ~18s。
+      // 注：hasTUI 只认 vim/htop，claude 不在其列，不能用它判就绪 → 用进程名判。
+      // launchClaudeInTab 已在轮询前双 forceEnter 过 trust。claude 进程在 = 已启动。
+      const isClaudeProc = (t: Awaited<ReturnType<typeof listTabs>>[number]) =>
+        t.processes.some((p) => p === 'claude' || p === 'claude-code' || /\/claude$/i.test(p) || p.toLowerCase().includes('claude'));
+      let found: Awaited<ReturnType<typeof listTabs>>[number] | undefined;
+      for (let i = 0; i < 12; i++) {
+        await new Promise((r) => setTimeout(r, 1500));
+        const tabsAfter = await listTabs();
+        found = tabsAfter.find((t) => t.tty === newTty);
+        if (found && isClaudeProc(found)) break;
+      }
       if (!found) {
         await replyText(client, ctx, `❌ 新 tab ${newTty} spawn 后 listTabs 找不到`);
         return;
       }
+      if (!isClaudeProc(found)) {
+        await replyText(client, ctx, `⚠️ 新 tab ${newTty} 的 claude 还没起来（可能卡在 trust/登录）。SOP 未派发，避免发空消息——请去那个 tab 手动看一眼再重试。`);
+        return;
+      }
+      // claude 进程在了 → 再给 2.5s settle，让它过完 trust/进主界面，再发 wrapper（否则可能撞上启动画面）
+      await new Promise((r) => setTimeout(r, 2500));
       tab = found;
       targetLabel = 'fresh';
       promptForTab = parsed.fallback ?? text;

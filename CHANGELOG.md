@@ -9,6 +9,7 @@
 ### 2026-07-19
 
 **修复**
+- **`/run --sop` spawn 新 tab 时 claude 回"收到一条空消息"**（真根因）：用户不在 Terminal 时 SOP 会 spawn 新 tab，但那段用**原始 `send('claude')`**起 claude（**不过 trust 弹窗**），且盲等固定 8s 就发 SOP wrapper。新目录首启时"信任此文件夹?"弹窗把 wrapper 吃掉 → claude 只收到空回车 → 回"收到一条空消息"。修复：① 改用 `launchClaudeInTab`（双 forceEnter 过 trust，与 TAPD 认领开工流程对齐）；② 用**轮询 claude 进程出现**判就绪（`hasTUI` 只认 vim/htop 不认 claude，不能用）+ 2.5s settle 再发；③ claude 迟迟不就绪（卡 trust/登录）→ **不发 wrapper**，回执提示手动看 tab，避免空注入。
 - **切 tab"有时"仍无卡反馈（缺 update_multi 的真根因）**：上一版把 use-tab 改成 patch fire-and-forget + `return {}` 是必要但不够——`/shells` 的 `tabsCard`（及 `waitingInputCard`/`originShellPushCard`/`progressCard`）**config 缺 `update_multi: true`**，这些是"被点击多次、每次 patch"的交互卡，缺它则 patchCard **视觉不生效**（API 返 code 0 但卡不变），表现为"点了切过去了（`/where` 可证）但卡没回执"。**给这 4 张带点击按钮的卡补 `update_multi: true`**。
 - **SOP stage 名大小写敏感导致协议失效**（日志实锤：主 claude 上报 `explore` 但默认 stage 是 `Explore` → `markStageStart` "stage not found" → 进度卡/loop/gate 对该 stage 全断）。LLM 大小写不一致是常态 → **stage 名匹配全部改大小写不敏感**（新 `eqStage`）：`findStageIdx`/`markStageEnd`/`markStageRetry`/`markStageSkipped`/loop 规则/`stage-auto`/gate/artifact schema lookup 全覆盖。
 - **空消息注入 tab（tab 里的 claude 回"收到的消息是空的没内容"刷屏）**：只发了 `@目标`、图片没配文字、或内容被 @提及/mention strip 成空时，`dispatchSendToTab` 仍会注入 `[本次任务]\n(空)` → tab 里的 claude（尤其 careyclaw 等交互式）收到空输入就反复回"收到空消息 + 要继续告诉我下一步"。**在 `dispatchSendToTab` 入口加空内容防护**（所有飞书→tab 注入的中心汇聚点）：`!text.trim()` → 不注入 + 回执"⚠️ 消息内容为空，没发送（是不是只发了 @目标/图片没配文字）"，覆盖 ask-answer/sticky/active/named/chain/batch 全部路径。
