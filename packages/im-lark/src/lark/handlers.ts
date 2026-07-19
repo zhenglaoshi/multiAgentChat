@@ -90,6 +90,41 @@ function takePendingImage(chatId: string): string[] {
   return p.paths;
 }
 
+// ---- gated-tab 消息队列：目标 tab 卡在 gate/审批（claude 阻塞）时，新消息排队而非丢弃；
+//      审批解锁 + 当前任务 done/failed（tab 真空闲）后自动 flush，按序重发。----
+interface QueuedMsg { text: string; chatId: string; targetLabel?: string }
+const gatedQueue = new Map<string, QueuedMsg[]>();  // tty → 排队消息（FIFO）
+const GATED_QUEUE_CAP = 10;
+
+/** 排队一条；返回队列中的位次（1-based），满了返回 -1。 */
+function enqueueGated(tty: string, msg: QueuedMsg): number {
+  const q = gatedQueue.get(tty) ?? [];
+  if (q.length >= GATED_QUEUE_CAP) return -1;
+  q.push(msg);
+  gatedQueue.set(tty, q);
+  return q.length;
+}
+
+/** tab 空闲后 flush 该 tty 的排队消息，按序重发（由 notifier 的 task:done/failed 监听调用）。 */
+export async function flushGatedQueue(client: Lark.Client, tty: string): Promise<void> {
+  const q = gatedQueue.get(tty);
+  if (!q || q.length === 0) return;
+  gatedQueue.delete(tty);
+  const tabs = await listTabs();
+  const tab = tabs.find((t) => t.tty === tty);
+  if (!tab) {
+    logger.warn('flushGatedQueue: tab 已不存在，丢弃队列', { tty, dropped: q.length });
+    return;
+  }
+  logger.info('flushGatedQueue: 派发排队消息', { tty, count: q.length });
+  for (const m of q) {
+    const ctx = { messageId: 'queue-flush', chatId: m.chatId };
+    await sendText(client, m.chatId, `▶️ 队列继续：${tty} 已空闲，派发排队的「${m.text.slice(0, 30)}${m.text.length > 30 ? '…' : ''}」`).catch(() => {});
+    await dispatchSendToTab(client, ctx, tab, m.text, m.targetLabel);
+    await new Promise((r) => setTimeout(r, 1500));  // 每条间隔，避免糊在一起
+  }
+}
+
 interface BatchInfo {
   batchId: string;
   batchMessageId: string;
@@ -997,6 +1032,29 @@ async function dispatchSendToTab(
     await replyText(client, ctx, `⚠️ 消息内容为空，没发送到 ${tab.tty}（是不是只发了 @目标、或图片没配文字？直接把要说的内容打出来）`).catch(() => {});
     return;
   }
+
+  // gate 排队：目标 tab 有 awaiting-gate 的 SOP → claude 阻塞在 gate 等审批，注入也不会被处理。
+  // 排队而非丢弃 + 重推审批卡 + 提醒；审批解锁、当前任务 done/failed 后自动 flush（flushGatedQueue）。
+  if (ctx.messageId !== 'queue-flush') {  // flush 时不再自查（此时应已空闲）
+    const gated = await listTasks({ status: 'awaiting-gate', tty: tab.tty });
+    if (gated.length > 0) {
+      const gt = gated[0]!;
+      const pos = enqueueGated(tab.tty, { text, chatId: ctx.chatId, ...(targetLabel ? { targetLabel } : {}) });
+      if (pos === -1) {
+        await replyText(client, ctx, `⚠️ ${tab.tty} 的 SOP 卡在 gate『${gt.awaitingGate ?? '?'}』等审批，排队已满(${GATED_QUEUE_CAP} 条)，本条未入队。先去 \`/approvals\` 处理审批。`);
+      } else {
+        await replyText(client, ctx, `⏸ ${tab.tty} 的 SOP 正卡在 gate『${gt.awaitingGate ?? '?'}』等你审批 —— claude 被阻塞、收不到新消息（不是系统坏了）。\n已把这条**排队**（第 ${pos} 条），**审批 + 当前任务跑完后会自动执行**。下面重推审批卡，处理它即可：`);
+        const pending = approvals.listActive().find((a) => a.taskId === gt.taskId);
+        if (pending) {
+          const { buildApprovalCard } = await import('./cards.js');
+          const { sendCardMessage } = await import('./api.js');
+          await sendCardMessage(client, ctx.chatId, buildApprovalCard(pending)).catch(() => {});
+        }
+      }
+      return;
+    }
+  }
+
   logger.info('dispatchSendToTab', {
     tty: tab.tty,
     busy: tab.busy,

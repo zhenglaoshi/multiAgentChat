@@ -1068,6 +1068,30 @@ export function stageGateCard(d: StageGateCardData) {
   };
 }
 
+/** 按审批请求选卡：有 gateContext → 专属 stageGateCard（带 stage/artifact 预览），否则通用 approvalCard。 */
+export function buildApprovalCard(req: ApprovalRequest): unknown {
+  if (req.gateContext) {
+    const data: StageGateCardData = {
+      approvalId: req.id,
+      taskId: req.gateContext.taskId,
+      stageName: req.gateContext.stageName,
+      gateName: req.gateContext.gateName,
+      status: req.status,
+      createdAt: req.createdAt,
+    };
+    if (req.gateContext.presetName) data.presetName = req.gateContext.presetName;
+    if (req.gateContext.stageSummary) data.stageSummary = req.gateContext.stageSummary;
+    if (req.gateContext.artifactPath) data.artifactPath = req.gateContext.artifactPath;
+    if (req.gateContext.artifactPreview) data.artifactPreview = req.gateContext.artifactPreview;
+    if (req.gateContext.allStages) data.allStages = req.gateContext.allStages;
+    if (typeof req.gateContext.currentStageIdx === 'number') data.currentStageIdx = req.gateContext.currentStageIdx;
+    if (req.resolvedBy) data.resolvedBy = req.resolvedBy;
+    if (req.resolvedAt) data.resolvedAt = req.resolvedAt;
+    return stageGateCard(data);
+  }
+  return approvalCard(req);
+}
+
 // ---- Stage progress card（单个 SOP 任务的 stage 时间线） ----
 
 export interface StageProgressRow {

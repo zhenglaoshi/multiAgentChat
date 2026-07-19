@@ -8,6 +8,9 @@
 
 ### 2026-07-19
 
+**新增**
+- **gated-tab 消息队列（卡在审批时排队，审批完自动继续）**：以前给一个"SOP 卡在 gate 等审批"的 tab 发消息，claude 被阻塞、消息静默丢失 → 以为系统坏了。现在 `dispatchSendToTab` 检测目标 tab 有 `awaiting-gate` 的 SOP → **把消息排队**（per-tty FIFO，上限 10）+ **重推待审批卡**（`buildApprovalCard`：gate 走 stageGateCard）+ 回执"⏸ 正卡 gate 等审批，已排队，审批+当前任务跑完后自动执行"。任务 `done`/`failed`（tab 真空闲）时 `flushGatedQueue` **按序自动重发**排队消息（每条间隔 1.5s，带"▶️ 队列继续"提示）。flush 触发用 `task:done/failed`（非 gate-resolve，因为审批后 SOP 可能还有 stage）。（`handlers.ts` 队列 + `notifier` task 事件接线 + `cards.ts` 抽出 `buildApprovalCard` 供复用）
+
 **修复**
 - **`/run --sop` spawn 新 tab 时 claude 回"收到一条空消息"**（真根因）：用户不在 Terminal 时 SOP 会 spawn 新 tab，但那段用**原始 `send('claude')`**起 claude（**不过 trust 弹窗**），且盲等固定 8s 就发 SOP wrapper。新目录首启时"信任此文件夹?"弹窗把 wrapper 吃掉 → claude 只收到空回车 → 回"收到一条空消息"。修复：① 改用 `launchClaudeInTab`（双 forceEnter 过 trust，与 TAPD 认领开工流程对齐）；② 用**轮询 claude 进程出现**判就绪（`hasTUI` 只认 vim/htop 不认 claude，不能用）+ 2.5s settle 再发；③ claude 迟迟不就绪（卡 trust/登录）→ **不发 wrapper**，回执提示手动看 tab，避免空注入。
 - **切 tab"有时"仍无卡反馈（缺 update_multi 的真根因）**：上一版把 use-tab 改成 patch fire-and-forget + `return {}` 是必要但不够——`/shells` 的 `tabsCard`（及 `waitingInputCard`/`originShellPushCard`/`progressCard`）**config 缺 `update_multi: true`**，这些是"被点击多次、每次 patch"的交互卡，缺它则 patchCard **视觉不生效**（API 返 code 0 但卡不变），表现为"点了切过去了（`/where` 可证）但卡没回执"。**给这 4 张带点击按钮的卡补 `update_multi: true`**。

@@ -7,6 +7,7 @@ import { listAllChats, loadChat } from '../chats/store.js';
 import { patchCard, sendCardMessage, sendCardReturnId } from '../lark/api.js';
 import {
   approvalCard,
+  buildApprovalCard,
   askCard,
   batchProgressCard,
   chainProgressCard,
@@ -17,7 +18,7 @@ import {
   type ChainStepItem,
   type StageGateCardData,
 } from '../lark/cards.js';
-import { dispatchChainStep } from '../lark/handlers.js';
+import { dispatchChainStep, flushGatedQueue } from '../lark/handlers.js';
 import { logger } from 'multiagent-orchestrator';
 import { memoryStore } from 'multiagent-orchestrator';
 import { tokenize } from 'multiagent-orchestrator';
@@ -472,30 +473,6 @@ export function attachWatcherToLark(larkClient: Lark.Client): void {
 
   // ---- 审批生命周期：created → 发卡片 + 存 messageId；resolved → patch 卡片 ----
   // gate-context 走专属 stageGateCard，否则通用 approvalCard
-  const buildApprovalCardForReq = (req: ApprovalRequest): unknown => {
-    if (req.gateContext) {
-      const data: StageGateCardData = {
-        approvalId: req.id,
-        taskId: req.gateContext.taskId,
-        stageName: req.gateContext.stageName,
-        gateName: req.gateContext.gateName,
-        status: req.status,
-        createdAt: req.createdAt,
-      };
-      if (req.gateContext.presetName) data.presetName = req.gateContext.presetName;
-      if (req.gateContext.stageSummary) data.stageSummary = req.gateContext.stageSummary;
-      if (req.gateContext.artifactPath) data.artifactPath = req.gateContext.artifactPath;
-      if (req.gateContext.artifactPreview) data.artifactPreview = req.gateContext.artifactPreview;
-      if (req.gateContext.allStages) data.allStages = req.gateContext.allStages;
-      if (typeof req.gateContext.currentStageIdx === 'number') {
-        data.currentStageIdx = req.gateContext.currentStageIdx;
-      }
-      if (req.resolvedBy) data.resolvedBy = req.resolvedBy;
-      if (req.resolvedAt) data.resolvedAt = req.resolvedAt;
-      return stageGateCard(data);
-    }
-    return approvalCard(req);
-  };
 
   approvals.events.on('created', async (req: ApprovalRequest) => {
     if (!client) return;
@@ -509,7 +486,7 @@ export function attachWatcherToLark(larkClient: Lark.Client): void {
       const messageId = await sendCardReturnId(
         client,
         req.chatId,
-        buildApprovalCardForReq(req),
+        buildApprovalCard(req),
       );
       approvals.setCardMessageId(req.id, messageId);
       logger.info('approval card sent', {
@@ -534,7 +511,7 @@ export function attachWatcherToLark(larkClient: Lark.Client): void {
       return;
     }
     try {
-      await patchCard(client, req.cardMessageId, buildApprovalCardForReq(req));
+      await patchCard(client, req.cardMessageId, buildApprovalCard(req));
       logger.info('approval card patched (resolved)', {
         id: req.id,
         status: req.status,
@@ -625,9 +602,11 @@ export function attachWatcherToLark(larkClient: Lark.Client): void {
   });
   taskEvents.on('task:done', (task: TaskState) => {
     void patchProgressCard(task, 'task:done');
+    if (client && task.tty) void flushGatedQueue(client, task.tty);  // tab 空闲 → flush 排队消息
   });
   taskEvents.on('task:failed', ({ task, reason }: { task: TaskState; reason: string }) => {
     void patchProgressCard(task, `task:failed ${reason}`);
+    if (client && task.tty) void flushGatedQueue(client, task.tty);
   });
   taskEvents.on('task:aborted', ({ task, reason, hard }) => {
     void patchProgressCard(task, `task:aborted ${hard ? 'hard' : 'soft'} ${reason}`);
