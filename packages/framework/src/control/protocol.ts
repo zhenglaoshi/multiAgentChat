@@ -346,6 +346,13 @@ export interface TaskAbortOp {
   hard?: boolean;
 }
 
+/** SOP 计划确认：主 claude 定完 skip 后调，把"将跑/跳过"计划推飞书，短超时可否决（auto-proceed）。 */
+export interface TaskPlanReviewOp {
+  op: 'task.planReview';
+  taskId: string;
+  timeoutMs?: number;    // 否决窗口；默认 45s，超时=proceed
+}
+
 /** Task 工具的 PreToolUse hook 触发：反查 tab 的 active SOP task，subagent 匹配 pending stage 则自动 --start。 */
 export interface TaskStageAutoOp {
   op: 'task.stageAuto';
@@ -451,6 +458,7 @@ export type Request =
   | TaskListOp
   | TaskStageOp
   | TaskStageAutoOp
+  | TaskPlanReviewOp
   | TaskAbortOp
   | StageRecallOp
   | SubagentListOp
@@ -578,6 +586,12 @@ export interface StageRecallData {
 export interface TaskStageAutoData {
   task?: TaskState;
   matched?: boolean;
+}
+
+/** task.planReview 响应：decision=proceed（批准/超时）| adjust（用户拒绝，主 agent 重规划）。 */
+export interface TaskPlanReviewData {
+  decision: 'proceed' | 'adjust';
+  approvalStatus: 'approved' | 'rejected' | 'timeout';
 }
 
 export interface TaskStageData {

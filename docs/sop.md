@@ -28,6 +28,7 @@ Framework 会：
 
 主 claude 按 wrapper 提示：
 1. 先分析任务，用 `--skip` 跳过不必要的 stage
+1.5. **计划确认**：skip 定完、开工前调 `agent task plan-review --task-id X` → 把"将跑/跳过+原因"推飞书，用户 ~45s 轻否决（批准/超时=开工；拒绝=主 agent 重规划）。让编排决策本身可观测。
 2. 对每个 stage：`--start` → `Task(subagent_type='stage-name', ...)` → `--end`
    - `--start` **框架已自动打点**：Task 工具的 PreToolUse hook（`bin/mchat-task-hook`）会在 `Task(subagent_type=X)` 时自动 `markStageStart`（X 是 pending stage 时）；主 agent 手动 `--start` 变幂等兜底。
    - 忘了 `--end`：下一 stage `--start` 时 server 自动收尾上一个**非 gate** 的 running stage（gate 的只告警不动，暴露漏审）。

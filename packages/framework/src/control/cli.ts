@@ -39,6 +39,7 @@ import type {
   TaskListData,
   TaskStageData,
   TaskStageAutoData,
+  TaskPlanReviewData,
   SubagentAddData,
   SubagentDeleteData,
   SubagentListData,
@@ -1288,6 +1289,23 @@ async function cmdTask(flags: Flags): Promise<void> {
     } catch {
       // hook 用，任何错误静默（daemon 没起 / 无 task）
     }
+    return;
+  }
+
+  if (sub === 'plan-review') {
+    // 主 claude 定完 skip 后调：把计划推飞书短时否决。stdout: proceed | adjust
+    const taskId = resolveTaskId(flags);
+    const req: Extract<Request, { op: 'task.planReview' }> = { op: 'task.planReview', taskId };
+    if (flags.timeoutMs !== undefined) req.timeoutMs = flags.timeoutMs;
+    stderr.write('⏳ 推送 SOP 计划到飞书，等否决窗口（默认 45s，超时=开工）...\n');
+    const data = await sendOnce<TaskPlanReviewData>(req);
+    if (data.decision === 'adjust') {
+      stderr.write('❌ 用户拒绝计划 —— 重新判断要跑哪些 stage（可 agent lark ask 问用户想跑什么）\n');
+      stdout.write('adjust\n');
+      exit(1);
+    }
+    stderr.write(`✅ 计划确认（${data.approvalStatus}）→ 开工\n`);
+    stdout.write('proceed\n');
     return;
   }
 

@@ -9,6 +9,9 @@
 ### 2026-07-19
 
 **新增**
+- **SOP 编排决策可观测 + 轻否决（可靠性#1）**：主 claude 的"跑哪些 stage / skip 哪些"决策原来不可见（执行才知道），现在开工前必过一道**计划确认**。
+  - 新增 `agent task plan-review --task-id X`（op `task.planReview`）：server 从 task 的 stage 状态**自动生成**计划（将跑 + 跳过·含原因）→ 复用 approval 机制推飞书审批卡，短超时（默认 45s）可否决。**批准/超时 → `proceed`（开工）；拒绝 → `adjust`（主 agent 重新规划 skip，可 `agent lark ask` 问用户想跑什么）**。
+  - SOP wrapper prompt 加"第二步：计划确认"（skip 定完、开工前调一次），把编排决策本身也变可观测/可干预。（`protocol task.planReview` + `server handleTaskPlanReview` + `cli plan-review` + `sop-prompt`）
 - **SOP artifact 骨架 schema（可靠性#4）**：让"文件 handoff"可验证 —— 每个 SDLC stage 的 artifact 定必填 section（`orchestrator/tasks/artifact-schema.ts`：需求=目标/非目标/验收标准/开放问题，架构=受影响文件/接口·数据流/风险，测试=覆盖/结果，回归=验收核对/结论）。
   - `--end --artifact` 时 server 灵活校验（含任一 alias 即命中，**中英通吃、大小写不敏感**）→ 结果放 `artifactCheck`，CLI 在 stderr 提醒缺哪些 section（**不硬 block**，避免 heading 措辞差异死锁；自定义 stage 无 schema 直接放行）。
   - SOP wrapper prompt 的 stage 列表显示每个 stage 的 `[artifact 骨架: ...]`，并要求 subagent 按骨架写全。单元验证：缺 section 报缺、中英齐全均 ok、无 schema 放行。（`checkArtifact`/`artifactSkeletonHint` + server `--end` 校验 + `TaskStageData.artifactCheck` + CLI surface + sop-prompt）

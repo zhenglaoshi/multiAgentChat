@@ -74,6 +74,7 @@ import type {
   TaskListData,
   TaskStageData,
   TaskStageAutoData,
+  TaskPlanReviewData,
   SubagentAddData,
   SubagentDeleteData,
   SubagentListData,
@@ -1105,6 +1106,46 @@ async function handleTaskStageAuto(
   sock.end();
 }
 
+/**
+ * SOP 计划确认：主 claude 定完 skip 后调，把"将跑/跳过（含原因）"自动从 task 状态生成 → 推飞书
+ * 审批卡，短超时（默认 45s）可否决。批准/超时 → proceed；拒绝 → adjust（主 agent 重规划）。
+ * 复用 approval 机制（timeout=neutral，不算拒绝）。
+ */
+async function handleTaskPlanReview(
+  sock: Socket,
+  req: Extract<Request, { op: 'task.planReview' }>,
+) {
+  try {
+    const task = await getTask(req.taskId);
+    if (!task) { sendErr(sock, `task 不存在：${req.taskId}`); sock.end(); return; }
+    const willRun = task.stageHistory.filter((s) => s.status !== 'skipped').map((s) => s.name);
+    const skipped = task.stageHistory.filter((s) => s.status === 'skipped');
+    const body = [
+      `将跑（${willRun.length}）：${willRun.join(' → ') || '(无)'}`,
+      skipped.length
+        ? `跳过（${skipped.length}）：\n${skipped.map((s) => `  • ${s.name} — ${s.note ?? s.summary ?? '主 agent 判断不必要'}`).join('\n')}`
+        : '跳过：无',
+      '',
+      '✅ 批准 / 超时 → 开工；❌ 拒绝 → 让主 agent 重新规划要跑哪些 stage',
+    ].join('\n');
+    const { result } = await approvals.create({
+      title: `SOP 计划确认 · ${task.taskId}`,
+      body,
+      taskId: req.taskId,
+      chatId: task.chatId,
+      timeoutMs: req.timeoutMs ?? 45_000,
+    });
+    const final = await result;
+    const approvalStatus = (final.status === 'approved' || final.status === 'rejected' || final.status === 'timeout')
+      ? final.status : 'timeout';
+    const decision: 'proceed' | 'adjust' = approvalStatus === 'rejected' ? 'adjust' : 'proceed';
+    sendOk<TaskPlanReviewData>(sock, { decision, approvalStatus });
+  } catch (e) {
+    sendErr(sock, (e as Error).message);
+  }
+  sock.end();
+}
+
 async function handleTaskAbort(
   sock: Socket,
   req: Extract<Request, { op: 'task.abort' }>,
@@ -1553,6 +1594,8 @@ async function dispatch(sock: Socket, req: Request): Promise<void> {
       return handleTaskStage(sock, req);
     case 'task.stageAuto':
       return handleTaskStageAuto(sock, req);
+    case 'task.planReview':
+      return handleTaskPlanReview(sock, req);
     case 'task.abort':
       return handleTaskAbort(sock, req);
     case 'stage.recall':
