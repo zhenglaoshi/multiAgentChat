@@ -29,6 +29,8 @@ Framework 会：
 主 claude 按 wrapper 提示：
 1. 先分析任务，用 `--skip` 跳过不必要的 stage
 2. 对每个 stage：`--start` → `Task(subagent_type='stage-name', ...)` → `--end`
+   - `--start` **框架已自动打点**：Task 工具的 PreToolUse hook（`bin/mchat-task-hook`）会在 `Task(subagent_type=X)` 时自动 `markStageStart`（X 是 pending stage 时）；主 agent 手动 `--start` 变幂等兜底。
+   - 忘了 `--end`：下一 stage `--start` 时 server 自动收尾上一个**非 gate** 的 running stage（gate 的只告警不动，暴露漏审）。
 3. 收到 gate stage 的 --end 时会阻塞等飞书审批
 4. 收到 [SOP 中止] banner 就停手
 5. 全部完成后调 `agent lark send-text` 报告

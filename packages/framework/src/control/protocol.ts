@@ -346,6 +346,14 @@ export interface TaskAbortOp {
   hard?: boolean;
 }
 
+/** Task 工具的 PreToolUse hook 触发：反查 tab 的 active SOP task，subagent 匹配 pending stage 则自动 --start。 */
+export interface TaskStageAutoOp {
+  op: 'task.stageAuto';
+  subagent: string;      // Task 的 subagent_type
+  originPid?: number;    // hook 的 process.ppid，daemon 反查 tty
+  originCwd?: string;    // 兜底反查
+}
+
 export interface StageRecallOp {
   op: 'stage.recall';
   stage?: string;
@@ -442,6 +450,7 @@ export type Request =
   | TaskGetOp
   | TaskListOp
   | TaskStageOp
+  | TaskStageAutoOp
   | TaskAbortOp
   | StageRecallOp
   | SubagentListOp
@@ -563,6 +572,12 @@ export interface StageRecallData {
     startedAt: number;
     endedAt: number;
   }>;
+}
+
+/** task.stageAuto 响应：无匹配 SOP task 时 task 为空（no-op）。 */
+export interface TaskStageAutoData {
+  task?: TaskState;
+  matched?: boolean;
 }
 
 export interface TaskStageData {

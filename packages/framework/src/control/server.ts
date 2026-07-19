@@ -72,6 +72,7 @@ import type {
   TaskGetData,
   TaskListData,
   TaskStageData,
+  TaskStageAutoData,
   SubagentAddData,
   SubagentDeleteData,
   SubagentListData,
@@ -1067,6 +1068,33 @@ async function handleTaskStage(
   sock.end();
 }
 
+/**
+ * Task 工具 PreToolUse hook 触发的自动 --start：反查本 tab 的 active SOP task，
+ * 若 subagent 是它的 pending stage 则 markStageStart（框架强制打点，不靠主 agent 自觉）。
+ * 幂等 + 静默：非 SOP tab / subagent 非 pending stage / 反查失败 → 直接 no-op 返回 ok。
+ */
+async function handleTaskStageAuto(
+  sock: Socket,
+  req: Extract<Request, { op: 'task.stageAuto' }>,
+) {
+  try {
+    const tab = await resolveOriginTab(req.originPid, req.originCwd);
+    if (!tab) { sendOk<TaskStageAutoData>(sock, { matched: false }); sock.end(); return; }
+    const tasks = await listTasks({ tty: tab.tty });
+    const active = tasks.find((t) => t.status !== 'done' && t.status !== 'failed');
+    if (!active) { sendOk<TaskStageAutoData>(sock, { matched: false }); sock.end(); return; }
+    // subagent 必须是本 task 的一个 pending stage（已 start/done/skipped 的不重复；非 stage 的 ad-hoc Task 忽略）
+    const stage = active.stageHistory.find((s) => s.name === req.subagent && s.status === 'pending');
+    if (!stage) { sendOk<TaskStageAutoData>(sock, { matched: false }); sock.end(); return; }
+    const task = await markStageStart(active.taskId, req.subagent);
+    logger.info('task stage auto-started (Task hook)', { taskId: active.taskId, stage: req.subagent, tty: tab.tty });
+    sendOk<TaskStageAutoData>(sock, { matched: true, ...(task ? { task } : {}) });
+  } catch (e) {
+    sendErr(sock, (e as Error).message);
+  }
+  sock.end();
+}
+
 async function handleTaskAbort(
   sock: Socket,
   req: Extract<Request, { op: 'task.abort' }>,
@@ -1513,6 +1541,8 @@ async function dispatch(sock: Socket, req: Request): Promise<void> {
       return handleTaskList(sock, req);
     case 'task.stage':
       return handleTaskStage(sock, req);
+    case 'task.stageAuto':
+      return handleTaskStageAuto(sock, req);
     case 'task.abort':
       return handleTaskAbort(sock, req);
     case 'stage.recall':

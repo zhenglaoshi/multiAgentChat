@@ -83,12 +83,15 @@ async function installClaudeCodeHooks(): Promise<void> {
   const binDir = resolve(HERE, '..', '..', '..', 'bin');
   const stopHookPath = resolve(binDir, 'mchat-stop-hook');
   const preToolUseHookPath = resolve(binDir, 'mchat-pretooluse-hook');
+  const taskHookPath = resolve(binDir, 'mchat-task-hook');
 
   const stopOk = existsSync(stopHookPath);
   const preOk = existsSync(preToolUseHookPath);
+  const taskOk = existsSync(taskHookPath);
   if (!stopOk) logger.warn('bin/mchat-stop-hook not found', { stopHookPath });
   if (!preOk) logger.warn('bin/mchat-pretooluse-hook not found', { preToolUseHookPath });
-  if (!stopOk && !preOk) return;
+  if (!taskOk) logger.warn('bin/mchat-task-hook not found', { taskHookPath });
+  if (!stopOk && !preOk && !taskOk) return;
 
   type HookEntry = {
     matcher?: string;
@@ -122,6 +125,7 @@ async function installClaudeCodeHooks(): Promise<void> {
             typeof h.command === 'string' &&
             (h.command.includes('mchat-stop-hook') ||
               h.command.includes('mchat-pretooluse-hook') ||
+              h.command.includes('mchat-task-hook') ||
               h.command.includes('mchat-hook-echo')),
         );
       });
@@ -141,6 +145,13 @@ async function installClaudeCodeHooks(): Promise<void> {
       cfg.hooks.PreToolUse!.push({
         matcher: 'AskUserQuestion',
         hooks: [{ type: 'command', command: preToolUseHookPath }],
+      });
+    }
+    if (taskOk) {
+      // Task 工具 PreToolUse → SOP 阶段自动 --start（框架强制打点，见 bin/mchat-task-hook）
+      cfg.hooks.PreToolUse!.push({
+        matcher: 'Task',
+        hooks: [{ type: 'command', command: taskHookPath }],
       });
     }
 

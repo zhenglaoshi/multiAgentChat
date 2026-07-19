@@ -1,0 +1,56 @@
+#!/usr/bin/env node
+/*
+ * multiAgentChat — Claude Code PreToolUse hook（matcher="Task"）
+ *
+ * 用途：把 SOP 阶段协议的 `--start` 从"主 claude 自觉调"变成"框架自动打点"。
+ * 主 agent 每次 `Task(subagent_type=X)` spawn 一个 SDLC 角色 subagent 前，本 hook 抢先
+ * 通知 daemon：反查本 tab 的 active SOP task，若 X 是它的一个 pending stage → 自动 markStageStart
+ * （幂等：已 start/done 的不重复；非 SOP 的 ad-hoc Task 忽略）。这样即使主 claude 忘了调
+ * `agent task stage --start`，进度卡 / loop / gate 的起点也不会丢同步。
+ *
+ * `--end` 因需阻塞 gate + 驱动 loop，仍留在主 claude 流程；忘了 --end 由 server 的
+ * "下一 stage 开始时隐式收尾上一个非 gate stage" 兜底。
+ *
+ * ~/.claude/settings.json 的 hooks.PreToolUse matcher="Task" 指向本脚本。
+ * stdin = tool call JSON（tool_name / tool_input.subagent_type / cwd / session_id）。
+ * Fire-and-forget：spawn detached，立即 exit 0，不 block 工具。
+ * 设 MCHAT_HOOK_DEBUG=1 打开 /tmp/mchat-task-hook.log。ESM only（见 stop-hook）。
+ */
+import { spawn } from 'node:child_process';
+import { appendFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const DEBUG = process.env['MCHAT_HOOK_DEBUG'] === '1';
+const LOG = '/tmp/mchat-task-hook.log';
+function dbg(msg) {
+  if (!DEBUG) return;
+  try { appendFileSync(LOG, `[${new Date().toISOString()}] ${msg}\n`); } catch {}
+}
+
+let raw = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', (c) => { raw += c; });
+process.stdin.on('error', () => process.exit(0));
+process.stdin.on('end', () => {
+  try {
+    if (!raw.trim()) return process.exit(0);
+    const payload = JSON.parse(raw);
+    if (payload?.tool_name !== 'Task') return process.exit(0);
+    const subagent = payload?.tool_input?.subagent_type;
+    if (typeof subagent !== 'string' || !subagent.trim()) { dbg('no subagent_type'); return process.exit(0); }
+
+    const agentBin = resolve(HERE, 'agent');
+    const args = ['task', 'stage-auto', '--subagent', subagent, '--origin-pid', String(process.ppid)];
+    if (typeof payload.cwd === 'string' && payload.cwd) args.push('--origin-cwd', payload.cwd);
+    dbg(`spawn: subagent=${subagent} ppid=${process.ppid} cwd=${payload.cwd ?? ''}`);
+    const proc = spawn(agentBin, args, { stdio: ['ignore', 'ignore', 'ignore'], detached: true });
+    proc.on('error', (e) => dbg('spawn error: ' + e.message));
+    proc.unref();
+    process.exit(0);
+  } catch (e) {
+    dbg('caught: ' + (e && e.message));
+    process.exit(0);
+  }
+});

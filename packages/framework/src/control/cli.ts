@@ -38,6 +38,7 @@ import type {
   TaskGetData,
   TaskListData,
   TaskStageData,
+  TaskStageAutoData,
   SubagentAddData,
   SubagentDeleteData,
   SubagentListData,
@@ -95,6 +96,7 @@ interface Flags {
   auto: boolean;          // agent lark send-text --auto：Stop-hook 等自动推送，daemon 会按 chat.watchAllTabs gate
   originPid?: number;     // agent lark send-text --origin-pid <ppid>：hook 传 Claude Code pid，daemon 反查 tab
   originCwd?: string;     // agent lark send-text --origin-cwd <cwd>：hook 传 Claude Code cwd，反查 fallback
+  subagent?: string;      // agent task stage-auto --subagent <type>：Task hook 传 subagent_type
   question: boolean;      // agent lark send-text --question：本次推送含待用户回答的问题，daemon 记 pendingAnswerTty
   optionsJson?: string;   // agent lark send-text --options-json '["是","否"]'：AskUserQuestion 选项 label
   options?: string;       // agent lark ask --options "a,b,c" (逗号分隔简写)
@@ -191,6 +193,8 @@ function parseArgs(args: string[]): Flags {
       flags.originPid = n;
     } else if (a === '--origin-cwd') {
       flags.originCwd = args[++i] ?? die('--origin-cwd 需要路径');
+    } else if (a === '--subagent') {
+      flags.subagent = args[++i] ?? die('--subagent 需要类型名');
     } else if (a === '--options-json') {
       flags.optionsJson = args[++i] ?? die('--options-json 需要 JSON');
     } else if (a === '--options') {
@@ -1268,6 +1272,22 @@ async function cmdTask(flags: Flags): Promise<void> {
       if (s.artifactPath) stdout.write(`  [${s.artifactPath}]`);
       stdout.write('\n');
     });
+    return;
+  }
+
+  if (sub === 'stage-auto') {
+    // 仅由 Task 工具的 PreToolUse hook 调用：反查 tab 的 active SOP task，自动 --start 匹配 stage
+    if (!flags.subagent) die('需要 --subagent <type>');
+    const req: Extract<Request, { op: 'task.stageAuto' }> = { op: 'task.stageAuto', subagent: flags.subagent };
+    if (flags.originPid !== undefined) req.originPid = flags.originPid;
+    if (flags.originCwd !== undefined) req.originCwd = flags.originCwd;
+    try {
+      const data = await sendOnce<TaskStageAutoData>(req);
+      if (data.task) stdout.write(`auto-started: ${flags.subagent}\n`);
+      // 静默成功：无匹配 SOP task 也 exit 0（hook 场景，不打扰）
+    } catch {
+      // hook 用，任何错误静默（daemon 没起 / 无 task）
+    }
     return;
   }
 

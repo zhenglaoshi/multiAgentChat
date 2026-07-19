@@ -163,11 +163,31 @@ export async function markStageStart(taskId: string, stageName: string): Promise
     logger.warn('markStageStart: stage not found or already done', { taskId, stageName });
     return task;
   }
+
+  // 隐式收尾兜底：顺序 SOP 中「新 stage 开始」= 上一个已结束。若有更早的 stage 仍 running
+  //（主 agent 忘了显式 --end）：非 gate stage → 自动标 done 补同步；gate stage → 只告警不动
+  //（不偷跳 gate，让卡上可见地卡住暴露问题）。correct 流程里上一个已是 done，此循环不触发。
+  const implicitlyEnded: { stage: StageRecord; stageIdx: number }[] = [];
+  for (let i = 0; i < task.stageHistory.length; i++) {
+    const prev = task.stageHistory[i]!;
+    if (i !== idx && prev.status === 'running') {
+      if (task.gates.includes(`after-${prev.name}`)) {
+        logger.warn('markStageStart: 上一 gate stage 仍 running，未自动收尾（疑似跳过 gate）', { taskId, prev: prev.name, next: stageName });
+      } else {
+        prev.status = 'done';
+        prev.endedAt = Date.now();
+        if (!prev.summary) prev.summary = '(自动收尾：下一 stage 开始，主 agent 未显式 --end)';
+        implicitlyEnded.push({ stage: prev, stageIdx: i });
+      }
+    }
+  }
+
   const stage = task.stageHistory[idx]!;
   stage.status = 'running';
   stage.startedAt = Date.now();
   task.currentStageIdx = idx;
   await writeAtomic(task);
+  for (const e of implicitlyEnded) taskEvents.emit('stage:end', { task, stage: e.stage, stageIdx: e.stageIdx });
   taskEvents.emit('stage:start', { task, stage, stageIdx: idx });
   return task;
 }

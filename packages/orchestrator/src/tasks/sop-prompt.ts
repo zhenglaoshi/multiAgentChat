@@ -33,6 +33,7 @@ export function buildSopWrapperPrompt(task: TaskState, userPrompt: string): stri
     ``,
     `✨ **对需要的 stage 按标准 4 步循环**（务必严格遵守，否则 framework 看不到进度）：`,
     `  (1) \`agent task stage --task-id ${task.taskId} --name <stage> --start\``,
+    `      （注：Task hook 现在会在你调 Task 时**自动** --start 该 stage；你这步做兜底即可，幂等）`,
     `  (2) \`Task(subagent_type='<stage>', prompt=<给 subagent 的指令>)\``,
     `      告诉 subagent：artifact 默认存到 \`${task.artifactDir}/<stage>.md\``,
     `      并把上一个**实际跑过**的 stage 的 artifact 路径传给它（被 skip 的不算）`,

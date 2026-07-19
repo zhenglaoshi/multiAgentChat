@@ -6,6 +6,15 @@
 
 ## [未发布]
 
+### 2026-07-19
+
+**新增**
+- **SOP 阶段协议框架强制化（可靠性#2）**：把"主 claude 自觉调 `agent task stage --start`"改成"框架自动打点"，治 SOP 最脆的单点（LLM 长 prompt 会忘打点 → 进度卡/loop/gate 起点失同步）。
+  - **Task 工具 PreToolUse hook**（`bin/mchat-task-hook`）：主 agent 每次 `Task(subagent_type=X)` 前，hook 反查本 tab 的 active SOP task，若 X 是它的 **pending** stage → 自动 `markStageStart`（幂等；非 SOP tab / ad-hoc Task 静默忽略）。daemon 幂等 upsert 到 `~/.claude/settings.json` 的 `PreToolUse` matcher=`Task`。
+  - **隐式收尾兜底**：`markStageStart` 里，若有更早的 stage 仍 `running`（主 agent 忘了 `--end`）→ **非 gate stage 自动标 done** 补同步；**gate stage 只告警不动**（不偷跳 gate，让卡上可见地卡住暴露问题）。correct 流程不触发。
+  - `--end`/`--fail` 仍留主 claude 流程（要阻塞 gate + 驱动 loop）；`--start` 变防御纵深（hook 自动 + 主 agent 手动兜底，幂等）。
+  - 新增 op `task.stageAuto` + CLI `agent task stage-auto`（仅 hook 用，socket 反查 tty→task）；SOP wrapper prompt 注明 --start 已自动。（`protocol`/`server handleTaskStageAuto`/`store markStageStart`/`cli`/`daemon installClaudeCodeHooks`）
+
 ### 2026-07-18
 
 **文档**
