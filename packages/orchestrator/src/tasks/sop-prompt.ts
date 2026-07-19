@@ -1,4 +1,5 @@
 import type { TaskState } from './types.js';
+import { artifactSkeletonHint } from './artifact-schema.js';
 
 /**
  * 构造 SOP 编排 prompt — 注入到 task tab 的主 claude 前面，
@@ -9,7 +10,9 @@ export function buildSopWrapperPrompt(task: TaskState, userPrompt: string): stri
   const stageLines = task.stages.map((s, i) => {
     const hasGate = gateSet.has(`after-${s}`);
     const tag = hasGate ? '   ⏸ gate' : '';
-    return `  ${i + 1}. ${s}${tag}`;
+    const skel = artifactSkeletonHint(s);
+    const skelTag = skel ? `   [artifact 骨架: ${skel}]` : '';
+    return `  ${i + 1}. ${s}${tag}${skelTag}`;
   });
 
   const loopLines = task.loops.map(
@@ -35,10 +38,11 @@ export function buildSopWrapperPrompt(task: TaskState, userPrompt: string): stri
     `  (1) \`agent task stage --task-id ${task.taskId} --name <stage> --start\``,
     `      （注：Task hook 现在会在你调 Task 时**自动** --start 该 stage；你这步做兜底即可，幂等）`,
     `  (2) \`Task(subagent_type='<stage>', prompt=<给 subagent 的指令>)\``,
-    `      告诉 subagent：artifact 默认存到 \`${task.artifactDir}/<stage>.md\``,
+    `      告诉 subagent：artifact 默认存到 \`${task.artifactDir}/<stage>.md\`，**按该 stage 的 [artifact 骨架] 写全所需 section**（见上方 stage 列表）`,
     `      并把上一个**实际跑过**的 stage 的 artifact 路径传给它（被 skip 的不算）`,
     `  (3) subagent 返回后：`,
     `      \`agent task stage --task-id ${task.taskId} --name <stage> --end --summary "<一句话>" --artifact <文件路径>\``,
+    `      （会按骨架轻校验 artifact；缺 section 会在 stderr 提醒——补上再往下走，别让下游 subagent 饿着）`,
     `      ⚠ 若该 stage 标了 ⏸ gate，此命令会阻塞等飞书人工审批；返回 "approved" 后继续，"rejected" 则停止。`,
     `  (4) 若 subagent 报告失败：`,
     `      \`agent task stage --task-id ${task.taskId} --name <stage> --fail --note "<原因>"\``,

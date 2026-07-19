@@ -1312,6 +1312,10 @@ async function cmdTask(flags: Flags): Promise<void> {
     }
     const data = await sendOnce<TaskStageData>(req);
     const t = data.task;
+    // artifact 骨架校验：缺 section 时提醒主 agent（不 block，只 surface）
+    if (data.artifactCheck && !data.artifactCheck.ok) {
+      stderr.write(`⚠ artifact 缺 section：${data.artifactCheck.missing.join('、')} —— 该 stage 骨架应含这些，补上让下游 subagent 有依据（不阻断，仅提醒）\n`);
+    }
     if (data.gateResolved) {
       const g = data.gateResolved;
       if (g.approved) {

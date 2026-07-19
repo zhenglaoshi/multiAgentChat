@@ -582,6 +582,8 @@ export interface TaskStageAutoData {
 
 export interface TaskStageData {
   task: TaskState;
+  /** 若 action='end' 且传了 artifact：按 stage schema 轻校验的结果（缺 section 时 ok=false，不硬 block） */
+  artifactCheck?: { ok: boolean; missing: string[] };
   /** 若 action='end' 触发了 gate，这里带回审批结果（approved=false 时附 reason） */
   gateResolved?: { gateName: string; approved: boolean; reason?: string };
   /** 若 action='fail' 命中失败回环规则，server 已 reset stages 等待主 claude 重跑 */

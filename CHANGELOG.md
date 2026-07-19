@@ -9,6 +9,9 @@
 ### 2026-07-19
 
 **新增**
+- **SOP artifact 骨架 schema（可靠性#4）**：让"文件 handoff"可验证 —— 每个 SDLC stage 的 artifact 定必填 section（`orchestrator/tasks/artifact-schema.ts`：需求=目标/非目标/验收标准/开放问题，架构=受影响文件/接口·数据流/风险，测试=覆盖/结果，回归=验收核对/结论）。
+  - `--end --artifact` 时 server 灵活校验（含任一 alias 即命中，**中英通吃、大小写不敏感**）→ 结果放 `artifactCheck`，CLI 在 stderr 提醒缺哪些 section（**不硬 block**，避免 heading 措辞差异死锁；自定义 stage 无 schema 直接放行）。
+  - SOP wrapper prompt 的 stage 列表显示每个 stage 的 `[artifact 骨架: ...]`，并要求 subagent 按骨架写全。单元验证：缺 section 报缺、中英齐全均 ok、无 schema 放行。（`checkArtifact`/`artifactSkeletonHint` + server `--end` 校验 + `TaskStageData.artifactCheck` + CLI surface + sop-prompt）
 - **SOP 阶段协议框架强制化（可靠性#2）**：把"主 claude 自觉调 `agent task stage --start`"改成"框架自动打点"，治 SOP 最脆的单点（LLM 长 prompt 会忘打点 → 进度卡/loop/gate 起点失同步）。
   - **Task 工具 PreToolUse hook**（`bin/mchat-task-hook`）：主 agent 每次 `Task(subagent_type=X)` 前，hook 反查本 tab 的 active SOP task，若 X 是它的 **pending** stage → 自动 `markStageStart`（幂等；非 SOP tab / ad-hoc Task 静默忽略）。daemon 幂等 upsert 到 `~/.claude/settings.json` 的 `PreToolUse` matcher=`Task`。
   - **隐式收尾兜底**：`markStageStart` 里，若有更早的 stage 仍 `running`（主 agent 忘了 `--end`）→ **非 gate stage 自动标 done** 补同步；**gate stage 只告警不动**（不偷跳 gate，让卡上可见地卡住暴露问题）。correct 流程不触发。

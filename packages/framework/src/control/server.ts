@@ -24,6 +24,7 @@ import {
   markStageSkipped,
   markStageStart,
   markTaskAborted,
+  checkArtifact,
 } from 'multiagent-orchestrator';
 import { send as terminalSend } from 'multiagent-host-mac';
 import { recallStageMemories } from 'multiagent-orchestrator';
@@ -988,9 +989,29 @@ async function handleTaskStage(
       return;
     }
 
+    // artifact schema 轻校验（带了 artifact 且该 stage 有 schema）：缺 section 只 surface 不 block
+    let artifactCheck: TaskStageData['artifactCheck'];
+    let artifactContent: string | undefined;
+    if (req.artifactPath) {
+      try {
+        const { readFile } = await import('node:fs/promises');
+        const { resolve: resolvePath } = await import('node:path');
+        const abs = resolvePath(taskAfter.cwd, req.artifactPath);
+        artifactContent = await readFile(abs, 'utf8');
+        const chk = checkArtifact(req.name, artifactContent);
+        if (chk.schemaKnown) {
+          artifactCheck = { ok: chk.ok, missing: chk.missing };
+          if (!chk.ok) logger.warn('artifact schema：缺 section', { taskId: req.taskId, stage: req.name, missing: chk.missing });
+        }
+      } catch (e) {
+        logger.warn('artifact 读取失败（校验跳过）', { path: req.artifactPath, err: (e as Error).message });
+      }
+    }
+    const stageData = (extra?: Partial<TaskStageData>): TaskStageData => ({ task: taskAfter, ...(artifactCheck ? { artifactCheck } : {}), ...extra });
+
     // task 已 done / failed → 没有 gate 要触发
     if (taskAfter.status !== 'running') {
-      sendOk<TaskStageData>(sock, { task: taskAfter });
+      sendOk<TaskStageData>(sock, stageData());
       sock.end();
       return;
     }
@@ -998,7 +1019,7 @@ async function handleTaskStage(
     // 检查是否有 after-<stage> gate
     const gateName = `after-${req.name}`;
     if (!taskAfter.gates.includes(gateName)) {
-      sendOk<TaskStageData>(sock, { task: taskAfter });
+      sendOk<TaskStageData>(sock, stageData());
       sock.end();
       return;
     }
@@ -1009,24 +1030,13 @@ async function handleTaskStage(
     const summaryText = lastStage?.summary ?? '(无 stage 摘要)';
     const artifactLine = lastStage?.artifactPath ? `\n📄 产出：${lastStage.artifactPath}` : '';
 
-    // 读 artifact 文件预览（前 40 行 / 2000 字）给 gate 卡
+    // artifact 预览（前 40 行 / 2000 字）给 gate 卡 —— 复用上面已读的内容
     let artifactPreview: string | undefined;
-    if (lastStage?.artifactPath) {
-      try {
-        const { readFile } = await import('node:fs/promises');
-        const { resolve: resolvePath } = await import('node:path');
-        const abs = resolvePath(taskAfter.cwd, lastStage.artifactPath);
-        const raw = await readFile(abs, 'utf8');
-        const lines = raw.split('\n').slice(0, 40);
-        let preview = lines.join('\n');
-        if (preview.length > 2000) preview = preview.slice(0, 2000) + '\n…';
-        artifactPreview = preview;
-      } catch (e) {
-        logger.warn('artifact preview failed', {
-          path: lastStage.artifactPath,
-          err: (e as Error).message,
-        });
-      }
+    if (artifactContent !== undefined) {
+      const lines = artifactContent.split('\n').slice(0, 40);
+      let preview = lines.join('\n');
+      if (preview.length > 2000) preview = preview.slice(0, 2000) + '\n…';
+      artifactPreview = preview;
     }
 
     const gateContext: import('multiagent-orchestrator').ApprovalGateContext = {
@@ -1061,7 +1071,7 @@ async function handleTaskStage(
       approved,
     };
     if (!approved) gateResolved.reason = approval.status;
-    sendOk<TaskStageData>(sock, { task: finalTask, gateResolved });
+    sendOk<TaskStageData>(sock, { task: finalTask, ...(artifactCheck ? { artifactCheck } : {}), gateResolved });
   } catch (e) {
     sendErr(sock, (e as Error).message);
   }
