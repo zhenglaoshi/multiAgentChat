@@ -25,6 +25,7 @@ import {
   markStageStart,
   markTaskAborted,
   checkArtifact,
+  eqStage,
 } from 'multiagent-orchestrator';
 import { send as terminalSend } from 'multiagent-host-mac';
 import { recallStageMemories } from 'multiagent-orchestrator';
@@ -946,7 +947,7 @@ async function handleTaskStage(
         sock.end();
         return;
       }
-      const loopRule = existing.loops.find((l) => l.on === req.name);
+      const loopRule = existing.loops.find((l) => eqStage(l.on, req.name));
       if (loopRule) {
         const tried = existing.stageRetries[req.name] ?? 0;
         if (tried < loopRule.maxRetries) {
@@ -1062,7 +1063,7 @@ async function handleTaskStage(
 
     // gate 触发：标记 awaiting-gate + 创建 approval，等用户响应
     await markGateWait(taskAfter.taskId, gateName);
-    const lastStage = taskAfter.stageHistory.find((s) => s.name === req.name);
+    const lastStage = taskAfter.stageHistory.find((s) => eqStage(s.name, req.name));
     const summaryText = lastStage?.summary ?? '(无 stage 摘要)';
     const artifactLine = lastStage?.artifactPath ? `\n📄 产出：${lastStage.artifactPath}` : '';
 
@@ -1085,7 +1086,7 @@ async function handleTaskStage(
     if (lastStage?.artifactPath) gateContext.artifactPath = lastStage.artifactPath;
     if (artifactPreview) gateContext.artifactPreview = artifactPreview;
     gateContext.allStages = taskAfter.stages;
-    gateContext.currentStageIdx = taskAfter.stageHistory.findIndex((s) => s.name === req.name);
+    gateContext.currentStageIdx = taskAfter.stageHistory.findIndex((s) => eqStage(s.name, req.name));
 
     const { result } = await approvals.create({
       title: `[Gate ${gateName}] ${taskAfter.presetName ?? taskAfter.taskId}`,
@@ -1130,7 +1131,7 @@ async function handleTaskStageAuto(
     const active = tasks.find((t) => t.status !== 'done' && t.status !== 'failed');
     if (!active) { sendOk<TaskStageAutoData>(sock, { matched: false }); sock.end(); return; }
     // subagent 必须是本 task 的一个 pending stage（已 start/done/skipped 的不重复；非 stage 的 ad-hoc Task 忽略）
-    const stage = active.stageHistory.find((s) => s.name === req.subagent && s.status === 'pending');
+    const stage = active.stageHistory.find((s) => eqStage(s.name, req.subagent) && s.status === "pending");
     if (!stage) { sendOk<TaskStageAutoData>(sock, { matched: false }); sock.end(); return; }
     const task = await markStageStart(active.taskId, req.subagent);
     logger.info('task stage auto-started (Task hook)', { taskId: active.taskId, stage: req.subagent, tty: tab.tty });

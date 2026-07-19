@@ -61,9 +61,15 @@ export interface ArtifactCheckResult {
   schemaKnown: boolean; // 该 stage 有没有 schema（无则不校验）
 }
 
+/** 按 stage 名取 schema（大小写不敏感，LLM 上报的 name 常大小写不一致）。 */
+function schemaFor(stageName: string): StageArtifactSchema | undefined {
+  const key = Object.keys(STAGE_ARTIFACT_SCHEMA).find((k) => k.toLowerCase() === stageName.toLowerCase());
+  return key ? STAGE_ARTIFACT_SCHEMA[key] : undefined;
+}
+
 /** 灵活校验：content 是否含每个必填 section 的任一 alias。无 schema 的 stage 直接 ok。 */
 export function checkArtifact(stageName: string, content: string): ArtifactCheckResult {
-  const schema = STAGE_ARTIFACT_SCHEMA[stageName];
+  const schema = schemaFor(stageName);
   if (!schema) return { ok: true, missing: [], schemaKnown: false };
   const lc = content.toLowerCase();
   const missing = schema.requiredSections
@@ -74,7 +80,7 @@ export function checkArtifact(stageName: string, content: string): ArtifactCheck
 
 /** 给 wrapper prompt / subagent 的骨架提示（一行列出必填 section）；无 schema 返回 null。 */
 export function artifactSkeletonHint(stageName: string): string | null {
-  const schema = STAGE_ARTIFACT_SCHEMA[stageName];
+  const schema = schemaFor(stageName);
   if (!schema) return null;
   return schema.requiredSections.map((s) => s.key).join(' / ');
 }

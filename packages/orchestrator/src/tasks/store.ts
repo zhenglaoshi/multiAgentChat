@@ -150,9 +150,14 @@ export async function createTask(input: CreateTaskInput): Promise<TaskState> {
   return task;
 }
 
+/** stage 名匹配大小写不敏感 —— LLM 上报的 name 常大小写不一致（如 explore vs Explore），否则匹配不上导致 stage 协议失效。 */
+export function eqStage(a: string, b: string): boolean {
+  return a.toLowerCase() === b.toLowerCase();
+}
+
 /** 找当前 task 的下一个 stage（按 currentStageIdx + 名字匹配做防呆） */
 function findStageIdx(task: TaskState, name: string): number {
-  return task.stageHistory.findIndex((s) => s.name === name && s.status !== 'done');
+  return task.stageHistory.findIndex((s) => eqStage(s.name, name) && s.status !== 'done');
 }
 
 export async function markStageStart(taskId: string, stageName: string): Promise<TaskState | null> {
@@ -199,7 +204,7 @@ export async function markStageEnd(
 ): Promise<TaskState | null> {
   const task = await getTask(taskId);
   if (!task) return null;
-  const idx = task.stageHistory.findIndex((s) => s.name === stageName && s.status === 'running');
+  const idx = task.stageHistory.findIndex((s) => eqStage(s.name, stageName) && s.status === 'running');
   if (idx === -1) {
     logger.warn('markStageEnd: no running stage with that name', { taskId, stageName });
     return task;
@@ -248,7 +253,7 @@ export async function markStageRetry(
 ): Promise<{ task: TaskState; retryCount: number; maxRetries: number } | null> {
   const task = await getTask(taskId);
   if (!task) return null;
-  const rule = task.loops.find((l) => l.on === failedStage && l.retryFrom === retryFrom);
+  const rule = task.loops.find((l) => eqStage(l.on, failedStage) && eqStage(l.retryFrom, retryFrom));
   if (!rule) {
     logger.warn('markStageRetry: no matching loop rule', { taskId, failedStage, retryFrom });
     return null;
@@ -260,8 +265,8 @@ export async function markStageRetry(
     logger.warn('markStageRetry: exhausted', { taskId, failedStage, retryCount, max: rule.maxRetries });
     return null;
   }
-  const fromIdx = task.stageHistory.findIndex((s) => s.name === retryFrom);
-  const toIdx = task.stageHistory.findIndex((s) => s.name === failedStage);
+  const fromIdx = task.stageHistory.findIndex((s) => eqStage(s.name, retryFrom));
+  const toIdx = task.stageHistory.findIndex((s) => eqStage(s.name, failedStage));
   if (fromIdx === -1 || toIdx === -1 || fromIdx > toIdx) {
     logger.warn('markStageRetry: bad index', { fromIdx, toIdx });
     return null;
@@ -425,7 +430,7 @@ export async function markStageSkipped(
     logger.warn('markStageSkipped: task not running', { taskId, status: task.status });
     return task;
   }
-  const idx = task.stageHistory.findIndex((s) => s.name === stageName && s.status === 'pending');
+  const idx = task.stageHistory.findIndex((s) => eqStage(s.name, stageName) && s.status === 'pending');
   if (idx === -1) {
     logger.warn('markStageSkipped: stage not found or not pending', { taskId, stageName });
     return task;
