@@ -203,7 +203,8 @@ export function tabsCard(data: TabsCardData) {
   });
 
   return {
-    config: { wide_screen_mode: true },
+    // update_multi:true —— 多按钮交互卡，点 use-tab 后 patchCard 才能视觉生效（否则 API code 0 卡不变、"点了没反应"）
+    config: { wide_screen_mode: true, update_multi: true },
     header: {
       template: 'turquoise',
       title: { tag: 'plain_text', content: '🐚 Terminal Tabs' },
@@ -447,7 +448,8 @@ export interface WaitingInputCardData {
 export function waitingInputCard(data: WaitingInputCardData) {
   const cwdShown = homeify(data.cwd, data.home);
   return {
-    config: { wide_screen_mode: true },
+    // update_multi：卡上有 use-tab/回复按钮，点击后 patch 才视觉生效
+    config: { wide_screen_mode: true, update_multi: true },
     header: {
       template: 'yellow',
       title: {
@@ -691,7 +693,8 @@ export function progressCard(data: ProgressCardData) {
 
   const sourceTag = data.source === 'local' ? '🏠 ' : '';
   return {
-    config: { wide_screen_mode: true },
+    // update_multi：卡上有 use-tab / quiet toggle / rerun 等点击按钮，点击后 patch 才视觉生效
+    config: { wide_screen_mode: true, update_multi: true },
     header: {
       template,
       title: {
@@ -1615,7 +1618,8 @@ export function templateDetailCard(d: TemplateDetailData) {
   });
 
   return {
-    config: { wide_screen_mode: true },
+    // update_multi：卡上有 use-tab / 回复当前 按钮，点击后 patch 才视觉生效
+    config: { wide_screen_mode: true, update_multi: true },
     header: {
       template: 'blue',
       title: { tag: 'plain_text', content: `📋 ${d.name}` },

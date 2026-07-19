@@ -9,6 +9,7 @@
 ### 2026-07-19
 
 **修复**
+- **切 tab"有时"仍无卡反馈（缺 update_multi 的真根因）**：上一版把 use-tab 改成 patch fire-and-forget + `return {}` 是必要但不够——`/shells` 的 `tabsCard`（及 `waitingInputCard`/`originShellPushCard`/`progressCard`）**config 缺 `update_multi: true`**，这些是"被点击多次、每次 patch"的交互卡，缺它则 patchCard **视觉不生效**（API 返 code 0 但卡不变），表现为"点了切过去了（`/where` 可证）但卡没回执"。**给这 4 张带点击按钮的卡补 `update_multi: true`**。
 - **SOP stage 名大小写敏感导致协议失效**（日志实锤：主 claude 上报 `explore` 但默认 stage 是 `Explore` → `markStageStart` "stage not found" → 进度卡/loop/gate 对该 stage 全断）。LLM 大小写不一致是常态 → **stage 名匹配全部改大小写不敏感**（新 `eqStage`）：`findStageIdx`/`markStageEnd`/`markStageRetry`/`markStageSkipped`/loop 规则/`stage-auto`/gate/artifact schema lookup 全覆盖。
 - **空消息注入 tab（tab 里的 claude 回"收到的消息是空的没内容"刷屏）**：只发了 `@目标`、图片没配文字、或内容被 @提及/mention strip 成空时，`dispatchSendToTab` 仍会注入 `[本次任务]\n(空)` → tab 里的 claude（尤其 careyclaw 等交互式）收到空输入就反复回"收到空消息 + 要继续告诉我下一步"。**在 `dispatchSendToTab` 入口加空内容防护**（所有飞书→tab 注入的中心汇聚点）：`!text.trim()` → 不注入 + 回执"⚠️ 消息内容为空，没发送（是不是只发了 @目标/图片没配文字）"，覆盖 ask-answer/sticky/active/named/chain/batch 全部路径。
 - **卡片点击"没反应"（一整类 toast 盖 patch bug）**：`/shells` 切 tab（`use-tab`）等**一整类 card action** 违反了 CLAUDE.md 铁律——`await patchCard(...)` 后又 `return { toast }`，飞书把卡当"已处理无更新"、盖掉 patch → 卡不刷新、**点了像没反应**。用户因此切 active tab 看不到反馈 → 不确定切到哪 → 后续消息发错 shell。**统一改成 patch fire-and-forget + `return {}`（10 个 handler）**：`use-tab` / `send-to-tab` / `send-to-tab-arm` / `arm-active-reply` / send-answer / `connect-apply`·`connect-cancel`·`connect-disable/enable` / `perf-snooze`·`perf-not-mine` / `tapd-ignore`·`tapd-snooze`·`tapd-not-mine`。
