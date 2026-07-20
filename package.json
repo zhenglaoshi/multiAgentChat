@@ -13,6 +13,11 @@
   "scripts": {
     "dev": "tsx watch apps/daemon/src/index.ts",
     "start": "tsx apps/daemon/src/index.ts",
+    "daemon:install": "bash scripts/launchd-setup.sh install",
+    "daemon:uninstall": "bash scripts/launchd-setup.sh uninstall",
+    "daemon:status": "bash scripts/launchd-setup.sh status",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "agent": "tsx packages/framework/src/control/cli.ts",
     "build": "tsc -b",
     "typecheck": "tsc -b --pretty",
@@ -22,6 +27,7 @@
   "devDependencies": {
     "@types/node": "^22.10.0",
     "tsx": "^4.19.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.10"
   }
 }

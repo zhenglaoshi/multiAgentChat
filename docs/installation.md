@@ -285,6 +285,33 @@ env vars：
 
 ---
 
+## 生产守护 + 开机自启（launchd，可选但推荐）
+
+`npm run dev`（tsx watch）适合边开发边调；**长期挂机**建议用 launchd 托管 —— 登录自启 + 崩溃自动拉起，不用手动开：
+
+```bash
+npm run daemon:install     # 安装 LaunchAgent 并立即启动（RunAtLoad 登录自启 + KeepAlive 崩溃自愈）
+npm run daemon:status      # 看托管状态 / pid / 上次退出码
+scripts/launchd-setup.sh log   # tail 守护日志（~/.multiagent-chat/logs/daemon.{out,err}.log）
+npm run daemon:uninstall   # 停止并移除
+```
+
+- 用 **LaunchAgent**（`~/Library/LaunchAgents/`，跑在用户登录会话）而非 LaunchDaemon —— daemon 要用 AppleScript 控 Terminal.app，需 GUI 会话。
+- **⚠ 与 `npm run dev` 互斥**：两者都绑 `~/.multiagent-chat/agent.sock`。用 launchd 托管前先停掉 dev；要改代码调试时先 `daemon:uninstall` 再 `npm run dev`。
+- 改了 `.env` → `npm run daemon:uninstall && npm run daemon:install`（或 `launchctl kickstart -k gui/$(id -u)/com.multiagent-chat.daemon`）重启生效。
+- 首次可能要在「系统设置 → 隐私与安全性 → 辅助功能 / 屏幕录制 / 自动化」里给 launchd 拉起的进程授权（同[第 4 步](#)的三项）。
+
+## 测试
+
+传输无关的纯逻辑有 vitest 单测护航：
+
+```bash
+npm test           # 跑一遍（vitest run）
+npm run test:watch # 改代码自动重跑
+```
+
+覆盖：按键序列解析、agent 识别/启动命令、`@target` 路由(chain/batch/fallback)、终端输出净化等。改这些核心逻辑前后跑一下防回归。
+
 ## 一次性 vs 长期维护
 
 **一次性**（首次装完就不用再管）：
