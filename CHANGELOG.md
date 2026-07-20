@@ -6,9 +6,22 @@
 
 ## [未发布]
 
+### 2026-07-20
+
+**改动**
+- **TAPD 限流治理：全局 429 熔断 + 降频**。原来每个 tick 对每 workspace×类型跑 endStates+多 owner 字段查询(几十个请求)，撞 429 后每个调用还各自本地重试 2 次 → 越打越死(实测 daemon 起来后 39 次 429、0 成功)。改为：① `client.ts` 加**模块级全局限流熔断**(circuit breaker)——任一调用撞 429 就开冷却窗口(指数退避 30s→60s→…封顶 5min)，窗口内所有 TAPD 调用直接快速失败、不打网络，成功一次即清零；去掉原来的本地 429 重试(改由熔断+下一轮轮询自然重试)。新增 `tapdCooldownLeftMs()` 供上层观测。② `tapd-watcher` tick 前置守卫：冷却期整轮跳过(不刷 warn)。③ 轮询默认间隔 `config.ts` 5min→15min(`.env` 若显式设了 `TAPD_POLL_MS` 仍以 .env 为准)。熔断 + 主动查(`/tapd`)+ 改状态查工作流全受益。
+
+**修复**
+- **缺陷(bug)「🔄 改状态」被"缺需求类别 id"一刀切拦掉**：改状态先查工作流可流转状态(`tapd-get-workflows-all-transitions`)，原实现无论缺陷/需求都硬要 `workitem_type_id`，但 `workitem_type_id`(需求类别) 是**需求(story) 独有概念**，缺陷(bug) 走按项目的工作流、返回里根本没这字段 → 点缺陷改状态必报"这条缺需求类别 id，去 TAPD 网页改"。修复：① `buildStatusPickCard` 守卫改成只对 `sys!=='bug'` 才要求 `wt`；② `listStatusTransitions` 的 `workitemTypeId` 改可选，仅 story 且有值时才塞进 `options.workitem_type_id`，bug 不传。（`im-lark/lark/tapd-flow.ts` + `orchestrator/tapd/tasks-api.ts`）⚠ 当前 TAPD MCP 被限流(429)，typecheck 通过但**待限流缓解真机验缺陷改状态链路**。
+
+**文档**
+- **`/help` 补全 `/tapd` 子命令**：help 里 `/tapd` 只写了"列指派给我的未结束缺陷/需求"，漏了已上线的 `/tapd new <标题[ | 描述]>`（建任务级联卡）和列表卡「🔄 改状态」能力。补成两行，与 `/template`/`/task` 风格一致。（`commands.ts` HELP 文案）
+
 ### 2026-07-19
 
 **新增**
+- **TAPD 建任务命令 + 列表（带状态变更）级联卡**：`/tapd new <标题[ | 描述]>` 弹级联卡 —— 选项目（`select_static` 下拉，`tapd-get-user-participant-projects` 过滤 organization）→ 选需求类别（`tapd-get-workitem-types`）→ 建需求（`tapd-create-story-or-task`，entity_type=stories，**创建人/开发负责人自动取 `TAPD_NICK`**）→ 成功卡带「🔗打开 TAPD」+「📋我的 TAPD」。`/tapd`（原 text 版）升级成**列表卡**：每条带「🔄改状态」→ 拉工作流可流转状态（`tapd-get-workflows-all-transitions`，需 `workitem_type_id`——已在列表查询 `STORY_FIELDS/BUG_FIELDS` + `TapdItem.workitemTypeId` 补上）→ 选目标状态 → `tapd-update-story-or-task`（`v_status` 传中文名）→ 回执。级联卡全 `update_multi:true` + cardAction 一律 `return {}`（不 toast 避免盖 patch），重活 fire-and-forget patch/send。（新 `orchestrator/tapd/tasks-api.ts` + `im-lark/lark/tapd-flow.ts` 草稿状态机 + `cards.ts` 4 张卡 + `commands.ts`/`handlers.ts` 路由）。⚠ TAPD MCP 服务端当前 degraded（Tool not found），代码 typecheck 通过但**待服务端恢复真机验证**。
+- **进度卡标题加当前文件夹（一眼看出"在哪执行"）**：`progressCard` 标题原来只有 `⏳ 执行中 · ttys000 · 任务`，cwd 只在底部灰字 metaLine 的完整长路径里、易被输出代码块淹没 → 用户"还是不知道在哪执行"。现在标题插入文件夹 basename：`⏳ 执行中 · ttys000 · 📁multiAgentChat · 任务…`（完整路径仍保留在底部灰字）。（`cards.ts progressCard` folderTag）
 - **gated-tab 消息队列（卡在审批时排队，审批完自动继续）**：以前给一个"SOP 卡在 gate 等审批"的 tab 发消息，claude 被阻塞、消息静默丢失 → 以为系统坏了。现在 `dispatchSendToTab` 检测目标 tab 有 `awaiting-gate` 的 SOP → **把消息排队**（per-tty FIFO，上限 10）+ **重推待审批卡**（`buildApprovalCard`：gate 走 stageGateCard）+ 回执"⏸ 正卡 gate 等审批，已排队，审批+当前任务跑完后自动执行"。任务 `done`/`failed`（tab 真空闲）时 `flushGatedQueue` **按序自动重发**排队消息（每条间隔 1.5s，带"▶️ 队列继续"提示）。flush 触发用 `task:done/failed`（非 gate-resolve，因为审批后 SOP 可能还有 stage）。（`handlers.ts` 队列 + `notifier` task 事件接线 + `cards.ts` 抽出 `buildApprovalCard` 供复用）
 
 **修复**

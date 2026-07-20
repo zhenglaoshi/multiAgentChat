@@ -2,6 +2,7 @@ export * from './types.js';
 export * from './config.js';
 export * from './client.js';
 export * from './query.js';
+export * from './tasks-api.js';
 export * from './store.js';
 export * from './claims.js';
 export * from './mcp-setup.js';

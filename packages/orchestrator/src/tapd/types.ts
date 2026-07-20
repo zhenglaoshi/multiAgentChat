@@ -45,4 +45,6 @@ export interface TapdItem {
   url: string;
   /** 建分支用：fix_<id>（缺陷）/ feat_<id>（需求） */
   branch: string;
+  /** 需求类别 id —— 改状态时查工作流流转（get-workflows-all-transitions）必需 */
+  workitemTypeId?: string;
 }

@@ -7,6 +7,7 @@ import {
   filterUnnotified,
   markNotified,
   ensureTapdMcp,
+  tapdCooldownLeftMs,
   type TapdItem,
 } from 'multiagent-orchestrator';
 import { listAllChats } from '../chats/store.js';
@@ -62,6 +63,12 @@ export function startTapdWatcher(client: Lark.Client, onExtraNotify?: TapdExtraN
   };
 
   const tick = async (): Promise<void> => {
+    // 限流冷却期：整轮跳过，别硬轮询把配额越打越死（熔断由 client 层管理）。
+    const cd = tapdCooldownLeftMs();
+    if (cd > 0) {
+      logger.info('tapd watcher tick 跳过（限流冷却中）', { cooldownLeftS: Math.ceil(cd / 1000) });
+      return;
+    }
     try {
       const items = await listActionableItems(mcp, cfg, { systems: cfg.systems });
       const fresh = await filterUnnotified(items);

@@ -2322,6 +2322,89 @@ end run
     return {};
   }
 
+  // ==== TAPD 建任务级联（选项目 → 选类别 → 建）+ 列表状态变更 ====
+  // 全部：立即 return {}（不 toast，避免盖 patch），重活 fire-and-forget patch/send。
+  if (action === 'tapd-nw-p') {
+    const draftId = value['d'] as string | undefined;
+    const option = data.action?.option;
+    if (!draftId || !option) return { toast: { type: 'error', content: '缺草稿/选项' } };
+    const messageId = getMessageId(data);
+    void (async () => {
+      const flow = await import('./tapd-flow.js');
+      const r = await flow.pickProjectBuildTypeCard(draftId, option);
+      if (r.error) { void sendText(client, chatId, `❌ ${r.error}`); return; }
+      if (messageId) void patchCard(client, messageId, r.card);
+    })();
+    return {};
+  }
+
+  if (action === 'tapd-nw-t') {
+    const draftId = value['d'] as string | undefined;
+    const option = data.action?.option;
+    if (!draftId || option === undefined) return { toast: { type: 'error', content: '缺草稿/选项' } };
+    const messageId = getMessageId(data);
+    void (async () => {
+      const flow = await import('./tapd-flow.js');
+      const r = await flow.pickTypeCreate(draftId, option);
+      if (r.error) { void sendText(client, chatId, `❌ ${r.error}`); return; }
+      if (messageId) void patchCard(client, messageId, r.card);
+    })();
+    return {};
+  }
+
+  if (action === 'tapd-list') {
+    void (async () => {
+      const flow = await import('./tapd-flow.js');
+      const { sendCardMessage } = await import('./api.js');
+      const r = await flow.buildMyTapdListCard();
+      if (r.error) { void sendText(client, chatId, `❌ ${r.error}`); return; }
+      void sendCardMessage(client, chatId, r.card);
+    })();
+    return {};
+  }
+
+  if (action === 'tapd-st') {
+    const ws = Number(value['ws']);
+    const sys: 'bug' | 'story' = value['sys'] === 'bug' ? 'bug' : 'story';
+    const id = value['id'] as string | undefined;
+    const wt = (value['wt'] as string | undefined) ?? '';
+    const cur = (value['cur'] as string | undefined) ?? '';
+    const title = (value['t'] as string | undefined) ?? '';
+    if (!id || !Number.isFinite(ws)) return { toast: { type: 'error', content: '缺 ws/id' } };
+    void (async () => {
+      const flow = await import('./tapd-flow.js');
+      const { sendCardMessage } = await import('./api.js');
+      const r = await flow.buildStatusPickCard({ ws, sys, id, wt, cur, title });
+      if (r.error) { void sendText(client, chatId, `❌ ${r.error}`); return; }
+      void sendCardMessage(client, chatId, r.card);
+    })();
+    return {};
+  }
+
+  if (action === 'tapd-st-set') {
+    const ws = Number(value['ws']);
+    const sys: 'bug' | 'story' = value['sys'] === 'bug' ? 'bug' : 'story';
+    const id = value['id'] as string | undefined;
+    const option = data.action?.option; // "st|<中文状态名>"
+    if (!id || !Number.isFinite(ws) || !option) return { toast: { type: 'error', content: '缺 ws/id/状态' } };
+    const vStatus = option.startsWith('st|') ? option.slice(3) : option;
+    const messageId = getMessageId(data);
+    void (async () => {
+      const flow = await import('./tapd-flow.js');
+      const res = await flow.applyStatusChange({ ws, sys, id, vStatus });
+      if (messageId) {
+        void patchCard(client, messageId, receiptCard(
+          res.ok
+            ? { title: `✅ 已改为「${res.label}」`, template: 'green' }
+            : { title: '❌ 改状态失败', detail: res.error ?? '', template: 'grey' },
+        ));
+      } else if (!res.ok) {
+        void sendText(client, chatId, `❌ 改状态失败：${res.error}`);
+      }
+    })();
+    return {};
+  }
+
   if (action === 'tapd-claim-go') {
     const id = value['id'] as string | undefined;
     if (!id) return { toast: { type: 'error', content: '缺 id' } };

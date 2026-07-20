@@ -17,7 +17,7 @@ export function loadTapdConfig(): TapdConfig {
 
   const pollMs = (() => {
     const v = Number(process.env['TAPD_POLL_MS']);
-    return Number.isFinite(v) && v >= 60_000 ? v : 300_000; // 默认 5min，最小 1min
+    return Number.isFinite(v) && v >= 60_000 ? v : 900_000; // 默认 15min，最小 1min（降频省限流额度）
   })();
 
   const systems = ((process.env['TAPD_SYSTEMS'] ?? 'bug,story')

@@ -319,7 +319,8 @@ const HELP_TEXT = [
   '       消息体语法：`@a X >> @b Y >> @c Z`（一行内串联）',
   '  **/a**  /approvals            待审批列表 + 最近历史',
   '       /audit [N]               审批历史（最近 N 条）',
-  '  **/tapd**                     列指派给我的未结束 TAPD 缺陷/需求（主动查）',
+  '  **/tapd**                     我的 TAPD 列表卡（指派给我的未结束缺陷/需求；每条带「🔄 改状态」）',
+  '       /tapd new <标题[ | 描述]>  建 TAPD 任务：级联卡选项目 → 选类别 → 建',
   '  **/report** day|week|month|year [--brief]  工作总结：日/周=简报md，月/年=PPT(加 --brief 出简报)',
   '  **/r**  /recall [关键词]      搜任务历史；不带关键词 = 最近 10 条',
   '  **/wt** /worktasks [关键词]   列/搜任务工作目录（目录↔分支↔干啥；TAPD/perf 认领时自动落记录）',
@@ -1339,21 +1340,16 @@ export async function handleCommand(
     if (!cfg.enabled) {
       return { kind: 'text', text: 'TAPD 未配置（.env 缺 TAPD_MCP_URL / TAPD_MCP_TOKEN / TAPD_NICK）' };
     }
-    try {
-      const mcp = new orch.TapdMcpClient(cfg.mcpUrl, cfg.token);
-      const items = await orch.listActionableItems(mcp, cfg, { allOpen: true, systems: cfg.systems });
-      if (items.length === 0) return { kind: 'text', text: '✅ 没有指派给你的未结束缺陷/需求' };
-      const lines = [`📋 指派给你的未结束项（${items.length}）：`, ''];
-      for (const it of items.slice(0, 30)) {
-        const k = it.system === 'bug' ? '🐞' : '📌';
-        lines.push(`${k} #${it.id} ${it.severity ? `[${it.severity}] ` : ''}${it.title}`);
-        lines.push(`   ${it.workspaceName ?? ''}${it.workspaceName ? ' · ' : ''}${it.url}`);
-      }
-      if (items.length > 30) lines.push(`… 还有 ${items.length - 30} 条（收窄 TAPD_WORKSPACE_IDS 或去 TAPD 看）`);
-      return { kind: 'text', text: lines.join('\n') };
-    } catch (e) {
-      return { kind: 'text', text: `❌ TAPD 查询失败：${(e as Error).message}` };
+    const flow = await import('./tapd-flow.js');
+    const rst = rest.trim();
+    // /tapd new <标题[ | 描述]> —— 建任务级联卡（选项目 → 选类别 → 建）
+    if (rst === 'new' || rst.startsWith('new ')) {
+      const r = await flow.startCreateFlow(chatId, rst.slice(3).trim());
+      return r.error ? { kind: 'text', text: `❌ ${r.error}` } : { kind: 'card', card: r.card };
     }
+    // /tapd —— 我的 TAPD 列表卡（每条带「🔄 改状态」）
+    const r = await flow.buildMyTapdListCard();
+    return r.error ? { kind: 'text', text: `❌ ${r.error}` } : { kind: 'card', card: r.card };
   }
 
   if (name === 'presets' || name === 'p') {

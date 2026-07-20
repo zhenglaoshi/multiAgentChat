@@ -600,6 +600,12 @@ export function progressCard(data: ProgressCardData) {
     ? data.taskDescription.slice(0, 40) + '…'
     : data.taskDescription;
 
+  // 文件夹名塞进标题（basename），让"在哪执行"一眼可见；完整路径仍在底部灰字 metaLine
+  const folderName = data.cwd
+    ? data.cwd.replace(/\/+$/, '').split('/').pop() || data.cwd
+    : '';
+  const folderTag = folderName ? `📁${folderName} · ` : '';
+
   const metaParts: string[] = [];
   if (data.cwd) metaParts.push(`📁 ${data.cwd}`);
   metaParts.push(`⏱ ${elapsed}`);
@@ -699,7 +705,7 @@ export function progressCard(data: ProgressCardData) {
       template,
       title: {
         tag: 'plain_text',
-        content: `${sourceTag}${icon} ${stateLabel} · ${data.tty} · ${shortDesc}`,
+        content: `${sourceTag}${icon} ${stateLabel} · ${data.tty} · ${folderTag}${shortDesc}`,
       },
     },
     elements,
@@ -2768,5 +2774,169 @@ export function careyclawKeyFormCard() {
         { tag: 'button', text: { tag: 'plain_text', content: '✅ 保存' }, type: 'primary', name: 'submit', form_action_type: 'submit', behaviors: [{ type: 'callback', value: { action: 'careyclaw-key-submit' } }] },
       ] },
     ] },
+  };
+}
+
+// ==== TAPD 建任务 / 列表 / 状态变更卡片（/tapd new + /tapd） ====
+
+/** 级联选择步骤卡（选项目 / 选需求类别通用）：一个 select_static 下拉。 */
+export interface TapdSelectCardData {
+  header: string;                 // 标题栏，如 "📝 新建 TAPD 需求 · 选项目"
+  body: string;                   // 正文说明（lark_md），含任务标题
+  placeholder: string;            // 下拉占位符
+  action: string;                 // 下拉 widget 的 action（tapd-nw-p / tapd-nw-t）
+  draftId: string;                // 草稿 id（回调据此找回标题/已选项）
+  options: { label: string; value: string }[]; // option.value 为字符串（"id|name"）
+}
+export function tapdSelectCard(d: TapdSelectCardData) {
+  return {
+    config: { wide_screen_mode: true, update_multi: true },
+    header: { template: 'blue', title: { tag: 'plain_text', content: d.header } },
+    elements: [
+      { tag: 'div', text: { tag: 'lark_md', content: d.body } },
+      {
+        tag: 'action',
+        actions: [
+          {
+            tag: 'select_static',
+            placeholder: { tag: 'plain_text', content: d.placeholder },
+            options: d.options.slice(0, 50).map((o) => ({
+              text: { tag: 'plain_text', content: truncate(o.label, 60) },
+              value: o.value,
+            })),
+            value: { action: d.action, d: d.draftId },
+          },
+        ],
+      },
+    ],
+  };
+}
+
+/** 建成功卡。 */
+export interface TapdCreatedCardData {
+  title: string;
+  projectName: string;
+  typeName?: string;
+  id?: string;
+  url: string;
+}
+export function tapdCreatedCard(d: TapdCreatedCardData) {
+  const lines = [
+    `**${truncate(d.title, 80)}**`,
+    `📁 ${d.projectName}${d.typeName ? ` · ${d.typeName}` : ''}${d.id ? ` · #${d.id}` : ''}`,
+  ];
+  return {
+    config: { wide_screen_mode: true, update_multi: true },
+    header: { template: 'green', title: { tag: 'plain_text', content: '✅ TAPD 需求已创建' } },
+    elements: [
+      { tag: 'div', text: { tag: 'lark_md', content: lines.join('\n') } },
+      {
+        tag: 'action',
+        actions: [
+          {
+            tag: 'button',
+            text: { tag: 'plain_text', content: '🔗 打开 TAPD' },
+            type: 'primary',
+            url: d.url,
+            value: { action: 'noop' },
+          },
+          {
+            tag: 'button',
+            text: { tag: 'plain_text', content: '📋 我的 TAPD' },
+            type: 'default',
+            value: { action: 'tapd-list' },
+          },
+        ],
+      },
+    ],
+  };
+}
+
+/** 我的 TAPD 列表卡：每条一行 + 「🔄 改状态」按钮。 */
+export interface TapdListItem {
+  id: string;
+  system: 'bug' | 'story';
+  workspaceId: number;
+  workspaceName?: string;
+  title: string;
+  statusLabel: string;
+  workitemTypeId?: string;
+  url: string;
+}
+export function tapdListCard(items: TapdListItem[]) {
+  const elements: unknown[] = [];
+  if (items.length === 0) {
+    elements.push({ tag: 'div', text: { tag: 'lark_md', content: '✅ 没有指派给你的未结束缺陷/需求' } });
+  }
+  for (const it of items.slice(0, 20)) {
+    const icon = it.system === 'bug' ? '🐞' : '📌';
+    elements.push({
+      tag: 'div',
+      text: {
+        tag: 'lark_md',
+        content: `${icon} **${truncate(it.title, 50)}**\n<font color='grey'>#${it.id} · ${it.workspaceName ?? it.workspaceId} · 状态：${it.statusLabel || '?'}</font>`,
+      },
+      extra: {
+        tag: 'button',
+        text: { tag: 'plain_text', content: '🔄 改状态' },
+        type: 'default',
+        value: {
+          action: 'tapd-st',
+          ws: it.workspaceId,
+          sys: it.system,
+          id: it.id,
+          wt: it.workitemTypeId ?? '',
+          cur: it.statusLabel || '',
+          t: truncate(it.title, 30),
+        },
+      },
+    });
+  }
+  if (items.length > 20) {
+    elements.push({ tag: 'div', text: { tag: 'lark_md', content: `<font color='grey'>… 还有 ${items.length - 20} 条，收窄 TAPD_WORKSPACE_IDS 或去 TAPD 看</font>` } });
+  }
+  return {
+    config: { wide_screen_mode: true, update_multi: true },
+    header: { template: 'blue', title: { tag: 'plain_text', content: `📋 我的 TAPD（${items.length}）` } },
+    elements,
+  };
+}
+
+/** 改状态：选目标状态的下拉卡（点某条「改状态」后单独发一张）。 */
+export interface TapdStatusPickCardData {
+  title: string;
+  workspaceId: number;
+  system: 'bug' | 'story';
+  id: string;
+  currentStatus: string;
+  options: { label: string; value: string }[]; // option.value = "st|<中文状态名>"
+}
+export function tapdStatusPickCard(d: TapdStatusPickCardData) {
+  return {
+    config: { wide_screen_mode: true, update_multi: true },
+    header: { template: 'yellow', title: { tag: 'plain_text', content: '🔄 改状态' } },
+    elements: [
+      {
+        tag: 'div',
+        text: {
+          tag: 'lark_md',
+          content: `**${truncate(d.title, 60)}**\n<font color='grey'>#${d.id} · 当前：${d.currentStatus || '?'}</font>`,
+        },
+      },
+      {
+        tag: 'action',
+        actions: [
+          {
+            tag: 'select_static',
+            placeholder: { tag: 'plain_text', content: '选择目标状态…' },
+            options: d.options.slice(0, 50).map((o) => ({
+              text: { tag: 'plain_text', content: truncate(o.label, 40) },
+              value: o.value,
+            })),
+            value: { action: 'tapd-st-set', ws: d.workspaceId, sys: d.system, id: d.id },
+          },
+        ],
+      },
+    ],
   };
 }

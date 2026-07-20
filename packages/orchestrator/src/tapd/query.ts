@@ -56,8 +56,8 @@ async function endStates(
   }
 }
 
-const BUG_FIELDS = 'id,title,status,severity,priority,created,modified,reporter,current_owner,de,description';
-const STORY_FIELDS = 'id,name,status,priority,created,modified,creator,owner,developer,description';
+const BUG_FIELDS = 'id,title,status,severity,priority,created,modified,reporter,current_owner,de,description,workitem_type_id';
+const STORY_FIELDS = 'id,name,status,priority,created,modified,creator,owner,developer,description,workitem_type_id';
 
 /**
  * 每类型要匹配"我"的字段列表（任一命中即算我的）。可用 env 覆盖：
@@ -142,6 +142,7 @@ function normalize(
   if (e['created']) item.created = String(e['created']);
   if (e['modified']) item.modified = String(e['modified']);
   if (e['description']) item.description = String(e['description']);
+  if (e['workitem_type_id']) item.workitemTypeId = String(e['workitem_type_id']);
   return item;
 }
 
