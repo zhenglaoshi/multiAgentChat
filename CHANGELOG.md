@@ -6,6 +6,11 @@
 
 ## [未发布]
 
+### 2026-07-21
+
+**修复**
+- **`launchd-setup.sh` 的 `status`/`install` 尾部提示崩在 `unbound variable`**：脚本里 `已托管（$LABEL）` 和 `勾选 node（$NODE）` 用了紧贴变量的**全角括号 `（）`**（`ef bc 88/89`），在多字节 locale 下 bash 把全角括号首字节吞进变量名 → 解析成 `LABEL�`/`NODE�` 这种不存在的变量，撞 `set -u` 直接 `unbound variable` 退出 1。虽然 install 的实质步骤（写 plist + `bootstrap` + `enable` + 启动）都在报错行之前已执行成功、daemon 照常托管，但 `status`/`log` 每次都报错、install 尾部授权告警也被打断。修：`$LABEL`→`${LABEL}`、`$NODE`→`${NODE}` 用花括号明确变量边界。验证：`status` 现正常输出 `● 已托管（com.multiagent-chat.daemon） state=running pid=... never exited`。（`scripts/launchd-setup.sh`）
+
 ### 2026-07-20
 
 **新增**

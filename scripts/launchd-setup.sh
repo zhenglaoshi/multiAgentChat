@@ -68,7 +68,7 @@ PLISTEOF
     echo ""
     echo "⚠ 必须在 Mac 前完成一次性授权，否则控 Terminal 会 AppleEvent 超时(-1712)、tab 功能全废："
     echo "   launchd 拉起的 node 是独立 TCC 身份，需要单独授权（不同于你在 Terminal 里授过的）："
-    echo "   系统设置 → 隐私与安全性 →「自动化」允许 node 控制 Terminal.app；「辅助功能」勾选 node（$NODE）。"
+    echo "   系统设置 → 隐私与安全性 →「自动化」允许 node 控制 Terminal.app；「辅助功能」勾选 node（${NODE}）。"
     echo "   首次控 Terminal 时若弹授权框，点允许。授权后 launchctl kickstart -k $DOMAIN/$LABEL 重启生效。"
     echo "   ⚠ 远程（人不在 Mac 前）无法点授权框 → 此时别用 launchd，改用 Terminal 登录项跑 npm run dev。"
     ;;
@@ -81,7 +81,7 @@ PLISTEOF
 
   status)
     if launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1; then
-      echo "● 已托管（$LABEL）"
+      echo "● 已托管（${LABEL}）"
       launchctl print "$DOMAIN/$LABEL" 2>/dev/null | grep -E "state|pid|last exit" | sed 's/^/  /' || true
     else
       echo "○ 未托管（用 install 安装）"
