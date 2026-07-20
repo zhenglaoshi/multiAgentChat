@@ -102,12 +102,33 @@ export async function closeTabGracefully(
     agentExited = ex.exited;
     agentKind = ex.kind;
   }
-  const closed = await closeTab(tty);
+  // closeTab 走 System Events 发 Cmd-W（需 Accessibility 授权）。osascript 非零退出会**抛**
+  // （如权限 1002「不允许发送按键」）——这里必须 catch，否则异常穿透到 cardAction 的
+  // fire-and-forget IIFE 被 void 吞掉，飞书零反馈。转成结构化 { closed:false, reason } 让上层能提示。
+  let closed = false;
+  let reason: string | undefined;
+  try {
+    closed = await closeTab(tty);
+    if (!closed) reason = `tab ${tty} 未找到或关闭失败`;
+  } catch (e) {
+    reason = describeCloseErr(e, tty);
+  }
   return {
     ok: closed, closed, hadAgent, agentExited,
     ...(agentKind ? { agentKind } : {}),
-    ...(closed ? {} : { reason: `tab ${tty} 未找到或关闭失败` }),
+    ...(closed ? {} : { reason }),
   };
+}
+
+/** 把 closeTab 的 osascript 抛错翻译成可行动的中文提示（重点识别 Accessibility 未授权）。 */
+function describeCloseErr(e: unknown, tty: string): string {
+  const msg = e instanceof Error ? e.message : String(e);
+  // 1002 = System Events「不允许发送按键」= 辅助功能(Accessibility)未授权
+  if (msg.includes('(1002)') || msg.includes('不允许发送按键') || msg.includes('not allowed to send keystrokes')) {
+    return `关闭 ${tty} 失败：辅助功能(Accessibility)未授权 —— 运行 daemon 的进程(node)不能发按键(Cmd-W)。`
+      + `到「系统设置 → 隐私与安全性 → 辅助功能」勾选 node，再重启 daemon。`;
+  }
+  return `关闭 ${tty} 失败：${msg}`;
 }
 
 export interface RestartClaudeOptions {

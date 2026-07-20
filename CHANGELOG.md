@@ -9,6 +9,7 @@
 ### 2026-07-21
 
 **修复**
+- **飞书关闭 tab 失败时零反馈（点确认后既没关也没提示）**：`closeTab` 走 System Events 发 Cmd-W，需 **Accessibility 授权**；未授权时 osascript 以 1002「不允许发送按键」**非零退出 → `runScriptOrThrow` 抛异常**。而 `closeTabGracefully` 直接 `await closeTab()` 无 try/catch，异常穿透到 `close-tab-do` cardAction 的 fire-and-forget `void (async()=>{})()` IIFE 被 `void` 吞掉 → 飞书既无「🗑 已关闭」也无「❌ 失败」，用户完全看不出发生了啥（实测 launchd 托管的 node 只授了 Automation 没授 Accessibility 时稳定复现）。修：`closeTabGracefully` 给 `closeTab` 包 try/catch，转成结构化 `{ closed:false, reason }`；新增 `describeCloseErr` 识别 1002 → 回可行动提示「辅助功能未授权，去系统设置勾选 node 再重启 daemon」。单关(`close-tab-do`)与批量(`close-idle-do`)都因此拿到反馈。（`host-mac/terminal/restart.ts`）
 - **`launchd-setup.sh` 的 `status`/`install` 尾部提示崩在 `unbound variable`**：脚本里 `已托管（$LABEL）` 和 `勾选 node（$NODE）` 用了紧贴变量的**全角括号 `（）`**（`ef bc 88/89`），在多字节 locale 下 bash 把全角括号首字节吞进变量名 → 解析成 `LABEL�`/`NODE�` 这种不存在的变量，撞 `set -u` 直接 `unbound variable` 退出 1。虽然 install 的实质步骤（写 plist + `bootstrap` + `enable` + 启动）都在报错行之前已执行成功、daemon 照常托管，但 `status`/`log` 每次都报错、install 尾部授权告警也被打断。修：`$LABEL`→`${LABEL}`、`$NODE`→`${NODE}` 用花括号明确变量边界。验证：`status` 现正常输出 `● 已托管（com.multiagent-chat.daemon） state=running pid=... never exited`。（`scripts/launchd-setup.sh`）
 
 ### 2026-07-20
