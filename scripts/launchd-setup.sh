@@ -39,7 +39,8 @@ case "$cmd" in
   <key>ProgramArguments</key>
   <array>
     <string>${NODE}</string>
-    <string>${TSX}</string>
+    <string>--import</string>
+    <string>tsx</string>
     <string>${REPO}/apps/daemon/src/index.ts</string>
   </array>
   <key>WorkingDirectory</key><string>${REPO}</string>
@@ -64,6 +65,12 @@ PLISTEOF
     echo "✅ 已安装 + 启动：$PLIST"
     echo "   登录自启 + 崩溃自愈已开。日志：$LOG_DIR/daemon.{out,err}.log"
     echo "   状态：scripts/launchd-setup.sh status ；停用：scripts/launchd-setup.sh uninstall"
+    echo ""
+    echo "⚠ 必须在 Mac 前完成一次性授权，否则控 Terminal 会 AppleEvent 超时(-1712)、tab 功能全废："
+    echo "   launchd 拉起的 node 是独立 TCC 身份，需要单独授权（不同于你在 Terminal 里授过的）："
+    echo "   系统设置 → 隐私与安全性 →「自动化」允许 node 控制 Terminal.app；「辅助功能」勾选 node（$NODE）。"
+    echo "   首次控 Terminal 时若弹授权框，点允许。授权后 launchctl kickstart -k $DOMAIN/$LABEL 重启生效。"
+    echo "   ⚠ 远程（人不在 Mac 前）无法点授权框 → 此时别用 launchd，改用 Terminal 登录项跑 npm run dev。"
     ;;
 
   uninstall)

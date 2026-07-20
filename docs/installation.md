@@ -297,6 +297,8 @@ npm run daemon:uninstall   # 停止并移除
 ```
 
 - 用 **LaunchAgent**（`~/Library/LaunchAgents/`，跑在用户登录会话）而非 LaunchDaemon —— daemon 要用 AppleScript 控 Terminal.app，需 GUI 会话。
+- **⚠ 一次性授权（必须在 Mac 前做）**：launchd 拉起的 `node` 是独立 TCC 身份，**不继承**你在 Terminal 里给过的权限。没授权时控 Terminal 会 `AppleEvent 超时 (-1712)`、tab 功能全废。到「系统设置 → 隐私与安全性」：`自动化` 允许 node 控制 Terminal.app、`辅助功能` 勾选 node。首次弹授权框点允许，然后 `launchctl kickstart -k gui/$(id -u)/com.multiagent-chat.daemon`。**人不在 Mac 前（纯远程）点不了授权框 → 别用 launchd，改用下面的登录项方案。**
+- **纯远程/嫌授权麻烦** → 用「Terminal 登录项跑 `npm run dev`」：系统设置 → 通用 → 登录项 加一条开机跑 Terminal 执行 `cd <repo> && npm run dev`（继承 Terminal 的权限，dev 的 health-check 会自愈重启）。开机自启 + 权限都有，只是不如 launchd 的 KeepAlive 硬。
 - **⚠ 与 `npm run dev` 互斥**：两者都绑 `~/.multiagent-chat/agent.sock`。用 launchd 托管前先停掉 dev；要改代码调试时先 `daemon:uninstall` 再 `npm run dev`。
 - 改了 `.env` → `npm run daemon:uninstall && npm run daemon:install`（或 `launchctl kickstart -k gui/$(id -u)/com.multiagent-chat.daemon`）重启生效。
 - 首次可能要在「系统设置 → 隐私与安全性 → 辅助功能 / 屏幕录制 / 自动化」里给 launchd 拉起的进程授权（同[第 4 步](#)的三项）。
