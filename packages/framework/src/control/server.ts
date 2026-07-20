@@ -37,7 +37,7 @@ import {
   type SubagentDef,
 } from 'multiagent-orchestrator';
 import {
-  closeTab,
+  closeTabGracefully,
   getHistory,
   isClaudeTab,
   listTabs,
@@ -160,8 +160,15 @@ async function handleTabNew(sock: Socket, req: Extract<Request, { op: 'tab.new' 
 
 async function handleTabClose(sock: Socket, req: Extract<Request, { op: 'tab.close' }>) {
   try {
-    const closed = await closeTab(req.tty);
-    sendOk<TabCloseData>(sock, { closed });
+    // 优雅关：先退出 agent(claude/codex) 省 CPU/内存，再关单个 tab；拒绝关 daemon 自己。
+    const r = await closeTabGracefully(req.tty);
+    sendOk<TabCloseData>(sock, {
+      closed: r.closed,
+      hadAgent: r.hadAgent,
+      agentExited: r.agentExited,
+      ...(r.agentKind ? { agentKind: r.agentKind } : {}),
+      ...(r.reason ? { reason: r.reason } : {}),
+    });
   } catch (e) {
     sendErr(sock, (e as Error).message);
   }

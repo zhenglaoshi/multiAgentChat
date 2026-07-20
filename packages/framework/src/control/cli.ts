@@ -442,7 +442,16 @@ async function cmdClose(flags: Flags): Promise<void> {
   const tty = flags.tty ?? flags.positional[0];
   if (!tty) die('agent close <tty> 或 -t <tty>');
   const data = await sendOnce<TabCloseData>({ op: 'tab.close', tty });
-  stdout.write(data.closed ? `⊘ closed ${tty}\n` : `tab not found: ${tty}\n`);
+  if (!data.closed) {
+    stdout.write(data.reason ? `⚠ ${data.reason}\n` : `tab not found: ${tty}\n`);
+    return;
+  }
+  const agentNote = data.hadAgent
+    ? data.agentExited
+      ? `（已退出 ${data.agentKind ?? 'agent'}）`
+      : `（${data.agentKind ?? 'agent'} 未退干净，已强关）`
+    : '';
+  stdout.write(`⊘ closed ${tty}${agentNote}\n`);
 }
 
 /** normalize：'3' / 'ttys003' / '/dev/ttys003' → '/dev/ttys003' */

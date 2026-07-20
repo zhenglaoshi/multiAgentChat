@@ -134,7 +134,7 @@ Framework 会派任务到 active tab 的主 claude，让它生成结构化 JSON�
 
 ```
 /dashboard 或 /d        # 全局概览：active tab + pending 任务 + 最近完成 + 进行中 SOP
-/shells 或 /s           # tab 列表卡，按钮可切 active
+/shells 或 /s           # tab 列表卡：可切 active / 每个带 [🗑关闭] / 底部 [🧹关闭空闲 tab]（关前先退 agent，不关 daemon 自己）
 /use <tty>              # 切当前 chat 的 active tab
 /where 或 /w            # 当前 active tab 信息
 /history 或 /h [-n N]   # active tab 屏幕历史 tail
@@ -160,7 +160,7 @@ agent which                         # 看 CLI 当前默认 tab
 agent send [-t tty] "..."           # 发文本到 tab
 agent show [-t tty] [-n 60]         # 看 tab 屏幕历史 tail
 agent open [path] [--new-window]    # 开新 tab
-agent close <tty>                   # 关 tab（会关整 window，自动过关闭确认框）
+agent close <tty>                   # 关单个 tab（关前先 Ctrl-C 退出 claude/codex 省资源；拒绝关 daemon 自己；自动过关闭确认框）
 agent recent-cwds                   # 最近用过的 cwd
 agent restart-all-claude-tabs       # 原地重启所有 claude tab（默认 dry-run，加 --yes 执行）
 #   选项：--yes 真执行 · --dry-run 只列 · --continue 续会话 · --except t1,t2 · --include-self

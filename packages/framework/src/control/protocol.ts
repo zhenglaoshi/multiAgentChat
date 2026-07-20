@@ -498,6 +498,13 @@ export interface TabNewData {
 
 export interface TabCloseData {
   closed: boolean;
+  /** 关前 tab 里是否在跑 agent(claude/codex)。 */
+  hadAgent?: boolean;
+  /** agent 是否已优雅退出（false = 没退干净但仍强关了）。 */
+  agentExited?: boolean;
+  agentKind?: string;
+  /** 未关成/被拒（如关自己）的原因。 */
+  reason?: string;
 }
 
 export interface TabRestartClaudeData {

@@ -501,9 +501,10 @@ export async function forceEnter(tty: string): Promise<boolean> {
   return out.trim() === 'ok';
 }
 
-// close w saving no 只处理"保存文档"，不处理 Terminal 的『关闭前确认（有进程在跑）』
-// sheet —— 那个 sheet 会把窗口卡住关不掉。所以：close w 触发 sheet 后，若检测到 sheet
-// 就按 Return 确认默认按钮（关闭）。没 sheet（未开该确认 / 空 shell）则不误发回车。
+// 关**单个 tab**（不是整窗）：选中目标 tab → 前台化 → System Events Cmd-W（= Close Tab，
+// 只关当前 tab；窗口仅剩此 tab 时顺带关窗）。原来用 `close w` 会把多 tab 同窗的**整窗全关**。
+// Terminal 的『关闭前确认（有进程在跑）』sheet 会卡住关不掉 → Cmd-W 后若检测到 sheet，
+// 按 Return 确认默认按钮（关闭）。没 sheet（已退出 agent / 空 shell / 未开该确认）则不误发回车。
 const CLOSE_SCRIPT = `
 on run argv
   set targetTty to item 1 of argv
@@ -513,9 +514,10 @@ on run argv
       try
         repeat with t in tabs of w
           if (tty of t) is equal to targetTty then
+            activate
             set frontmost of w to true
+            set selected tab of w to t
             set hit to true
-            close w
             exit repeat
           end if
         end repeat
@@ -524,8 +526,10 @@ on run argv
     end repeat
   end tell
   if not hit then return "not-found"
-  delay 0.3
+  delay 0.2
   tell application "System Events"
+    keystroke "w" using {command down}
+    delay 0.3
     try
       if exists (sheet 1 of window 1 of process "Terminal") then
         key code 36

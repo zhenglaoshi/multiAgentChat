@@ -8,6 +8,12 @@
 
 ### 2026-07-20
 
+**新增**
+- **关闭 tab 功能（关前先退 claude/codex，飞书 + CLI）**：tab 开太多时能关，且**关前先优雅退出 agent** 避免残留占 CPU/内存。① 新增 `exitAgentInTab(tty)`（复用重启的 Ctrl-C 退出轮询：连发 ctrl+c ctrl+c → 查进程消失，claude/codex 通用）；② 新增 `closeTabGracefully(tty)`（先退 agent 再关**单个** tab）；③ 修 `closeTab` —— 原来 `close w` 关**整窗**（多 tab 同窗会误关全部），改成选中 tab + System Events Cmd-W 只关单个（单 tab 窗顺带关窗），保留关闭确认 sheet 的 Return 兜底；④ 新增 `detectSelfTty()`（host-mac，pid→ppid 上溯找 ctty）并在 `closeTabGracefully` 里**拒绝关 daemon 自己所在的 tab**（否则整套服务没了）。飞书 `/shells` 卡每个 tab 加「🗑 关闭」（daemon 自己那个不给按钮）→ 弹**确认卡**（列 cwd/agent，提示会先退 agent）→ 确认后优雅关；底部加「🧹 关闭空闲 tab (N)」批量（空闲=非忙碌+非 daemon 自己，含普通 shell 和 idle agent，有 agent 的先退；排除忙碌，确认卡列清单）。CLI `agent close <tty>` 走同一套并回报 agent 退出情况。控制协议 `TabCloseData` 扩展 hadAgent/agentExited/agentKind/reason。真机验证：开一次性 tab → closeTabGracefully → 单 tab 精准关闭、tab 数复原、detectSelfTty 正确识别 daemon tab。（`host-mac/terminal/{tabs,restart}.ts` + `framework/control/{protocol,server,cli}.ts` + `im-lark/lark/{cards,commands,handlers}.ts`）
+
+**文档**
+- **补关闭 tab 功能文档 + `/help`**：`docs/features.md` 新增 §26（入口/关键行为/底层）；`docs/feishu-commands.md` `/shells` 段补卡片交互（🗑关闭/🧹批量/关前退 agent/不关自己）；`docs/commands.md` 更正 `agent close`（原写"关整 window"已过时→关单 tab+退 agent+拒关自己）；飞书 `/help` 的 `/shells` 行补关闭说明。
+
 **改动**
 - **TAPD 建需求交互改成两步卡（选位置 → 填表单）**：原来标题/描述从命令行 `/tapd new 标题|描述` 取、再走两张下拉卡（选项目→选类别→建），标题不能在卡里填、也没内容表单。改成用户要的两步：① 选项目（位置）→ ② 弹**表单卡**填「主题(需求标题) + 内容(描述)」→ 建。`/tapd new [标题]` 标题变可选（带了就预填第二步表单）；去掉单独「选需求类别」步（用项目默认类别，创建仅需项目）；创建人/开发负责人仍自动=当前账号(TAPD_NICK)。表单走飞书 schema 2.0 form（复用 connect/careyclaw 的 form+input+submit 范式），结果卡用 2.0 markdown（避开 2.0 action 按钮不确定性）。跨 schema patch 坑规避：选项目卡(v1)→ack(v1) 同 schema patch；表单卡(2.0)另发新消息、提交后 2.0→2.0 patch 成结果卡。（`orchestrator` 无改；`im-lark/lark/tapd-flow.ts` 状态机重写 `startCreateFlow`/`pickProjectShowForm`/`submitCreate` + `cards.ts` 新增 `tapdCreateFormCard`/`tapdCreateResultCardV2` + `handlers.ts` `tapd-nw-p`/`tapd-nw-submit` + `commands.ts` help）。⚠ TAPD MCP 当前限流/内网不可达，真机建需求链路待网络恢复验证；卡片渲染已用 send-card 真机预览过。
 

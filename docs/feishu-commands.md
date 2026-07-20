@@ -40,12 +40,18 @@
 
 #### `/shells`（alias: `/s`, `/tabs`, `/ls`）
 
-列所有 Terminal tab（可点切换）
+列所有 Terminal tab（可点切换 / 关闭）
 
 ```
 /shells                               # 列所有 Terminal tab
 /s                                    # 短别名
 ```
+
+卡片交互：
+- 每个 tab：`[★ 切到这个]`、`[→ 发一条]`、`[🗑 关闭]`（daemon 自己那个 tab 不给关闭按钮）
+- `[🗑 关闭]` → 弹**确认卡**（列 cwd / 在跑的 agent，提示会先退 agent）→ `[✅ 确认关闭]` 才真关
+- 底部 `[🧹 关闭空闲 tab (N)]`：批量关所有空闲 tab（非忙碌 + 非 daemon 自己），确认卡列出清单
+- **关前先优雅退出 claude/codex**（Ctrl-C 轮询进程消失）再关，避免残留占 CPU/内存；只关单个 tab，不误关整窗
 
 #### `/where`（alias: `/w`, `/pwd`）
 

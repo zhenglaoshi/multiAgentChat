@@ -1,4 +1,5 @@
-import { forceEnter, listTabs, send } from './tabs.js';
+import { spawnSync } from 'node:child_process';
+import { closeTab, forceEnter, listTabs, send } from './tabs.js';
 import { sendKeys } from './keys.js';
 import type { TerminalTab } from './types.js';
 import { detectAgentFromProcs, getAgentAdapter, type AgentKind } from 'multiagent-orchestrator';
@@ -8,6 +9,105 @@ const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /** 与 status.ts 的判定一致：进程列表里有没有在跑 agent（claude/codex）。走 AgentAdapter registry。 */
 export function isClaudeTab(tab: TerminalTab): boolean {
   return detectAgentFromProcs(tab.processes) !== null;
+}
+
+/**
+ * daemon/CLI 自己跑在哪个 tab（controlling tty）—— 沿 pid→ppid 上溯找第一个持真 ctty 的祖先
+ * （claude/工具子进程可能没 ctty，故要往上走）。关 tab 时用来**禁止关自己**：daemon 若被关，
+ * 整套服务就没了。整条链都无 ctty（无控制终端的守护/沙箱）返回 undefined。
+ */
+export function detectSelfTty(): string | undefined {
+  let pid: number | undefined = process.pid;
+  for (let i = 0; i < 12 && pid && pid > 1; i++) {
+    try {
+      const r = spawnSync('ps', ['-o', 'tty=,ppid=', '-p', String(pid)], { encoding: 'utf8' });
+      const line = r.stdout.trim();
+      const m = /^(\S+)\s+(\d+)$/.exec(line);
+      if (!m) break;
+      const tty = m[1]!;
+      if (tty !== '??' && tty !== '?') return tty.startsWith('/dev/') ? tty : `/dev/${tty}`;
+      pid = Number(m[2]);
+    } catch {
+      break;
+    }
+  }
+  return undefined;
+}
+
+export interface ExitAgentResult {
+  /** agent 已退出（或本来就没 agent）。 */
+  exited: boolean;
+  /** 关前 tab 里确实在跑 agent。 */
+  hadAgent: boolean;
+  kind?: AgentKind;
+}
+
+/**
+ * 优雅退出 tab 里在跑的 agent（claude/codex）：连发 Ctrl-C（每次两下 —— claude 需"快速连按两次"
+ * 才退，两次间隔过久会重置计时；codex 同法通用），每次后查进程列表，agent 消失即停。
+ * 没在跑 agent → 直接 hadAgent:false 返回。卡死退不出 → exited:false，由调用方决定是否仍强关。
+ * 用于**关 tab 前先清掉 agent**，避免残留进程占 CPU/内存。
+ */
+export async function exitAgentInTab(
+  tty: string,
+  opts: { settleMs?: number; maxInterrupts?: number } = {},
+): Promise<ExitAgentResult> {
+  const settleMs = opts.settleMs ?? 700;
+  const maxInterrupts = opts.maxInterrupts ?? 3;
+  const before = (await listTabs()).find((t) => t.tty === tty);
+  if (!before) return { exited: true, hadAgent: false };
+  const adapter = detectAgentFromProcs(before.processes);
+  if (!adapter) return { exited: true, hadAgent: false };
+  const kind = adapter.kind;
+  for (let i = 0; i < maxInterrupts; i++) {
+    await sendKeys(tty, 'ctrl+c ctrl+c');
+    await delay(settleMs);
+    const cur = (await listTabs()).find((t) => t.tty === tty);
+    if (!cur || !detectAgentFromProcs(cur.processes)) return { exited: true, hadAgent: true, kind };
+  }
+  return { exited: false, hadAgent: true, kind };
+}
+
+export interface CloseTabResult {
+  ok: boolean;
+  closed: boolean;
+  hadAgent: boolean;
+  agentExited: boolean;
+  agentKind?: AgentKind;
+  reason?: string;
+}
+
+/**
+ * 优雅关闭一个 tab：先退出 agent(claude/codex) 避免残留 CPU/内存，再关**单个** tab。
+ * **拒绝关 daemon 自己所在的 tab**（否则把整套服务关了）。agent 没退干净也继续关
+ * （Terminal 关 tab 会终止其进程），但把 agentExited=false 标出来让上层提示。
+ */
+export async function closeTabGracefully(
+  tty: string,
+  opts: { skipAgentExit?: boolean } = {},
+): Promise<CloseTabResult> {
+  const self = detectSelfTty();
+  if (self && self === tty) {
+    return {
+      ok: false, closed: false, hadAgent: false, agentExited: false,
+      reason: '拒绝关闭 daemon 自己所在的 tab（会把整套服务关掉）',
+    };
+  }
+  let hadAgent = false;
+  let agentExited = true;
+  let agentKind: AgentKind | undefined;
+  if (!opts.skipAgentExit) {
+    const ex = await exitAgentInTab(tty);
+    hadAgent = ex.hadAgent;
+    agentExited = ex.exited;
+    agentKind = ex.kind;
+  }
+  const closed = await closeTab(tty);
+  return {
+    ok: closed, closed, hadAgent, agentExited,
+    ...(agentKind ? { agentKind } : {}),
+    ...(closed ? {} : { reason: `tab ${tty} 未找到或关闭失败` }),
+  };
 }
 
 export interface RestartClaudeOptions {

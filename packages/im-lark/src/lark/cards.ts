@@ -104,6 +104,41 @@ export function approvalCard(req: ApprovalRequest) {
   };
 }
 
+/** 关单个 tab 的确认卡（破坏性 → 先确认）。确认=close-tab-do，取消=close-cancel。 */
+export function closeTabConfirmCard(tty: string, opts?: { cwd?: string; hasAgent?: boolean; agentLabel?: string }) {
+  const agentNote = opts?.hasAgent
+    ? `\n<font color='grey'>该 tab 在跑 ${opts.agentLabel ?? 'claude/codex'} —— 会**先 Ctrl-C 退出**再关，避免残留占 CPU/内存。</font>`
+    : '';
+  const cwd = opts?.cwd ? `\n📁 \`${opts.cwd}\`` : '';
+  return {
+    config: { wide_screen_mode: true, update_multi: true },
+    header: { template: 'yellow', title: { tag: 'plain_text', content: '⚠️ 确认关闭 tab' } },
+    elements: [
+      { tag: 'div', text: { tag: 'lark_md', content: `确认关闭 \`${tty}\`？该会话将丢失。${cwd}${agentNote}` } },
+      { tag: 'action', actions: [
+        { tag: 'button', text: { tag: 'plain_text', content: '✅ 确认关闭' }, type: 'danger', value: { action: 'close-tab-do', tty } },
+        { tag: 'button', text: { tag: 'plain_text', content: '⊘ 取消' }, type: 'default', value: { action: 'close-cancel' } },
+      ] },
+    ],
+  };
+}
+
+/** 批量关空闲 tab 的确认卡（列出清单 + 数量）。确认=close-idle-do。 */
+export function closeIdleConfirmCard(ttys: { tty: string; cwd?: string; agentLabel?: string }[]) {
+  const lines = ttys.map((t) => `· \`${t.tty}\`${t.agentLabel ? ` (${t.agentLabel})` : ''}${t.cwd ? ` — ${t.cwd}` : ''}`);
+  return {
+    config: { wide_screen_mode: true, update_multi: true },
+    header: { template: 'yellow', title: { tag: 'plain_text', content: `⚠️ 确认关闭 ${ttys.length} 个空闲 tab` } },
+    elements: [
+      { tag: 'div', text: { tag: 'lark_md', content: `将关闭以下空闲 tab（不含 daemon 自己 / 忙碌中的）；**在跑 claude/codex 的会先 Ctrl-C 退出再关**：\n${lines.join('\n')}` } },
+      { tag: 'action', actions: [
+        { tag: 'button', text: { tag: 'plain_text', content: `✅ 全部关闭 (${ttys.length})` }, type: 'danger', value: { action: 'close-idle-do' } },
+        { tag: 'button', text: { tag: 'plain_text', content: '⊘ 取消' }, type: 'default', value: { action: 'close-cancel' } },
+      ] },
+    ],
+  };
+}
+
 // ---- Tabs card (按 window 分组) ----
 
 export interface TabsCardData {
@@ -112,6 +147,8 @@ export interface TabsCardData {
   home: string;
   /** 可选 status overrides：watcher / dashboard 可以传更精确的 status（含 history detect） */
   statusByTty?: Map<string, TabStatusInfo>;
+  /** daemon 自己所在 tab：不给「关闭」按钮（关了整套服务就没了）。 */
+  selfTty?: string;
 }
 
 export function tabsCard(data: TabsCardData) {
@@ -184,23 +221,41 @@ export function tabsCard(data: TabsCardData) {
           type: t.tty === data.activeTty ? 'primary' : 'default',
           value: { action: 'send-to-tab-arm', tty: t.tty },
         });
+        // daemon 自己的 tab 不给关闭按钮（关了整套没了）
+        if (t.tty !== data.selfTty) {
+          perTabActions.push({
+            tag: 'button',
+            text: { tag: 'plain_text', content: '🗑 关闭' },
+            type: 'danger',
+            value: { action: 'close-tab-confirm', tty: t.tty },
+          });
+        }
         elements.push({ tag: 'action', actions: perTabActions });
       }
       elements.push({ tag: 'hr' });
     }
   }
 
-  elements.push({
-    tag: 'action',
-    actions: [
-      {
-        tag: 'button',
-        text: { tag: 'plain_text', content: '🆕 开新 tab' },
-        type: 'primary',
-        value: { action: 'choose-dir' },
-      },
-    ],
-  });
+  // 底部：开新 tab + 一键关闭空闲的 claude/codex tab（省 CPU/内存；排除自己/忙的，确认时列清单）
+  const bottomActions: unknown[] = [
+    {
+      tag: 'button',
+      text: { tag: 'plain_text', content: '🆕 开新 tab' },
+      type: 'primary',
+      value: { action: 'choose-dir' },
+    },
+  ];
+  // 空闲 = 非忙碌 + 非 daemon 自己（含普通 shell 和 idle 的 claude/codex）。有 agent 的关前会先退。
+  const idleCount = data.tabs.filter((t) => t.tty !== data.selfTty && !t.busy).length;
+  if (idleCount > 0) {
+    bottomActions.push({
+      tag: 'button',
+      text: { tag: 'plain_text', content: `🧹 关闭空闲 tab (${idleCount})` },
+      type: 'danger',
+      value: { action: 'close-idle-confirm' },
+    });
+  }
+  elements.push({ tag: 'action', actions: bottomActions });
 
   return {
     // update_multi:true —— 多按钮交互卡，点 use-tab 后 patchCard 才能视觉生效（否则 API code 0 卡不变、"点了没反应"）

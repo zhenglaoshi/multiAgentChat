@@ -839,6 +839,26 @@ C1（抽象）+ C2（回传通道）+ C3（/connect 引导）已完成，claude 
 
 ---
 
+## 26. 关闭 tab · 关前先退 agent（省 CPU/内存）
+
+> tab 开太多要清理时，一键关闭；关**之前先优雅退出 claude/codex**，避免残留进程占 CPU/内存。
+
+### 入口
+- **飞书 `/shells` 卡**：
+  - 每个 tab 一个 **[🗑 关闭]** 按钮 → 弹**确认卡**（列 cwd / 在跑的 agent，提示会先退 agent）→ [✅ 确认关闭] 才真关。
+  - 底部 **[🧹 关闭空闲 tab (N)]**：批量关掉所有**空闲 tab**（非忙碌 + 非 daemon 自己；含普通 shell 和 idle 的 claude/codex，有 agent 的关前先退），确认卡列出要关哪些。
+- **CLI**：`agent close <tty>` —— 同一套优雅关闭，回报 agent 是否已退出。
+
+### 关键行为
+1. **关前先退 agent**：`exitAgentInTab` 连发 Ctrl-C（每次两下，claude 需连按两次才退，codex 同法通用）→ 轮询进程列表直到 agent 消失（最多 3 次），再关。没在跑 agent 直接关。退不干净也继续关（Terminal 关 tab 会终止进程），但会标出来提示。
+2. **只关单个 tab**：用 System Events **Cmd-W**（= Close Tab），多 tab 同窗只关当前那个；单 tab 窗顺带关窗。（老实现用 `close w` 会误关整窗，已修。）关闭确认 sheet 出现时自动按 Return 过掉。
+3. **绝不关 daemon 自己**：`detectSelfTty()`（pid→ppid 上溯找 controlling tty）识别 daemon 所在 tab —— `/shells` 不给它关闭按钮 + 服务端 `closeTabGracefully` 二次拦截（否则把整套服务关了）。
+
+### 底层
+`host-mac/terminal/restart.ts`（`exitAgentInTab` / `closeTabGracefully` / `detectSelfTty`）+ `tabs.ts`（`closeTab` 改成关单 tab）；控制协议 `tab.close`（`TabCloseData` 带 `hadAgent`/`agentExited`/`reason`）；`im-lark`（`tabsCard` 加按钮 + `closeTabConfirmCard`/`closeIdleConfirmCard` + `close-tab-*`/`close-idle-*` handlers）。
+
+---
+
 ## 已知的能力边界
 
 **能做**：

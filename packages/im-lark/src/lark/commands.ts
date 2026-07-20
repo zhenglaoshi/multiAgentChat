@@ -28,7 +28,7 @@ import {
   type Preset,
 } from 'multiagent-orchestrator';
 import { listRecentCwds } from 'multiagent-host-mac';
-import { getHistory, listTabs, newTab } from 'multiagent-host-mac';
+import { getHistory, listTabs, newTab, detectSelfTty } from 'multiagent-host-mac';
 import { inferTabStatus, type TabStatusInfo } from 'multiagent-host-mac';
 import { resolveCdTarget } from 'multiagent-host-mac';
 import {
@@ -286,7 +286,7 @@ const HELP_TEXT = [
   '',
   '可用命令（短 alias 加粗）：',
   '  **/d**  /dashboard            概览：active tab + pending 任务 + 最近完成',
-  '  **/s**  /shells               列所有 Terminal tab（可点切换）',
+  '  **/s**  /shells               列所有 Terminal tab（可切换 / 每个带「🗑关闭」+ 底部「🧹关闭空闲 tab」；关前先退 claude/codex，不关 daemon 自己）',
   '  **/n**  /new [path|@alias|关键词]  开新 tab',
   '       /new                    无参数弹选目录卡片（含浏览器/收藏/git 项目）',
   '       /new ~/code/foo         精确路径',
@@ -677,6 +677,8 @@ async function buildTabsCard(chatId: string): Promise<ReplyAction> {
   const chat = await loadChat(chatId);
   const data: Parameters<typeof tabsCard>[0] = { tabs, home: homedir() };
   if (chat.activeTty) data.activeTty = chat.activeTty;
+  const self = detectSelfTty(); // daemon 自己的 tab：不给关闭按钮（关了整套没了）
+  if (self) data.selfTty = self;
   return { kind: 'card', card: tabsCard(data) };
 }
 

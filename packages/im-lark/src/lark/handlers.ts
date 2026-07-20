@@ -7,7 +7,7 @@ import { recordCwd } from 'multiagent-host-mac';
 import { formatRecallPrefix, recall, tokenize } from 'multiagent-orchestrator';
 import { pendingTracker } from '../monitor/pending.js';
 import { recordInbound } from '../monitor/ws-watchdog.js';
-import { captureScreen, forceEnter, getHistory, getUserFocus, launchAgentInTab, launchClaudeInTab, listTabs, newTab, send, sendKeys, sendKeysRaw } from 'multiagent-host-mac';
+import { captureScreen, closeTabGracefully, detectSelfTty, forceEnter, getHistory, getUserFocus, launchAgentInTab, launchClaudeInTab, listTabs, newTab, send, sendKeys, sendKeysRaw } from 'multiagent-host-mac';
 import { detectAgentFromProcs, listAgentAdapters } from 'multiagent-orchestrator';
 
 // SYSTEM_GUIDANCE 的去重 — per-tab，每 tty 6h 内最多注入一次
@@ -50,7 +50,7 @@ const CLAUDE_TUI_REMINDER = [
   '⚠ 回到飞书 — 飞书看不见你的 TUI 屏幕。**先在 TUI 完整回答用户，然后再** `agent lark send-text "<同样一份摘要>"` 推到飞书（两个渠道并行，不能只推不答）。要用户从选项里选（单/多选）或填文本，**用 `agent lark ask single|multi|input`**（stdout 拿答案 JSON），不要用 AskUserQuestion 或在 TUI 里 wait 键盘。',
 ].join('\n');
 import { patchCard, sendCardReturnId, sendImage } from './api.js';
-import { ackCard, askCard, batchProgressCard, browseCard, careyclawKeyCard, careyclawKeyFormCard, chainProgressCard, connectConfirmCard, connectFormCard, connectStatusCard, planCard, progressCard, receiptCard, tapdClaimCard, type BatchTaskItem, type ChainStepItem } from './cards.js';
+import { ackCard, askCard, batchProgressCard, browseCard, careyclawKeyCard, careyclawKeyFormCard, chainProgressCard, closeIdleConfirmCard, closeTabConfirmCard, connectConfirmCard, connectFormCard, connectStatusCard, planCard, progressCard, receiptCard, tapdClaimCard, type BatchTaskItem, type ChainStepItem } from './cards.js';
 import { getCareyclawKeyStatus, setCareyclawKey } from 'multiagent-orchestrator';
 import { generatePlan, getPlan } from 'multiagent-orchestrator';
 import { getPerfItem, savePerfItem, markPerfSnoozed, markPerfIgnoredForever, createPerfStory } from 'multiagent-orchestrator';
@@ -1706,6 +1706,81 @@ async function handleCardAction(
       `⭐ 已切到 ${tab.tty}`,
       tab.cwd ? `cwd: \`${tab.cwd}\`` : undefined,
     );
+    return {};
+  }
+
+  // ==== 关闭 tab（先退 agent 再关；破坏性 → 确认 + 禁关 daemon 自己）====
+  if (action === 'close-tab-confirm') {
+    // 点每个 tab 的「🗑 关闭」→ 弹确认卡（另发新消息，不 patch tabsCard）。
+    const tty = value['tty'] as string | undefined;
+    if (!tty) return { toast: { type: 'error', content: '缺 tty' } };
+    void (async () => {
+      const tabs = await listTabs();
+      const tab = tabs.find((t) => t.tty === tty);
+      if (!tab) { void sendText(client, chatId, `⚠️ ${tty} 已不在（可能已关）`); return; }
+      if (detectSelfTty() === tty) { void sendText(client, chatId, `🚫 ${tty} 是 daemon 自己所在的 tab，不能关（会把整套服务关掉）`); return; }
+      const adapter = detectAgentFromProcs(tab.processes);
+      const { sendCardMessage } = await import('./api.js');
+      void sendCardMessage(client, chatId, closeTabConfirmCard(tty, {
+        ...(tab.cwd ? { cwd: tab.cwd } : {}),
+        hasAgent: adapter !== null,
+        ...(adapter ? { agentLabel: adapter.displayName } : {}),
+      }));
+    })();
+    return {};
+  }
+
+  if (action === 'close-tab-do') {
+    const tty = value['tty'] as string | undefined;
+    if (!tty) return { toast: { type: 'error', content: '缺 tty' } };
+    void (async () => {
+      const r = await closeTabGracefully(tty);
+      if (!r.closed) { void sendText(client, chatId, `❌ ${r.reason ?? `关闭 ${tty} 失败`}`); return; }
+      const note = r.hadAgent
+        ? r.agentExited ? `已退出 ${r.agentKind ?? 'agent'}` : `${r.agentKind ?? 'agent'} 没退干净，已强关`
+        : undefined;
+      void patchOrigToReceipt(client, data, `🗑 已关闭 ${tty}`, note, 'grey');
+    })();
+    return {};
+  }
+
+  if (action === 'close-idle-confirm') {
+    void (async () => {
+      const self = detectSelfTty();
+      const tabs = await listTabs();
+      // 空闲 = 非忙碌 + 非 daemon 自己（含普通 shell 和 idle 的 agent；有 agent 的关前会先退）
+      const idle = tabs.filter((t) => t.tty !== self && !t.busy);
+      if (idle.length === 0) { void sendText(client, chatId, 'ℹ️ 没有空闲 tab 可关（都在忙 / 只剩 daemon 自己）'); return; }
+      const { sendCardMessage } = await import('./api.js');
+      void sendCardMessage(client, chatId, closeIdleConfirmCard(idle.map((t) => ({
+        tty: t.tty,
+        ...(t.cwd ? { cwd: t.cwd } : {}),
+        ...(detectAgentFromProcs(t.processes) ? { agentLabel: detectAgentFromProcs(t.processes)!.displayName } : {}),
+      }))));
+    })();
+    return {};
+  }
+
+  if (action === 'close-idle-do') {
+    void (async () => {
+      const self = detectSelfTty();
+      const tabs = await listTabs();
+      const idle = tabs.filter((t) => t.tty !== self && !t.busy);
+      let closed = 0;
+      const failed: string[] = [];
+      for (const t of idle) {
+        const r = await closeTabGracefully(t.tty);
+        if (r.closed) closed++;
+        else failed.push(t.tty);
+      }
+      const detail = `关闭 ${closed}/${idle.length} 个${failed.length ? `　未关：${failed.join(', ')}` : ''}`;
+      void patchOrigToReceipt(client, data, '🧹 批量关闭完成', detail, 'grey');
+    })();
+    return {};
+  }
+
+  if (action === 'close-cancel') {
+    void patchOrigToReceipt(client, data, '⊘ 已取消', '没有关闭任何 tab', 'grey');
     return {};
   }
 
