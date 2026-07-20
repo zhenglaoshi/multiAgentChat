@@ -7,7 +7,8 @@ import { recordCwd } from 'multiagent-host-mac';
 import { formatRecallPrefix, recall, tokenize } from 'multiagent-orchestrator';
 import { pendingTracker } from '../monitor/pending.js';
 import { recordInbound } from '../monitor/ws-watchdog.js';
-import { captureScreen, forceEnter, getHistory, getUserFocus, launchClaudeInTab, listTabs, newTab, send, sendKeys, sendKeysRaw } from 'multiagent-host-mac';
+import { captureScreen, forceEnter, getHistory, getUserFocus, launchAgentInTab, launchClaudeInTab, listTabs, newTab, send, sendKeys, sendKeysRaw } from 'multiagent-host-mac';
+import { detectAgentFromProcs, listAgentAdapters } from 'multiagent-orchestrator';
 
 // SYSTEM_GUIDANCE 的去重 — per-tab，每 tty 6h 内最多注入一次
 // 这是 module-level 内存状态，dev 重启会清空（重启后第一次注入是合理的）
@@ -1063,6 +1064,34 @@ async function dispatchSendToTab(
     batchId: batchInfo?.batchId,
   });
 
+  // 0. 裸 agent 名 → 启动对应 CLI。
+  //    目标 tab 还没跑 agent（普通 shell），且这条消息正好就是某个 agent 的名字（"codex" / "claude"）
+  //    → 意图是"进入该 CLI"而非"发 prompt"。直接 launchAgentInTab 裸启动 + 过 trust 弹窗，
+  //    **跳过** SYSTEM_GUIDANCE/recall/[本次任务] 包装 —— 那套是给 TUI 内 agent 看的，整坨塞进
+  //    shell 会被 `do script` 当命令执行，报一堆 command not found，agent 从没被干净启动。
+  if (!detectAgentFromProcs(tab.processes)) {
+    const word = text.trim().toLowerCase();
+    const target = listAgentAdapters().find((a) => word === a.kind || word === a.binaryName);
+    if (target) {
+      logger.info('bare agent word → launch CLI', { tty: tab.tty, kind: target.kind });
+      const launched = await launchAgentInTab(tab.tty, target.kind);
+      if (launched.ok) {
+        await replyText(
+          client,
+          ctx,
+          `🚀 已在 ${tab.tty} 启动 ${target.displayName}（\`${launched.command}\`）。就绪后直接发消息即可开始对话。`,
+        ).catch(() => {});
+      } else {
+        await sendText(
+          client,
+          ctx.chatId,
+          `❌ 在 ${tab.tty} 启动 ${target.displayName} 失败：${launched.reason ?? '未知'}`,
+        ).catch(() => {});
+      }
+      return;
+    }
+  }
+
   // 1. 系统指令前缀：仅每个 tab 首次 / 6h 一次（避免每条消息都 250 字头）
   const now = Date.now();
   const lastShownAt = systemGuidanceShownAt.get(tab.tty);
@@ -1938,96 +1967,44 @@ async function handleCardAction(
     };
   }
 
+  // ⚠ 反馈只能走 sendText / patchCard —— 本回调走 card.action.trigger 的 fire-and-forget IIFE，
+  // 那里只消费 result.card、**丢弃 result.toast** 后回飞书 {}（见文件末 card.action.trigger 分发 +
+  // CLAUDE.md "绝不能 return { toast }" 坑）。所以 cancel-* 若只 return { toast }，Ctrl-C 其实发出去了
+  // 但飞书侧零反馈 → 用户"点了看不出效果"。这里一律 fire-and-forget sendText + return {}。
   if (action === 'cancel-all-pending') {
     const allPending = pendingTracker.all();
     if (allPending.length === 0) {
-      return { toast: { type: 'info', content: '没有 pending 任务' } };
+      void sendText(client, chatId, 'ℹ️ 没有 pending 任务');
+      return {};
     }
-    const { runScriptOrThrow } = await import('multiagent-host-mac');
-    const script = `
-on run argv
-  set targetTty to item 1 of argv
-  tell application "Terminal"
-    activate
-    repeat with w in windows
-      try
-        repeat with t in tabs of w
-          if (tty of t) is equal to targetTty then
-            set frontmost of w to true
-            set selected tab of w to t
-            tell application "System Events"
-              keystroke "c" using {control down}
-            end tell
-            return "ok"
-          end if
-        end repeat
-      end try
-    end repeat
-  end tell
-  return "not-found"
-end run
-`;
     let count = 0;
     for (const p of allPending) {
       try {
-        const out = await runScriptOrThrow(script, [p.tty]);
-        if (out.trim() === 'ok') count++;
+        await sendKeys(p.tty, 'ctrl+c'); // System Events：会把该 tab 拉前台再按 Ctrl-C
+        count++;
       } catch (e) {
         logger.warn('cancel-all: ctrl-c failed', { tty: p.tty, err: (e as Error).message });
       }
     }
-    return {
-      toast: {
-        type: 'success',
-        content: `⊘ 已对 ${count}/${allPending.length} 个 tab 发送 Ctrl-C`,
-      },
-    };
+    void sendText(client, chatId, `⊘ 已对 ${count}/${allPending.length} 个 tab 发送 Ctrl-C`);
+    return {};
   }
 
   if (action === 'cancel-task') {
     const tty = value['tty'] as string | undefined;
-    if (!tty) return { toast: { type: 'error', content: '缺 tty' } };
-    try {
-      // 发 Ctrl-C 字符（\x03）到 tab — 用 do script 限制：do script 总是带 \n
-      // 实际 macOS Terminal 的 do script 不能发裸控制字符。绕开方式：先 send raw 控制符
-      // 但 sendKeysRaw 本质是 do script —— 它会把字符当成 shell 命令
-      // 飞书侧 cancel 实际有意义的做法：发一个 `kill -INT $(pgrep -P <shellPid> ...)` ?
-      // 更简单：通过 AppleScript System Events keystroke
-      const { runScriptOrThrow } = await import('multiagent-host-mac');
-      const script = `
-on run argv
-  set targetTty to item 1 of argv
-  tell application "Terminal"
-    activate
-    repeat with w in windows
-      try
-        repeat with t in tabs of w
-          if (tty of t) is equal to targetTty then
-            set frontmost of w to true
-            set selected tab of w to t
-            tell application "System Events"
-              keystroke "c" using {control down}
-            end tell
-            return "ok"
-          end if
-        end repeat
-      end try
-    end repeat
-  end tell
-  return "not-found"
-end run
-`;
-      const out = await runScriptOrThrow(script, [tty]);
-      const ok = out.trim() === 'ok';
-      return {
-        toast: {
-          type: ok ? 'success' : 'error',
-          content: ok ? `⊘ 已对 ${tty} 发送 Ctrl-C` : `tab ${tty} 没找到`,
-        },
-      };
-    } catch (e) {
-      return { toast: { type: 'error', content: (e as Error).message } };
+    if (!tty) {
+      void sendText(client, chatId, '❌ 缺 tty，无法发 Ctrl-C');
+      return {};
     }
+    try {
+      // Ctrl-C 靠 System Events keystroke（sendKeys 会把该 tab 拉前台再按 ⌃C）。单次 Ctrl-C
+      // 中断当前 shell 命令 / claude|codex 的本轮生成；要退出 TUI 用 /restart（双 Ctrl-C）。
+      await sendKeys(tty, 'ctrl+c');
+      void sendText(client, chatId, `⊘ 已对 ${tty} 发送 Ctrl-C（中断当前命令 / 本轮生成；仍在跑就再点一次，退出 TUI 用 /restart）`);
+    } catch (e) {
+      void sendText(client, chatId, `❌ 对 ${tty} 发 Ctrl-C 失败：${(e as Error).message}`);
+    }
+    return {};
   }
 
   if (action === 'show-shells') {

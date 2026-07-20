@@ -1,7 +1,7 @@
 import { forceEnter, listTabs, send } from './tabs.js';
 import { sendKeys } from './keys.js';
 import type { TerminalTab } from './types.js';
-import { detectAgentFromProcs, getAgentAdapter } from 'multiagent-orchestrator';
+import { detectAgentFromProcs, getAgentAdapter, type AgentKind } from 'multiagent-orchestrator';
 
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -87,21 +87,24 @@ export interface LaunchClaudeOptions {
 }
 
 /**
- * 在一个已停在 shell prompt 的 tab 里启动 claude，并自动过掉首次的
+ * 在一个已停在 shell prompt 的 tab 里启动指定 agent（claude/codex），并自动过掉首次的
  * "Do you trust the files in this folder?" 弹窗。
  *
- * 该弹窗 "Yes, I trust this folder" 是默认高亮项，一个真 Return（key code 36）即接受。
- * claude 进 alt-screen 后我们读不到屏幕内容，只能按时序补 Return —— 发两次、错开时序，
- * 覆盖启动快/慢两种情况；目录已信任（无弹窗）时 Return 落到 claude 空 prompt，无副作用。
+ * 该弹窗默认高亮"信任本目录"，一个真 Return（key code 36）即接受。agent 进 alt-screen 后
+ * 我们读不到屏幕内容，只能按时序补 Return —— 发两次、错开时序，覆盖启动快/慢两种情况；
+ * 目录已信任（无弹窗）时 Return 落到 agent 空 prompt，无副作用。codex 首跑同样有信任提示，
+ * 复用同一套时序。
  */
-export async function launchClaudeInTab(
+export async function launchAgentInTab(
   tty: string,
+  kind: AgentKind,
   opts: LaunchClaudeOptions = {},
 ): Promise<{ ok: boolean; command?: string; reason?: string }> {
   const continueSession = opts.continueSession ?? false;
   const acceptTrust = opts.acceptTrust ?? true;
-  // 启动命令走 claude adapter（行为不变；未来按 tab 的 agent 种类分派）
-  const command = getAgentAdapter('claude')!.launchCommand({ continueSession });
+  const adapter = getAgentAdapter(kind);
+  if (!adapter) return { ok: false, reason: `未知 agent 种类：${kind}` };
+  const command = adapter.launchCommand({ continueSession });
 
   const res = await send(tty, command);
   if (!res.ok) return { ok: false, reason: res.reason ?? '未知' };
@@ -113,4 +116,12 @@ export async function launchClaudeInTab(
     await forceEnter(tty).catch(() => {});
   }
   return { ok: true, command };
+}
+
+/** launchAgentInTab 的 claude 特化（历史调用点保持不变）。 */
+export async function launchClaudeInTab(
+  tty: string,
+  opts: LaunchClaudeOptions = {},
+): Promise<{ ok: boolean; command?: string; reason?: string }> {
+  return launchAgentInTab(tty, 'claude', opts);
 }

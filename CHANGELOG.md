@@ -8,6 +8,10 @@
 
 ### 2026-07-20
 
+**修复**
+- **进度卡「⊘ Ctrl-C」点了没反应（飞书侧零反馈）**：`cancel-task` / `cancel-all-pending` 的 cardAction handler 只 `return { toast: '已发送 Ctrl-C' }`，但非 `ask.` 卡的 `card.action.trigger` 分发走 fire-and-forget IIFE、**只消费 `result.card`、把 `result.toast` 整个丢弃**后回飞书 `{}`（CLAUDE.md "绝不能 return { toast }" 坑）→ Ctrl-C 其实通过 System Events 发出去了，但飞书既无 toast 也没 patch 卡，用户"点了看不出效果"。修复：反馈改走 fire-and-forget `sendText`（`⊘ 已对 ttyxxx 发送 Ctrl-C…`），handler 一律 `return {}`；顺手把两处内联 AppleScript(activate+切 tab+keystroke) 换成已有的 `sendKeys(tty, 'ctrl+c')`（同机制、去掉 ~50 行重复）。（`im-lark/lark/handlers.ts`）
+- **给未进 agent 的 shell tab 发 `codex`/`claude` 现在会真正启动对应 CLI**：以前 `dispatchSendToTab` 无脑把任何文本包装成 agent prompt（`SYSTEM_GUIDANCE` + recall + `[本次任务]`）再 `do script` 注入。对一个还停在普通 shell 的新 tab 发裸词 `codex`，整坨多行 guidance 被 shell 当命令执行、报一堆 command not found，`codex` 从没被干净启动（首条消息必带 guidance，故稳定复现；非首条恰好裸发反而偶尔能起，表现为"时好时坏"）。修复：`dispatchSendToTab` 加前置分支——`detectAgentFromProcs(tab.processes)` 判定 tab 没跑 agent 且这条消息正好等于某 adapter 的 `kind`/`binaryName`（`codex`/`claude`）→ 走 `launchAgentInTab` 裸启动 + 双 forceEnter 过 trust 弹窗，**跳过** guidance/recall/`[本次任务]` 包装，回执"🚀 已启动 …"。host-mac 侧把 `launchClaudeInTab` 泛化成 `launchAgentInTab(tty, kind, opts)`（claude 版保留为薄封装）。（`host-mac/terminal/restart.ts` + `im-lark/lark/handlers.ts`）
+
 **改动**
 - **TAPD 限流治理：全局 429 熔断 + 降频**。原来每个 tick 对每 workspace×类型跑 endStates+多 owner 字段查询(几十个请求)，撞 429 后每个调用还各自本地重试 2 次 → 越打越死(实测 daemon 起来后 39 次 429、0 成功)。改为：① `client.ts` 加**模块级全局限流熔断**(circuit breaker)——任一调用撞 429 就开冷却窗口(指数退避 30s→60s→…封顶 5min)，窗口内所有 TAPD 调用直接快速失败、不打网络，成功一次即清零；去掉原来的本地 429 重试(改由熔断+下一轮轮询自然重试)。新增 `tapdCooldownLeftMs()` 供上层观测。② `tapd-watcher` tick 前置守卫：冷却期整轮跳过(不刷 warn)。③ 轮询默认间隔 `config.ts` 5min→15min(`.env` 若显式设了 `TAPD_POLL_MS` 仍以 .env 为准)。熔断 + 主动查(`/tapd`)+ 改状态查工作流全受益。
 
