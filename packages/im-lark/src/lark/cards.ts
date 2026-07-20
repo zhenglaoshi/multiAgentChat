@@ -1,6 +1,6 @@
 import type { ApprovalRequest, AskRequest, PerfItem, Plan, TapdItem, IntegrationStatus, Integration, WorkTask } from 'multiagent-orchestrator';
 import { tapdSummary, TAPD_KIND_LABEL } from 'multiagent-orchestrator';
-import { inferTabStatus, type TabStatusInfo } from 'multiagent-host-mac';
+import { inferTabStatus, getHostPermissionSpec, type TabStatusInfo, type HostPermissionStatus } from 'multiagent-host-mac';
 import type { TerminalTab } from 'multiagent-host-mac';
 
 function homeify(p: string, home: string): string {
@@ -9,6 +9,36 @@ function homeify(p: string, home: string): string {
 
 function truncate(s: string, n: number): string {
   return s.length <= n ? s : s.slice(0, n - 1) + '…';
+}
+
+/**
+ * 中间省略、保头保尾 —— 用于**区分性信息常在尾部**的场景（路径的 basename、
+ * 选项的结尾差异）。tail-cut 的 `truncate` 会把 basename/结尾差异截掉导致两项看着一样；
+ * 这个保留头+尾，如 `/Users/zheng/ihealth-project/…/rooster2`。
+ */
+function smartTrim(s: string, n: number): string {
+  if (s.length <= n) return s;
+  if (n <= 3) return s.slice(0, n);
+  const keep = n - 1; // 给 '…' 留 1
+  const head = Math.ceil(keep * 0.6);
+  const tail = keep - head;
+  return s.slice(0, head) + '…' + (tail > 0 ? s.slice(s.length - tail) : '');
+}
+
+/**
+ * 选项**完整**正文块：编号列出每个选项的全文（lark_md 自动换行、绝不截断），
+ * 让用户在正文里看清每项到底在选啥；交互控件（按钮/下拉）只作"按编号选"。
+ * markFor 可选（多选打勾 ☑/☐）。搭配 `optionsNeedFullList` 决定要不要插这块。
+ */
+function choiceBody(options: string[], markFor?: (i: number) => string): string {
+  return options
+    .map((o, i) => `${markFor ? markFor(i) + ' ' : ''}**${i + 1}.** ${o}`)
+    .join('\n');
+}
+
+/** 任一选项长到会被按钮/下拉截断 → 需在正文补完整编号列表（默认按按钮宽度 18 判） */
+function optionsNeedFullList(options: string[], limit = 18): boolean {
+  return options.some((o) => o.length > limit);
 }
 
 // ---- Approval card (保留) ----
@@ -338,7 +368,7 @@ export function chooseDirCard(data: ChooseDirCardData) {
           options: data.dropdownEntries.map((e) => ({
             text: {
               tag: 'plain_text',
-              content: truncate(homeify(e.cwd, data.home), 60),
+              content: smartTrim(homeify(e.cwd, data.home), 60),
             },
             value: `create-tab|${e.cwd}`,
           })),
@@ -1759,10 +1789,16 @@ export function originShellPushCard(d: OriginShellPushCardData) {
   const useButtons = opts.length > 0 && opts.length <= 4;
   const useDropdown = opts.length >= 5;
 
+  // 选项偏长 → 控件只显示编号（按钮 `1`/下拉 `1. 摘要`），完整选项在正文编号列出（见下）。
+  const longOpts = optionsNeedFullList(opts);
+
   const buttonActions = useButtons
     ? opts.map((label, i) => ({
         tag: 'button' as const,
-        text: { tag: 'plain_text' as const, content: truncate(label, 18) },
+        text: {
+          tag: 'plain_text' as const,
+          content: longOpts ? `${i + 1}. ${smartTrim(label, 14)}` : truncate(label, 18),
+        },
         type: i === 0 ? ('primary' as const) : ('default' as const),
         value: { action: 'send-to-tab', tty: d.tty, text: label },
       }))
@@ -1775,8 +1811,11 @@ export function originShellPushCard(d: OriginShellPushCardData) {
           tag: 'plain_text' as const,
           content: `选择答案… (${opts.length} 项)`,
         },
-        options: opts.map((label) => ({
-          text: { tag: 'plain_text' as const, content: truncate(label, 60) },
+        options: opts.map((label, i) => ({
+          text: {
+            tag: 'plain_text' as const,
+            content: longOpts ? `${i + 1}. ${smartTrim(label, 56)}` : truncate(label, 60),
+          },
           value: encodeAnswerOption(d.tty, label),
         })),
         value: { action: 'answer-select' },
@@ -1800,9 +1839,15 @@ export function originShellPushCard(d: OriginShellPushCardData) {
     },
     { tag: 'hr' },
     { tag: 'div', text: { tag: 'lark_md', content: d.body } },
+  ];
+  // 选项偏长：正文完整编号列出，控件按编号选（避免按钮/下拉截断看不清选啥）
+  if (hasQuickWidget && longOpts) {
+    elements.push({ tag: 'div', text: { tag: 'lark_md', content: choiceBody(opts) } });
+  }
+  elements.push(
     { tag: 'hr' },
     { tag: 'div', text: { tag: 'lark_md', content: hintLine } },
-  ];
+  );
 
   if (buttonActions) {
     elements.push({ tag: 'action', actions: buttonActions });
@@ -1963,7 +2008,12 @@ function askFormAllInOneCard(req: AskRequest) {
   questions.forEach((q, qi) => {
     const sel = new Set(sels[qi] ?? []);
     const isSingle = q.type === 'single';
+    const longQ = optionsNeedFullList(q.options);
     elements.push({ tag: 'div', text: { tag: 'lark_md', content: `**${qi + 1}. ${q.title}**　<font color='grey'>${isSingle ? '单选' : '多选'}</font>` } });
+    // 选项偏长：正文完整编号列出（带选中标记），按钮缩成「标记+编号」
+    if (longQ) {
+      elements.push({ tag: 'div', text: { tag: 'lark_md', content: choiceBody(q.options, (i) => { const on = sel.has(i); return isSingle ? (on ? '🔘' : '⚪') : (on ? '☑' : '☐'); }) } });
+    }
     for (let i = 0; i < q.options.length; i += 2) {
       const row: unknown[] = [];
       for (let j = i; j < Math.min(i + 2, q.options.length); j++) {
@@ -1971,7 +2021,7 @@ function askFormAllInOneCard(req: AskRequest) {
         const mark = isSingle ? (on ? '🔘' : '⚪') : (on ? '☑' : '☐');
         row.push({
           tag: 'button',
-          text: { tag: 'plain_text', content: `${mark} ${truncate(q.options[j] ?? '', 36)}` },
+          text: { tag: 'plain_text', content: longQ ? `${mark} ${j + 1}` : `${mark} ${truncate(q.options[j] ?? '', 36)}` },
           type: on ? 'primary' : 'default',
           value: { action: 'ask.form-toggle', askId: req.id, q: qi, i: j },
         });
@@ -2031,6 +2081,11 @@ function askFormWizardCard(req: AskRequest) {
     : `<font color='grey'>${isSingle ? '单选 · 点一下即选并前进' : '多选 · 点着勾选'}${q.allowText ? ' · 或「💬 打字回答」' : ''}</font>`;
   elements.push({ tag: 'div', text: { tag: 'lark_md', content: `**${cursor + 1}. ${q.title}**\n${hint}${curText ? `\n已填：💬 ${truncate(curText, 50)}` : ''}` } });
 
+  const longQ = optionsNeedFullList(q.options);
+  // 选项偏长：正文完整编号列出（带选中标记），按钮缩成「标记+编号」
+  if (longQ) {
+    elements.push({ tag: 'div', text: { tag: 'lark_md', content: choiceBody(q.options, (i) => { const on = sel.has(i); return isSingle ? (on ? '🔘' : '⚪') : (on ? '☑' : '☐'); }) } });
+  }
   for (let i = 0; i < q.options.length; i += 2) {
     const row: unknown[] = [];
     for (let j = i; j < Math.min(i + 2, q.options.length); j++) {
@@ -2038,7 +2093,7 @@ function askFormWizardCard(req: AskRequest) {
       const mark = isSingle ? (on ? '🔘' : '⚪') : (on ? '☑' : '☐');
       row.push({
         tag: 'button',
-        text: { tag: 'plain_text', content: `${mark} ${j + 1}. ${truncate(q.options[j] ?? '', 36)}` },
+        text: { tag: 'plain_text', content: longQ ? `${mark} ${j + 1}` : `${mark} ${j + 1}. ${truncate(q.options[j] ?? '', 36)}` },
         type: on ? 'primary' : 'default',
         value: { action: 'ask.form-toggle', askId: req.id, q: cursor, i: j },
       });
@@ -2134,10 +2189,15 @@ export function askCard(req: AskRequest) {
         ],
       });
     } else if (req.type === 'single') {
+      const longOpts = optionsNeedFullList(req.options);
       elements.push({
         tag: 'div',
-        text: { tag: 'lark_md', content: `**点一个选项即可提交**` },
+        text: { tag: 'lark_md', content: longOpts ? `**点编号选项即可提交**（完整内容见下）` : `**点一个选项即可提交**` },
       });
+      // 选项偏长：正文完整编号列出，按钮按编号选
+      if (longOpts) {
+        elements.push({ tag: 'div', text: { tag: 'lark_md', content: choiceBody(req.options) } });
+      }
       elements.push({ tag: 'hr' });
       // 每 2 个按钮一行，避免手机上排版乱
       const pairs: unknown[][] = [];
@@ -2148,7 +2208,7 @@ export function askCard(req: AskRequest) {
             tag: 'button',
             text: {
               tag: 'plain_text',
-              content: `${j + 1}. ${truncate(req.options[j] ?? '', 40)}`,
+              content: longOpts ? `${j + 1}` : `${j + 1}. ${truncate(req.options[j] ?? '', 40)}`,
             },
             type: 'primary',
             value: { action: 'ask.pick', askId: req.id, index: j },
@@ -2173,6 +2233,7 @@ export function askCard(req: AskRequest) {
     } else {
       // multi
       const selectedSet = new Set(req.selection);
+      const longOpts = optionsNeedFullList(req.options);
       elements.push({
         tag: 'div',
         text: {
@@ -2180,6 +2241,10 @@ export function askCard(req: AskRequest) {
           content: `**点选项切换勾选，最后点 [✅ 提交]**（已选 ${req.selection.length} 项）`,
         },
       });
+      // 选项偏长：正文完整编号列出（带勾选态），按钮按编号切换
+      if (longOpts) {
+        elements.push({ tag: 'div', text: { tag: 'lark_md', content: choiceBody(req.options, (i) => (selectedSet.has(i) ? '☑' : '☐')) } });
+      }
       elements.push({ tag: 'hr' });
       for (let i = 0; i < req.options.length; i += 2) {
         const row: unknown[] = [];
@@ -2189,7 +2254,7 @@ export function askCard(req: AskRequest) {
             tag: 'button',
             text: {
               tag: 'plain_text',
-              content: `${on ? '☑' : '☐'} ${j + 1}. ${truncate(req.options[j] ?? '', 40)}`,
+              content: longOpts ? `${on ? '☑' : '☐'} ${j + 1}` : `${on ? '☑' : '☐'} ${j + 1}. ${truncate(req.options[j] ?? '', 40)}`,
             },
             type: on ? 'primary' : 'default',
             value: { action: 'ask.toggle', askId: req.id, index: j },
@@ -2856,7 +2921,7 @@ export function tapdSelectCard(d: TapdSelectCardData) {
             tag: 'select_static',
             placeholder: { tag: 'plain_text', content: d.placeholder },
             options: d.options.slice(0, 50).map((o) => ({
-              text: { tag: 'plain_text', content: truncate(o.label, 60) },
+              text: { tag: 'plain_text', content: smartTrim(o.label, 60) },
               value: o.value,
             })),
             value: { action: d.action, d: d.draftId },
@@ -3039,13 +3104,43 @@ export function tapdStatusPickCard(d: TapdStatusPickCardData) {
             tag: 'select_static',
             placeholder: { tag: 'plain_text', content: '选择目标状态…' },
             options: d.options.slice(0, 50).map((o) => ({
-              text: { tag: 'plain_text', content: truncate(o.label, 40) },
+              text: { tag: 'plain_text', content: smartTrim(o.label, 40) },
               value: o.value,
             })),
             value: { action: 'tapd-st-set', ws: d.workspaceId, sys: d.system, id: d.id },
           },
         ],
       },
+    ],
+  };
+}
+
+// ---- macOS 授权缺失 · 交互卡（探针 broken 时推送）----
+// 完整列出受影响功能（不截断——critical），带「📂 打开面板」（Mac 一键跳授权页，鼠标点勾选）
+// 和「🔄 我授好了·重启复检」（kickstart daemon，新进程复检后自动推 ✅/🚨）。
+export function hostPermissionCard(denied: HostPermissionStatus[]) {
+  const blocks = denied.map((d) => {
+    const spec = getHostPermissionSpec(d.id);
+    const affects = spec.affects.map((a) => `　· ${a}`).join('\n');
+    const errTag = d.errNum !== undefined ? ` <font color='grey'>（错误 ${d.errNum}）</font>` : '';
+    return `**❌ ${spec.name}**${errTag}\n<font color='grey'>授权位置：${spec.macLocation}</font>\n受影响功能：\n${affects}`;
+  });
+  // 去重要开的面板：accessibility → 辅助功能；两个 automation → 自动化
+  const panes = [...new Set(denied.map((d) => (d.id === 'accessibility' ? 'accessibility' : 'automation')))];
+  const paneButtons = panes.map((p) => ({
+    tag: 'button' as const,
+    text: { tag: 'plain_text' as const, content: p === 'accessibility' ? '📂 打开「辅助功能」' : '📂 打开「自动化」' },
+    type: 'primary' as const,
+    value: { action: 'perm-open-pane', pane: p },
+  }));
+  return {
+    config: { wide_screen_mode: true },
+    header: { template: 'red', title: { tag: 'plain_text', content: `🚨 macOS 授权缺失 · ${denied.length} 项` } },
+    elements: [
+      { tag: 'div', text: { tag: 'lark_md', content: blocks.join('\n\n') } },
+      { tag: 'hr' },
+      { tag: 'div', text: { tag: 'lark_md', content: '<font color=\'grey\'>**在电脑旁**：点下面「打开面板」→ Mac 跳到授权页 → 勾选 node（launchd）/ Terminal（dev）→ 回来点「🔄 我授好了」。\n**不在电脑旁**：授权只能在 Mac 本地点（TCC 安全限制，没法远程授予），到电脑旁再操作。</font>' } },
+      { tag: 'action', actions: [...paneButtons, { tag: 'button', text: { tag: 'plain_text', content: '🔄 我授好了 · 重启复检' }, type: 'default', value: { action: 'perm-recheck' } }] },
     ],
   };
 }

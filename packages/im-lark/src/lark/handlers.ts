@@ -7,7 +7,7 @@ import { recordCwd } from 'multiagent-host-mac';
 import { formatRecallPrefix, recall, tokenize } from 'multiagent-orchestrator';
 import { pendingTracker } from '../monitor/pending.js';
 import { recordInbound } from '../monitor/ws-watchdog.js';
-import { captureScreen, closeTabGracefully, detectSelfTty, forceEnter, getHistory, getUserFocus, launchAgentInTab, launchClaudeInTab, listTabs, newTab, send, sendKeys, sendKeysRaw } from 'multiagent-host-mac';
+import { captureScreen, closeTabGracefully, detectSelfTty, forceEnter, getHistory, getUserFocus, launchAgentInTab, launchClaudeInTab, listTabs, newTab, openPermissionPane, send, sendKeys, sendKeysRaw } from 'multiagent-host-mac';
 import { detectAgentFromProcs, listAgentAdapters } from 'multiagent-orchestrator';
 
 // SYSTEM_GUIDANCE 的去重 — per-tab，每 tty 6h 内最多注入一次
@@ -56,6 +56,7 @@ import { generatePlan, getPlan } from 'multiagent-orchestrator';
 import { getPerfItem, savePerfItem, markPerfSnoozed, markPerfIgnoredForever, createPerfStory } from 'multiagent-orchestrator';
 import type { PerfItem } from 'multiagent-orchestrator';
 import { integrationStatuses, getIntegration, upsertEnvKeys, setIntegrationDisabled, installIntegrationSkills } from 'multiagent-orchestrator';
+import { spawn } from 'node:child_process';
 import { utimesSync } from 'node:fs';
 
 // /connect：某对接提交的配置值暂存（确认后才写 .env）。ephemeral。
@@ -1781,6 +1782,33 @@ async function handleCardAction(
 
   if (action === 'close-cancel') {
     void patchOrigToReceipt(client, data, '⊘ 已取消', '没有关闭任何 tab', 'grey');
+    return {};
+  }
+
+  // ==== macOS 授权缺失卡：打开面板 / 授好了重启复检 ====
+  if (action === 'perm-open-pane') {
+    const pane = value['pane'] === 'accessibility' ? 'accessibility' : 'automation';
+    openPermissionPane(pane);
+    const label = pane === 'accessibility' ? '「辅助功能」' : '「自动化」';
+    void sendText(
+      client, chatId,
+      `📂 已在 Mac 打开${label}授权面板。\n到电脑旁勾选 node（launchd 模式）/ Terminal（dev 模式）后，回来点【🔄 我授好了 · 重启复检】。\n⚠️ 授权只能在 Mac 本地点，远程点不了。`,
+    );
+    return {};
+  }
+
+  if (action === 'perm-recheck') {
+    void (async () => {
+      await sendText(client, chatId, '🔄 正在重启 daemon 复检授权…（约 5 秒；补齐会推 ✅，仍缺会再报）').catch(() => {});
+      // kickstart 自己（launchd 会立刻拉起新进程，新进程启动 10s 后自动复检并推结果）。
+      // 放 sendText 之后，避免消息还没发出去进程就被杀。dev 模式无此 label，kickstart 失败即忽略。
+      try {
+        const uid = typeof process.getuid === 'function' ? process.getuid() : 0;
+        spawn('launchctl', ['kickstart', '-k', `gui/${uid}/com.multiagent-chat.daemon`], {
+          stdio: 'ignore', detached: true,
+        }).unref();
+      } catch { /* ignore */ }
+    })();
     return {};
   }
 

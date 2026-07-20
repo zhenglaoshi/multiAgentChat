@@ -1,34 +1,15 @@
 import { platform } from 'node:os';
 import * as Lark from '@larksuiteoapi/node-sdk';
 import { logger } from 'multiagent-orchestrator';
-import { detectHostPermissions, getHostPermissionSpec, type HostPermissionStatus } from 'multiagent-host-mac';
+import { detectHostPermissions, type HostPermissionStatus } from 'multiagent-host-mac';
 import { listAllChats } from '../chats/store.js';
-import { sendTextMessage } from '../lark/api.js';
+import { sendTextMessage, sendCardMessage } from '../lark/api.js';
+import { hostPermissionCard } from '../lark/cards.js';
 
 /** 每 2 分钟自检一次（授权状态是持久态，不需要更密；用户在系统设置里改完这里最多 2min 感知）。 */
 const PROBE_INTERVAL_MS = 120_000;
 /** 持续缺权限时，每 30 分钟再提醒一次（避免刷屏，也避免报一次就忘）。 */
 const REALERT_INTERVAL_MS = 30 * 60_000;
-
-const RESTART_HINT =
-  '授完记得重启 daemon 生效：\n' +
-  '`launchctl kickstart -k gui/$(id -u)/com.multiagent-chat.daemon`\n' +
-  '（dev 模式则重跑 `npm run dev`）。授权授给谁：launchd 模式=node，dev 模式=Terminal.app。';
-
-function buildBrokenAlert(denied: HostPermissionStatus[]): string {
-  const blocks = denied.map((d) => {
-    const spec = getHostPermissionSpec(d.id);
-    const affects = spec.affects.map((a) => `   · ${a}`).join('\n');
-    const errTag = d.errNum !== undefined ? `  [错误 ${d.errNum}]` : '';
-    return `❌ ${spec.name}${errTag}\n   授权位置：${spec.macLocation}\n   受影响功能：\n${affects}`;
-  });
-  return (
-    '🚨 检测到 macOS 授权缺失 —— 以下功能当前不可用！\n\n' +
-    blocks.join('\n\n') +
-    '\n\n' +
-    RESTART_HINT
-  );
-}
 
 const RECOVERED_ALERT =
   '✅ macOS 授权已恢复 —— 相关功能重新可用（Terminal 控制 / 按键注入 / 关 tab / 回车提交）。';
@@ -55,7 +36,7 @@ export function startHostPermissionProbe(client: Lark.Client): void {
   let lastDeniedKey: string | null = null;
   let lastAlertAt = 0;
 
-  const broadcast = async (text: string): Promise<void> => {
+  const broadcast = async (kind: 'card' | 'text', payload: unknown): Promise<void> => {
     const chats = await listAllChats();
     if (chats.length === 0) {
       logger.warn('host-permission probe：无 chat 可推送告警');
@@ -63,7 +44,8 @@ export function startHostPermissionProbe(client: Lark.Client): void {
     }
     for (const chat of chats) {
       try {
-        await sendTextMessage(client, chat.chatId, text);
+        if (kind === 'card') await sendCardMessage(client, chat.chatId, payload as Record<string, unknown>);
+        else await sendTextMessage(client, chat.chatId, payload as string);
       } catch (e) {
         logger.warn('host-permission 告警单 chat 推送失败', { chatId: chat.chatId, err: (e as Error).message });
       }
@@ -87,7 +69,7 @@ export function startHostPermissionProbe(client: Lark.Client): void {
       if (changed || now - lastAlertAt >= REALERT_INTERVAL_MS) {
         logger.error('macOS 授权缺失', { denied: denied.map((d) => ({ id: d.id, errNum: d.errNum })) });
         try {
-          await broadcast(buildBrokenAlert(denied));
+          await broadcast('card', hostPermissionCard(denied));
         } catch (e) {
           logger.warn('host-permission 告警广播失败', { err: (e as Error).message });
         }
@@ -101,7 +83,7 @@ export function startHostPermissionProbe(client: Lark.Client): void {
     if (lastDeniedKey !== null && lastDeniedKey !== '') {
       logger.info('macOS 授权已全部补齐');
       try {
-        await broadcast(RECOVERED_ALERT);
+        await broadcast('text', RECOVERED_ALERT);
       } catch (e) {
         logger.warn('host-permission 恢复通知失败', { err: (e as Error).message });
       }

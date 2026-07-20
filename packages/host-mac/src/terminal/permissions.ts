@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process';
 import { runScript } from './applescript.js';
 
 /**
@@ -168,4 +169,21 @@ export async function detectHostPermissions(): Promise<HostPermissionStatus[]> {
     await probeAutomationSystemEvents(),
     await probeAccessibility(),
   ];
+}
+
+/**
+ * 在 Mac 上一键跳到对应授权面板（用户到电脑旁鼠标点勾选即可）。
+ * TCC 授权无法用命令直接授予（系统安全设计），能做的极限就是把面板打开到位。
+ * fire-and-forget，不等结果。
+ */
+export function openPermissionPane(pane: 'accessibility' | 'automation'): void {
+  const url =
+    pane === 'accessibility'
+      ? 'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility'
+      : 'x-apple.systempreferences:com.apple.preference.security?Privacy_Automation';
+  try {
+    spawn('open', [url], { stdio: 'ignore', detached: true }).unref();
+  } catch {
+    /* ignore —— 打不开面板不致命 */
+  }
 }
