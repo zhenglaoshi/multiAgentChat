@@ -505,27 +505,48 @@ export async function forceEnter(tty: string): Promise<boolean> {
 // 只关当前 tab；窗口仅剩此 tab 时顺带关窗）。原来用 `close w` 会把多 tab 同窗的**整窗全关**。
 // Terminal 的『关闭前确认（有进程在跑）』sheet 会卡住关不掉 → Cmd-W 后若检测到 sheet，
 // 按 Return 确认默认按钮（关闭）。没 sheet（已退出 agent / 空 shell / 未开该确认）则不误发回车。
+//
+// ⚠ 分两阶段（实测踩坑后重构）：**阶段1 只纯匹配、记下 window/tab 引用，绝不做焦点副作用**；
+//   **阶段2 遍历结束后**才 activate/选中/Cmd-W。原来把 activate/set frontmost 塞进匹配循环、
+//   又包在静默 `try` 里 → 一旦焦点操作瞬时抛错（如刚从系统设置切回、Terminal 被别的 app 压在
+//   后面时 activate 抖动），错误被吞掉、`hit` 没置上 → **误报 "not-found"**（表现为"未找到或
+//   关闭失败"但 tab 明明还在）。分阶段后焦点错误会显式抛出、由上层 catch 成准确原因，不再冒充
+//   not-found。关前再做一道**二次确认**：前台窗口选中的确实是目标 tty 才 Cmd-W，防误关别的 tab。
 const CLOSE_SCRIPT = `
 on run argv
   set targetTty to item 1 of argv
-  set hit to false
+  set foundWin to missing value
+  set foundTab to missing value
+  -- 阶段1：纯匹配，零焦点副作用
   tell application "Terminal"
     repeat with w in windows
       try
         repeat with t in tabs of w
           if (tty of t) is equal to targetTty then
-            activate
-            set frontmost of w to true
-            set selected tab of w to t
-            set hit to true
+            set foundWin to w
+            set foundTab to t
             exit repeat
           end if
         end repeat
-        if hit then exit repeat
       end try
+      if foundWin is not missing value then exit repeat
     end repeat
   end tell
-  if not hit then return "not-found"
+  if foundWin is missing value then return "not-found"
+  -- 阶段2：遍历外改焦点（失败就让它抛，别吞）
+  tell application "Terminal"
+    activate
+    set frontmost of foundWin to true
+    set selected tab of foundWin to foundTab
+  end tell
+  -- 关前二次确认：前台选中的就是目标才动手，否则宁可不关（防误关别的 tab）
+  set curTty to ""
+  tell application "Terminal"
+    try
+      set curTty to (tty of selected tab of front window)
+    end try
+  end tell
+  if curTty is not equal to targetTty then return "focus-mismatch:" & curTty
   delay 0.2
   tell application "System Events"
     keystroke "w" using {command down}
@@ -541,6 +562,13 @@ end run
 `;
 
 export async function closeTab(tty: string): Promise<boolean> {
-  const out = await runScriptOrThrow(CLOSE_SCRIPT, [tty]);
-  return out.trim() === 'ok';
+  // 兜底归一到全形式（tty 是主键、恒 /dev/ttysNNN）——关是破坏性操作，绝不因调用方传了
+  // 短形式 `ttys007` 就静默 not-found。CLOSE_SCRIPT 里 `tty of t` 永远全形式。
+  const target = /^ttys\d+$/.test(tty) ? `/dev/${tty}` : tty;
+  const out = (await runScriptOrThrow(CLOSE_SCRIPT, [target])).trim();
+  if (out === 'ok') return true;
+  if (out === 'not-found') return false;
+  // focus-mismatch:<tty> 等异常态 → 抛出，让 closeTabGracefully 的 catch 拿到明确原因，
+  // 而不是被当成 not-found 误报（曾经的坑）。
+  throw new Error(`closeTab 中止（未 Cmd-W）: ${out}`);
 }

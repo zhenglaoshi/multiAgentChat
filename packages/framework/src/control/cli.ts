@@ -439,8 +439,11 @@ async function cmdShow(flags: Flags): Promise<void> {
 }
 
 async function cmdClose(flags: Flags): Promise<void> {
-  const tty = flags.tty ?? flags.positional[0];
-  if (!tty) die('agent close <tty> 或 -t <tty>');
+  const raw = flags.tty ?? flags.positional[0];
+  if (!raw) die('agent close <tty> 或 -t <tty>');
+  // 归一到全形式 /dev/ttysNNN —— CLOSE_SCRIPT 用 `tty of t`（永远全形式）精确比对，
+  // 裸传 `ttys007` / `7` 会匹配不上 → 误报 not-found（实测踩坑）。
+  const tty = normalizeTty(raw);
   const data = await sendOnce<TabCloseData>({ op: 'tab.close', tty });
   if (!data.closed) {
     stdout.write(data.reason ? `⚠ ${data.reason}\n` : `tab not found: ${tty}\n`);
