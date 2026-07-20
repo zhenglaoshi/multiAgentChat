@@ -320,7 +320,7 @@ const HELP_TEXT = [
   '  **/a**  /approvals            待审批列表 + 最近历史',
   '       /audit [N]               审批历史（最近 N 条）',
   '  **/tapd**                     我的 TAPD 列表卡（指派给我的未结束缺陷/需求；每条带「🔄 改状态」）',
-  '       /tapd new <标题[ | 描述]>  建 TAPD 任务：级联卡选项目 → 选类别 → 建',
+  '       /tapd new [标题]          建 TAPD 需求：①选项目 → ②表单填主题+内容 → 建（标题可选）',
   '  **/report** day|week|month|year [--brief]  工作总结：日/周=简报md，月/年=PPT(加 --brief 出简报)',
   '  **/r**  /recall [关键词]      搜任务历史；不带关键词 = 最近 10 条',
   '  **/wt** /worktasks [关键词]   列/搜任务工作目录（目录↔分支↔干啥；TAPD/perf 认领时自动落记录）',
@@ -1342,7 +1342,7 @@ export async function handleCommand(
     }
     const flow = await import('./tapd-flow.js');
     const rst = rest.trim();
-    // /tapd new <标题[ | 描述]> —— 建任务级联卡（选项目 → 选类别 → 建）
+    // /tapd new [标题] —— 建需求两步卡：①选项目 → ②表单填主题+内容 → 建（标题可选，预填表单）
     if (rst === 'new' || rst.startsWith('new ')) {
       const r = await flow.startCreateFlow(chatId, rst.slice(3).trim());
       return r.error ? { kind: 'text', text: `❌ ${r.error}` } : { kind: 'card', card: r.card };

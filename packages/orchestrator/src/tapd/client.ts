@@ -35,6 +35,28 @@ function isRateLimit(msg: string): boolean {
   return msg.includes('429') || msg.includes('Too Many Requests');
 }
 
+/** 单次 HTTP 超时：网关无响应时快速失败，别让飞书卡片"创建中"干挂 OS TCP 超时(30-75s)。 */
+const HTTP_TIMEOUT_MS = 15_000;
+
+/**
+ * 把 fetch 的网络级失败（超时 / 连不上 / DNS）翻译成能自诊断的中文提示。
+ * TAPD MCP 网关在公司内网（mcp.ihealthcn.com → 192.168.x），没连 VPN/内网就会连不上，
+ * 原来只吐 `fetch failed` 让人一头雾水 —— 这里带上错误码 + 修法提示。
+ */
+function describeNetErr(e: unknown, url: string): string {
+  const err = e as { name?: string; message?: string; cause?: { code?: string } };
+  let host = url;
+  try { host = new URL(url).host; } catch { /* keep raw */ }
+  if (err?.name === 'AbortError') {
+    return `TAPD MCP 请求超时（${HTTP_TIMEOUT_MS / 1000}s 无响应）—— 网关 ${host} 连不上，检查是否连着公司内网/VPN`;
+  }
+  const code = err?.cause?.code;
+  if (code) {
+    return `TAPD MCP 网关连不上（${code}，${host}）—— 检查是否连着公司内网/VPN`;
+  }
+  return `TAPD MCP 请求失败：${err?.message ?? String(e)}（${host}）`;
+}
+
 /** 供上层（watcher/CLI）观测当前是否在限流冷却。 */
 export function tapdCooldownLeftMs(): number {
   return cooldownLeft();
@@ -90,15 +112,26 @@ export class TapdMcpClient {
       method: 'tools/call',
       params: { name, arguments: args },
     };
-    const res = await fetch(this.url, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${this.token}`,
-        'Content-Type': 'application/json',
-        Accept: 'application/json, text/event-stream',
-      },
-      body: JSON.stringify(body),
-    });
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), HTTP_TIMEOUT_MS);
+    let res: Response;
+    try {
+      res = await fetch(this.url, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.token}`,
+          'Content-Type': 'application/json',
+          Accept: 'application/json, text/event-stream',
+        },
+        body: JSON.stringify(body),
+        signal: ctrl.signal,
+      });
+    } catch (e) {
+      // fetch 本身 reject = 网络级失败（超时/连不上/DNS），翻译成可诊断提示
+      throw new Error(describeNetErr(e, this.url));
+    } finally {
+      clearTimeout(timer);
+    }
     if (!res.ok) {
       throw new Error(`TAPD MCP HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
     }

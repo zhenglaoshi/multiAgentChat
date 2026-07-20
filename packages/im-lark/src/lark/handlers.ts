@@ -2302,27 +2302,35 @@ end run
   // ==== TAPD 建任务级联（选项目 → 选类别 → 建）+ 列表状态变更 ====
   // 全部：立即 return {}（不 toast，避免盖 patch），重活 fire-and-forget patch/send。
   if (action === 'tapd-nw-p') {
+    // ①选完项目 → 表单卡(2.0)另发**新消息**（不 patch 原 v1 选项目卡，避免跨 schema patch 不生效）；
+    // 原选项目卡 patch 成 v1 ack 收尾（v1→v1 安全）。
     const draftId = value['d'] as string | undefined;
     const option = data.action?.option;
     if (!draftId || !option) return { toast: { type: 'error', content: '缺草稿/选项' } };
     const messageId = getMessageId(data);
     void (async () => {
       const flow = await import('./tapd-flow.js');
-      const r = await flow.pickProjectBuildTypeCard(draftId, option);
+      const r = await flow.pickProjectShowForm(draftId, option);
       if (r.error) { void sendText(client, chatId, `❌ ${r.error}`); return; }
-      if (messageId) void patchCard(client, messageId, r.card);
+      const { sendCardMessage } = await import('./api.js');
+      void sendCardMessage(client, chatId, r.card);
+      if (r.ack && messageId) void patchCard(client, messageId, r.ack);
     })();
     return {};
   }
 
-  if (action === 'tapd-nw-t') {
+  if (action === 'tapd-nw-submit') {
+    // ②表单提交（form_value: { title, content }）→ 建需求 → patch 表单卡(2.0→2.0 安全)为结果卡。
     const draftId = value['d'] as string | undefined;
-    const option = data.action?.option;
-    if (!draftId || option === undefined) return { toast: { type: 'error', content: '缺草稿/选项' } };
+    const fv = (data.action?.form_value ?? {}) as Record<string, unknown>;
+    const title = typeof fv['title'] === 'string' ? (fv['title'] as string).trim() : '';
+    const content = typeof fv['content'] === 'string' ? (fv['content'] as string).trim() : '';
+    if (!draftId) { void sendText(client, chatId, '❌ 缺草稿，重新 /tapd new'); return {}; }
+    if (!title) { void sendText(client, chatId, '❌ 「主题(标题)」不能为空，请在表单里填了再提交'); return {}; }
     const messageId = getMessageId(data);
     void (async () => {
       const flow = await import('./tapd-flow.js');
-      const r = await flow.pickTypeCreate(draftId, option);
+      const r = await flow.submitCreate(draftId, { title, ...(content ? { content } : {}) });
       if (r.error) { void sendText(client, chatId, `❌ ${r.error}`); return; }
       if (messageId) void patchCard(client, messageId, r.card);
     })();

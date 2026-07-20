@@ -2852,6 +2852,60 @@ export function tapdCreatedCard(d: TapdCreatedCardData) {
   };
 }
 
+/**
+ * 第二步：填「主题(标题)+内容(描述)」的表单卡（飞书 schema 2.0 form）。
+ * 提交 → tapd-nw-submit（form_value: { title, content }）。
+ * 创建人/开发负责人自动=当前账号（TAPD_NICK），不在表单里问。
+ */
+export function tapdCreateFormCard(d: { draftId: string; projectName: string; title?: string }) {
+  const titleInput: Record<string, unknown> = {
+    tag: 'input',
+    name: 'title',
+    label: { tag: 'plain_text', content: '主题（需求标题）*' },
+    placeholder: { tag: 'plain_text', content: '一句话说清要做什么' },
+  };
+  if (d.title) titleInput['default_value'] = d.title;
+  return {
+    schema: '2.0',
+    config: { update_multi: true },
+    header: { title: { tag: 'plain_text', content: '📝 新建 TAPD 需求 · 填内容' }, template: 'blue' },
+    body: { elements: [
+      { tag: 'markdown', content: `项目：**${truncate(d.projectName, 40)}**\n填「主题(标题)」和「内容(描述)」，创建人/开发负责人自动=当前账号。` },
+      { tag: 'form', name: 'tapdnewform', elements: [
+        titleInput,
+        { tag: 'input', name: 'content', label: { tag: 'plain_text', content: '内容（描述，可选）' }, placeholder: { tag: 'plain_text', content: '详细描述 / 验收点…' } },
+        { tag: 'button', text: { tag: 'plain_text', content: '✅ 创建需求' }, type: 'primary', name: 'submit', form_action_type: 'submit', behaviors: [{ type: 'callback', value: { action: 'tapd-nw-submit', d: d.draftId } }] },
+      ] },
+    ] },
+  };
+}
+
+/**
+ * 建需求结果卡（schema 2.0，供 patch 表单卡；用 markdown 链接而非按钮，避开 2.0 action 按钮）。
+ * 成功=绿+打开链接；失败(多为网络/网关连不上)=红+原因，草稿不删可重试。
+ */
+export function tapdCreateResultCardV2(d: { ok: boolean; title: string; projectName: string; id?: string; url?: string; error?: string }) {
+  if (!d.ok) {
+    return {
+      schema: '2.0',
+      config: { update_multi: true },
+      header: { title: { tag: 'plain_text', content: '❌ TAPD 需求创建失败' }, template: 'red' },
+      body: { elements: [
+        { tag: 'markdown', content: `**${truncate(d.title, 80)}**\n项目：${truncate(d.projectName, 40)}\n\n原因：${d.error ?? '未知'}\n\n（草稿保留，网关恢复后可再点「✅ 创建需求」重试）` },
+      ] },
+    };
+  }
+  const link = d.url ? `\n\n[🔗 打开 TAPD](${d.url})` : '';
+  return {
+    schema: '2.0',
+    config: { update_multi: true },
+    header: { title: { tag: 'plain_text', content: '✅ TAPD 需求已创建' }, template: 'green' },
+    body: { elements: [
+      { tag: 'markdown', content: `**${truncate(d.title, 80)}**\n📁 ${truncate(d.projectName, 40)}${d.id ? ` · #${d.id}` : ''}${link}` },
+    ] },
+  };
+}
+
 /** 我的 TAPD 列表卡：每条一行 + 「🔄 改状态」按钮。 */
 export interface TapdListItem {
   id: string;
