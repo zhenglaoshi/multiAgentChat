@@ -4,6 +4,7 @@ import { readdir } from 'node:fs/promises';
 import { connect } from 'node:net';
 import { homedir, platform } from 'node:os';
 import { join } from 'node:path';
+import { detectHostPermissions, getHostPermissionSpec } from 'multiagent-host-mac';
 
 /** 用 spawn（非 execSync）跑外部命令，避免 tsx 里 execSync spawnSync ETIMEDOUT 坑 */
 function runCommand(
@@ -181,64 +182,33 @@ async function runSocketAndLark(): Promise<DoctorResult> {
   });
 }
 
-async function runAppleScript(): Promise<DoctorResult> {
+/**
+ * macOS 授权自检（三项独立 TCC：Automation→Terminal / Automation→System Events / Accessibility）。
+ * 走 host-mac 的 detectHostPermissions（单一事实源，副作用无害）。
+ *
+ * ⚠ 这修掉了老版本的假绿坑：老的「AppleScript 权限」只读了进程 name（仅需 Automation），
+ *   从不碰按键/UI（需 Accessibility），于是 Automation 给了、Accessibility 没给时全绿，
+ *   但关 tab / 回车提交其实是坏的。现在 Accessibility 单独一条、被拒即 fail。
+ */
+async function runHostPermissions(): Promise<DoctorResult[]> {
   if (platform() !== 'darwin') {
-    return { name: 'AppleScript 权限', severity: 'critical', status: 'skip', message: '非 macOS' };
+    return [{ name: 'macOS 授权', severity: 'critical', status: 'skip', message: '非 macOS' }];
   }
-  const r = await runCommand(
-    'osascript',
-    ['-e', 'tell application "System Events" to get name of first application process whose frontmost is true'],
-    5000,
-  );
-  if (r.ok) {
+  const statuses = await detectHostPermissions();
+  return statuses.map((s) => {
+    const spec = getHostPermissionSpec(s.id);
+    if (s.granted) {
+      return { name: spec.name, severity: spec.severity, status: 'pass' as const, message: '已授权' };
+    }
     return {
-      name: 'AppleScript 权限',
-      severity: 'critical',
-      status: 'pass',
-      message: `frontmost app: ${r.stdout}`,
+      name: spec.name,
+      severity: spec.severity,
+      status: 'fail' as const,
+      message: `未授权${s.errNum !== undefined ? `（错误 ${s.errNum}）` : ''}`,
+      hint: `${spec.macLocation}；授给谁：dev=Terminal.app / launchd=node，授完重启 daemon`,
+      detail: `影响：${spec.affects.join('；')}`,
     };
-  }
-  if (r.error.includes('1743') || r.error.includes('not allowed')) {
-    return {
-      name: 'AppleScript 权限',
-      severity: 'critical',
-      status: 'fail',
-      message: 'osascript 被拒绝',
-      hint: 'System Settings → Privacy & Security → Accessibility → 加 Terminal.app / iTerm.app / 跑 dev 的进程 / osascript',
-    };
-  }
-  return {
-    name: 'AppleScript 权限',
-    severity: 'critical',
-    status: 'fail',
-    message: `osascript 异常：${r.error.slice(0, 100)}`,
-  };
-}
-
-async function runTerminalTabs(): Promise<DoctorResult> {
-  if (platform() !== 'darwin') {
-    return { name: 'Terminal tabs', severity: 'important', status: 'skip', message: '非 macOS' };
-  }
-  const r = await runCommand(
-    'osascript',
-    ['-e', 'tell application "Terminal" to return (count of windows) as string'],
-    8000,
-  );
-  if (r.ok) {
-    return {
-      name: 'Terminal.app 可访问',
-      severity: 'important',
-      status: 'pass',
-      message: 'listTabs OK',
-    };
-  }
-  return {
-    name: 'Terminal.app 可访问',
-    severity: 'important',
-    status: 'warn',
-    message: `AppleScript 失败：${r.error.slice(0, 80)}`,
-    hint: 'Terminal.app 没开或响应慢；如果 AppleScript 权限那条 pass，一般不影响使用',
-  };
+  });
 }
 
 function runSkill(): DoctorResult {
@@ -530,8 +500,7 @@ export async function runDoctor(opts: { repoRoot?: string } = {}): Promise<Docto
   const results: DoctorResult[] = [...syncChecks];
   results.push(await runPnpm());
   results.push(await runClaudeBin());
-  results.push(await runAppleScript());
-  results.push(await runTerminalTabs());
+  results.push(...(await runHostPermissions()));
   results.push(await runSocketAndLark());
   results.push(await runCaffeinate());
   results.push(await runSubagents());

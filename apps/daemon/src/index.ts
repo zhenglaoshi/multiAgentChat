@@ -19,6 +19,7 @@ import type { CardSpec } from 'multiagent-framework';
 import { logger } from 'multiagent-orchestrator';
 import { startHealthCheck } from 'multiagent-im-lark';
 import { startSystemEventsProbe } from 'multiagent-im-lark';
+import { startHostPermissionProbe } from 'multiagent-im-lark';
 import { startTapdWatcher } from 'multiagent-im-lark';
 import { startPerfWatcher } from 'multiagent-im-lark';
 import { startCareyclawKeyReminder } from 'multiagent-im-lark';
@@ -1334,6 +1335,7 @@ async function main() {
   attachKnowledgeExtractor();
   startHealthCheck(lark.client);
   startSystemEventsProbe(lark.client);
+  startHostPermissionProbe(lark.client);
   startTapdWatcher(
     lark.client,
     wecom

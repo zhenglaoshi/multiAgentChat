@@ -3,6 +3,7 @@ export * from './terminal/tabs.js';
 export * from './terminal/status.js';
 export * from './terminal/applescript.js';
 export * from './terminal/probe.js';
+export * from './terminal/permissions.js';
 export * from './terminal/screen.js';
 export * from './terminal/keys.js';
 export * from './terminal/restart.js';

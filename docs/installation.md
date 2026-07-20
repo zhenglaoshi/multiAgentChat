@@ -20,15 +20,19 @@
 
 ### macOS 权限（首次触发时系统会弹对话框，点「允许」即可，不用提前准备）
 
-daemon 启动时会打印一份权限清单提示。三项：
+daemon 启动时会**自动探测**核心授权，缺了往飞书推告警；也能随时 `agent doctor` 查。四项：
 
-| 权限 | 用途 | 触发场景 |
-|---|---|---|
-| **Accessibility** | osascript 发按键 keystroke / key code | 首次 `forceEnter` / `/keys` |
-| **Screen Recording** | screencapture 抓 tab 窗口 | 首次 `/screen` |
-| **Automation** | osascript 控制 Terminal.app / Chrome | 首次 AppleScript 调 tab |
+| 权限 | 用途 | 触发场景 | 自动探测 |
+|---|---|---|---|
+| **Automation → Terminal.app** | 控 Terminal.app（列 tab / 发命令 / 开 tab） | 首次 AppleScript 调 tab | ✅ |
+| **Automation → System Events** | 按键注入的前置通道 | 首次 forceEnter / Ctrl-C | ✅ |
+| **Accessibility** | 真发按键 keystroke / key code（回车提交、关 tab） | 首次 `forceEnter` / 关 tab | ✅ |
+| **Screen Recording** | screencapture 抓 tab 窗口 | 首次 `/screen` | ❌（optional） |
 
-位置：**System Settings → Privacy & Security → 对应权限项**。任何一项拒绝 = 相关功能失效。
+位置：**系统设置 → 隐私与安全性 → 对应权限项**。任何一项拒绝 = 相关功能静默失效。
+
+> ⚠ **授权授给「谁」取决于运行模式**：`npm run dev` 授给 **Terminal.app**；launchd 托管授给 **node**，
+> 两套身份互不继承。完整清单 + 每项缺了会废哪些功能 + 分步授权 → 见 **`docs/permissions.md`**。
 
 ---
 
