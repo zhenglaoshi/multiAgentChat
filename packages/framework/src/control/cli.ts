@@ -7,6 +7,7 @@ import { dirname, join, resolve as resolvePath } from 'node:path';
 import { argv, cwd as procCwd, exit, stderr, stdin, stdout } from 'node:process';
 import { fileURLToPath } from 'node:url';
 import type { ApprovalRequest } from 'multiagent-orchestrator';
+import { scrubSecrets, summarizeScrub } from 'multiagent-orchestrator';
 import type { TaskState, TaskStatus } from 'multiagent-orchestrator';
 import type { TerminalTab } from 'multiagent-host-mac';
 import { SOCKET_PATH } from './protocol.js';
@@ -1881,6 +1882,47 @@ async function cmdAskDisarm(flags: Flags): Promise<void> {
   stdout.write(`ask-disarm: ${n} chat(s) cleared\n`);
 }
 
+/**
+ * `agent secrets scan|scrub [skipRecentMinutes]`
+ * 扫描 / 就地脱敏 claude+codex 会话历史里的明文凭证（本地 fs 操作，不走 daemon）。
+ *  - scan（默认）：dry-run，只报告；skipRecent 默认 0（扫全部）
+ *  - scrub：--apply 就地脱敏；skipRecent 默认 60（跳过近 60min 活跃会话）；不留 .bak
+ * ⚠ scrub 会改写会话 transcript，Claude Code auto 模式分类器会拦助手代跑 —— 需用户本人
+ *    用 `!` 前缀运行，或由 daemon 定期任务执行（见 SECRET_SCRUB_*）。
+ */
+async function cmdSecrets(flags: Flags): Promise<void> {
+  const sub = flags.positional[0] ?? 'scan';
+  const skipArg = flags.positional[1];
+  if (sub !== 'scan' && sub !== 'scrub') {
+    die('用法：agent secrets scan | agent secrets scrub [skipRecentMinutes]');
+  }
+  const apply = sub === 'scrub';
+  const skipRecentMin =
+    skipArg !== undefined && /^\d+$/.test(skipArg) ? Number(skipArg) : apply ? 60 : 0;
+  stdout.write(
+    `${apply ? '🧹 脱敏' : '🔍 扫描'} claude + codex 会话历史${skipRecentMin ? `（跳过近 ${skipRecentMin}min 活跃）` : ''}…\n`,
+  );
+  const report = await scrubSecrets({ apply, skipRecentMin });
+  stdout.write('\n' + summarizeScrub(report) + '\n');
+  if (report.files.length) {
+    stdout.write('\n含密文的文件：\n');
+    for (const f of report.files.slice(0, 40)) {
+      const h = Object.entries(f.hits)
+        .map(([k, v]) => `${k}:${v}`)
+        .join(', ');
+      stdout.write(`  ${f.path}  (${h})\n`);
+    }
+    if (report.files.length > 40) stdout.write(`  … 还有 ${report.files.length - 40} 个\n`);
+  }
+  if (report.notes.length) {
+    stdout.write('\n提醒（未覆盖，需手动关注）：\n');
+    for (const n of report.notes) stdout.write(`  • ${n}\n`);
+  }
+  if (!apply && report.dirtyFiles > 0) {
+    stdout.write('\n（dry-run，未改动。就地脱敏：agent secrets scrub —— 会改写 transcript，建议用 ! 前缀本人运行）\n');
+  }
+}
+
 async function main(): Promise<void> {
   const [, , cmd = 'help', ...rest] = argv;
   const flags = parseArgs(rest);
@@ -1919,6 +1961,8 @@ async function main(): Promise<void> {
         return await cmdRecentCwds();
       case 'lark':
         return await cmdLark(flags);
+      case 'secrets':
+        return await cmdSecrets(flags);
       case 'ask-disarm':
         return await cmdAskDisarm(flags);
       case 'wecom':

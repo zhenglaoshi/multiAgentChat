@@ -28,3 +28,5 @@ export * from './monitor/ws-watchdog.js';
 export * from './chats/store.js';
 export * from './chats/types.js';
 export * from './monitor/report-scheduler.js';
+export * from './monitor/secret-scrub-scheduler.js';
+export { getUnmaskSecrets, setUnmaskSecrets, unmaskRemainingSec } from './lark/redact-gate.js';

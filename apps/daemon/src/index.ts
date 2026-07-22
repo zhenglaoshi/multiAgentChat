@@ -24,6 +24,7 @@ import { startTapdWatcher } from 'multiagent-im-lark';
 import { startPerfWatcher } from 'multiagent-im-lark';
 import { startCareyclawKeyReminder } from 'multiagent-im-lark';
 import { startReportScheduler } from 'multiagent-im-lark';
+import { startSecretScrubScheduler } from 'multiagent-im-lark';
 import { attachWatcherToLark } from 'multiagent-im-lark';
 import { installWsWatchdog } from 'multiagent-im-lark';
 import { attachStageMemoryListener } from 'multiagent-orchestrator';
@@ -229,39 +230,44 @@ async function installCodexNotify(): Promise<void> {
   }
 }
 
+/** 项目自带、随 daemon 幂等安装到 ~/.claude/skills/ 的 skill 名（= skills/<name>/SKILL.md）。 */
+const BUNDLED_SKILLS = ['multiagent-lark', 'multiagent-secret-guard'];
+
 /**
- * 幂等把 skills/multiagent-lark/SKILL.md upsert 到 ~/.claude/skills/multiagent-lark/。
+ * 幂等把 skills/<name>/SKILL.md upsert 到 ~/.claude/skills/<name>/。
  * 内容相同 → 跳过；不同 → 覆盖（用户改了源码后重启 daemon 自动同步）。
  */
 async function ensureSkillInstalled(): Promise<void> {
   const HERE = fileURLToPath(new URL('.', import.meta.url));
   // apps/daemon/{src,dist}/index.js → 项目根 = 上溯 3 层
   const projectRoot = resolve(HERE, '..', '..', '..');
-  const src = join(projectRoot, 'skills', 'multiagent-lark', 'SKILL.md');
-  if (!existsSync(src)) {
-    logger.warn('skill 源文件不存在，跳过自动装', { src });
-    return;
-  }
-  const dstDir = join(homedir(), '.claude', 'skills', 'multiagent-lark');
-  const dstFile = join(dstDir, 'SKILL.md');
-  try {
-    const srcContent = await readFile(src, 'utf8');
-    let dstContent: string | null = null;
-    if (existsSync(dstFile)) {
-      try { dstContent = await readFile(dstFile, 'utf8'); } catch { /* ignore */ }
+  for (const name of BUNDLED_SKILLS) {
+    const src = join(projectRoot, 'skills', name, 'SKILL.md');
+    if (!existsSync(src)) {
+      logger.warn('skill 源文件不存在，跳过自动装', { src });
+      continue;
     }
-    if (dstContent === srcContent) {
-      logger.info('multiagent-lark skill up-to-date', { path: dstFile });
-      return;
+    const dstDir = join(homedir(), '.claude', 'skills', name);
+    const dstFile = join(dstDir, 'SKILL.md');
+    try {
+      const srcContent = await readFile(src, 'utf8');
+      let dstContent: string | null = null;
+      if (existsSync(dstFile)) {
+        try { dstContent = await readFile(dstFile, 'utf8'); } catch { /* ignore */ }
+      }
+      if (dstContent === srcContent) {
+        logger.info(`${name} skill up-to-date`, { path: dstFile });
+        continue;
+      }
+      await mkdir(dstDir, { recursive: true });
+      await writeFile(dstFile, srcContent, 'utf8');
+      logger.info(dstContent === null ? `${name} skill installed` : `${name} skill updated`, {
+        path: dstFile,
+        srcBytes: srcContent.length,
+      });
+    } catch (e) {
+      logger.warn('skill upsert failed', { name, err: (e as Error).message });
     }
-    await mkdir(dstDir, { recursive: true });
-    await writeFile(dstFile, srcContent, 'utf8');
-    logger.info(dstContent === null ? 'multiagent-lark skill installed' : 'multiagent-lark skill updated', {
-      path: dstFile,
-      srcBytes: srcContent.length,
-    });
-  } catch (e) {
-    logger.warn('skill upsert failed', { err: (e as Error).message });
   }
 }
 
@@ -1368,6 +1374,7 @@ async function main() {
   startPerfWatcher(lark.client);
   startCareyclawKeyReminder(lark.client);
   if (!isIntegrationDisabled('report')) startReportScheduler(lark.client);
+  startSecretScrubScheduler(lark.client); // opt-in: 需 SECRET_SCRUB_ENABLED=1
   await ensureSkillInstalled();
   // skill 型对接（careyclaw 等）：缺失则幂等自动安装官方技能（失败静默，不阻塞启动）
   for (const it of INTEGRATIONS) if (it.skillType) void ensureIntegrationSkills(it);

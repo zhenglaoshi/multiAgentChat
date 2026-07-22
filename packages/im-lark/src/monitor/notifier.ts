@@ -1,7 +1,7 @@
 import { basename } from 'node:path';
 import { homedir } from 'node:os';
 import * as Lark from '@larksuiteoapi/node-sdk';
-import { approvals, asks } from 'multiagent-orchestrator';
+import { approvals, asks, redactText } from 'multiagent-orchestrator';
 import type { ApprovalRequest, AskRequest } from 'multiagent-orchestrator';
 import { listAllChats, loadChat } from '../chats/store.js';
 import { patchCard, sendCardMessage, sendCardReturnId } from '../lark/api.js';
@@ -183,10 +183,11 @@ async function persistTaskMemory(
   tab: TerminalTab,
   taskOnlyTail: string,
 ): Promise<void> {
-  const prompt = pending.originalPrompt ?? pending.taskDescription;
+  // 落盘前脱敏：memory 会长期留在 data/memories 且 recall 时回显，明文凭证不能进（见 secrets 引擎）
+  const prompt = redactText(pending.originalPrompt ?? pending.taskDescription);
   // 用 taskOnlyTail（仅本任务新增）抓文件，避免抓到历史 scrollback 里的 noise
-  // 先净化 ANSI/TUI 再抽路径 & 存 preview，否则 memory recall 出来一堆转义字符
-  const cleanTail = sanitizeTerminalOutput(taskOnlyTail);
+  // 先净化 ANSI/TUI 再脱敏，再抽路径 & 存 preview，否则 memory recall 出来一堆转义字符/明文密钥
+  const cleanTail = redactText(sanitizeTerminalOutput(taskOnlyTail));
   const filesProduced = extractFilesFromOutput(cleanTail);
   const tags = tokenize(prompt).slice(0, 12);
   const id = `mem-${pending.sentAt.toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
