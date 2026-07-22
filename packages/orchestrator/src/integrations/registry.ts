@@ -94,6 +94,15 @@ export const INTEGRATIONS: Integration[] = [
     ],
   },
   {
+    key: 'secret-guard', name: '明文凭证脱敏', group: '其他', anyOf: true,
+    desc: '回显脱敏(推飞书/落盘前脱 AK/SK/密码/token)默认全程开启 + 已内置 skill；此处配【定期扫历史会话】。手动:agent secrets scan|scrub；飞书 /raw 临时看明文',
+    fields: [
+      { env: 'SECRET_SCRUB_ENABLED', label: '启用定期扫描', fixedValue: '1' },
+      { env: 'SECRET_SCRUB_APPLY', label: '定期自动就地脱敏(否则只报告)', fixedValue: '1' },
+      { env: 'SECRET_SCRUB_INTERVAL_HOURS', label: '周期(小时)', placeholder: '24' },
+    ],
+  },
+  {
     key: 'report', name: '定时工作报告', group: '其他', anyOf: true,
     desc: '日/周/月报定时自动生成推送（配任一即启）',
     fields: [
