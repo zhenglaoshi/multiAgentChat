@@ -247,41 +247,25 @@ export async function waitForOutput(
 }
 
 /**
- * 在 front window 里开新 tab。
+ * 开新 shell（一个全新 tty）。
  *
- * 坑：Terminal.app 的 `do script "cmd" in window` 在某些场景下会
- * **在 selected tab 里执行**而不是新开 tab（观察到当 selected tab
- * 是 alt-screen TUI 如 claude 时 do script 复用了当前 tab，返回原 tty）。
- * 所以先 snapshot 全 tab tty，do script 后如果返回的 tty 已存在，
- * fallback 到新 window，保证一定拿到全新 tty。
+ * ⚠ 原来用 `do script initCmd in front window` 想在前台窗口开 tab，但 Terminal 的
+ * `do script X in window` 在 selected tab **忙碌**时会**把 X 跑进那个 tab**（实测把
+ * initCmd `:` 注入进前台 claude 会话！），返回原 tty → 撞 prevTtys → fallback 开新 window。
+ * 于是既污染了前台 claude，又开成窗口。
+ *
+ * 改用**裸 `do script initCmd`**（不带 `in`）：永远新建、拿到全新 tty，绝不碰任何现有 tab。
+ * 是"窗口"还是"tab"由 macOS「偏好标签页」(`AppleWindowTabbingMode`) 决定 —— 设为
+ * `always` 且 Terminal 重启后即为 tab；否则为窗口。代码层不再纠结（也纠结不动，见该设置）。
  */
 const NEW_TAB_IN_FRONT_SCRIPT = `
 on run argv
   set initCmd to item 1 of argv
-  set prevTtys to {}
   tell application "Terminal"
     activate
-    repeat with w in windows
-      try
-        repeat with t in tabs of w
-          try
-            set end of prevTtys to (tty of t)
-          end try
-        end repeat
-      end try
-    end repeat
-    set frontWin to front window
-    set newT to do script initCmd in frontWin
-    set newTty to tty of newT
+    set newT to do script initCmd
+    return tty of newT
   end tell
-  if newTty is in prevTtys then
-    -- do script 复用了 existing tab，退到新 window
-    tell application "Terminal"
-      set newT to do script initCmd
-      set newTty to tty of newT
-    end tell
-  end if
-  return newTty
 end run
 `;
 
@@ -310,30 +294,12 @@ on run argv
       set prevAppName to name of (first application process whose frontmost is true)
     end tell
   end try
-  set prevTtys to {}
   set newTty to ""
   tell application "Terminal"
     activate
-    repeat with w in windows
-      try
-        repeat with t in tabs of w
-          try
-            set end of prevTtys to (tty of t)
-          end try
-        end repeat
-      end try
-    end repeat
-    try
-      set frontWin to front window
-      set newT to do script initCmd in frontWin
-    on error
-      set newT to do script initCmd
-    end try
+    -- 裸 do script：永远新建、绝不碰现有 tab（不像 "in front window" 会把 initCmd 注入前台忙碌 tab）
+    set newT to do script initCmd
     set newTty to tty of newT
-    if newTty is in prevTtys then
-      set newT to do script initCmd
-      set newTty to tty of newT
-    end if
   end tell
   -- 立刻切回原 app（如果不是 Terminal）
   if prevAppName is not "" and prevAppName is not "Terminal" then

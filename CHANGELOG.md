@@ -6,6 +6,11 @@
 
 ## [未发布]
 
+### 2026-07-22
+
+**修复**
+- **`newTab` 改用裸 `do script`，不再污染前台忙碌 tab**：原来用 `do script initCmd in front window` 想在前台窗口开新 tab，但 Terminal 的 `do script X in window` 在 selected tab **忙碌**时会**把 X 跑进那个 tab**（实测把 `initCmd` 注入进前台 claude 会话），返回原 tty → 撞 `prevTtys` → 再 fallback 开新 window，既污染前台 claude 又开错形态。改成**裸 `do script initCmd`**（不带 `in`）：永远新建、拿到全新 tty、绝不碰任何现有 tab；"窗口 vs tab" 交给 macOS `AppleWindowTabbingMode` 偏好决定。同步简化 `NEW_TAB_IN_FRONT_SCRIPT` 与另一处 new-tab 脚本（去掉 prevTtys 快照 + fallback 逻辑）。（`host-mac/terminal/tabs.ts`）
+
 ### 2026-07-21
 
 **新增**
