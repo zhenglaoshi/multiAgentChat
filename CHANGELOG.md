@@ -12,6 +12,7 @@
 - **学习型放行（权限审批卡的自我演进）**：权限 gate 从**静态高危规则**进化成**按你的批准习惯自调**。每次「批准/拒绝」按**归一化命令**（只折叠空白、**不泛化**，`rm -rf /a` ≠ `rm -rf /b`）落盘 `data/guard/learned-allow.json`：同一命令连续批准 ≥ 阈值(默认 3，`PERM_LEARN_THRESHOLD` 可调)且从未被拒 → 之后**自动放行、不再弹卡**。安全优先：**最灾难命令永不学习放行**（`rm -rf /`、`~`、`mkfs`、`dd of=/dev`、fork bomb 每次都问）、任何一次拒绝即永久 denied、审批卡显示「已批准 N 次，再 M 次将自动放行」、`/perm-reset` 一键清空、自动放行仍记 info 日志。纯判定 `normalizeCmd`/`isNeverLearn`/`decideAutoAllow` + 7 单测。（`orchestrator/guard/learned-allow.ts` + `framework/control/server.ts` `handlePermissionGate` + `im-lark/lark/commands.ts` `/perm-reset`）
 
 **改动 / 修复**
+- **权限审批高危检测两处误报（实测拦了自己的 commit + 用户反馈"每次写代码都提示"）**：① `isHighRiskCommand` 原来匹配命令里任意子串（含引号串/heredoc/注释里的**数据**），导致 `echo "危险文本"`、`git commit -m "…提到危险命令…"`、写文档都被误当高危 → 加 `stripDataLiterals` 匹配前剥离数据字面量，但保留 `sh -c "…"`/`eval`/`mysql -e "…"` 这类"执行字符串"包装扫原始命令（不漏 `sh -c "递归强删"`/`mysql -e "删库"`）；② 裸设备规则去掉 `> /dev/…` 重定向分支（它把 ubiquitous 的 `2>/dev/null` 也误匹配成"写裸设备"），只留 `dd of=/dev/X`；③ sudo 规则边界加引号。+ 单测覆盖误报/漏报两侧。（`orchestrator/guard/high-risk.ts`）
 - **ask 交互卡默认超时 5min → 30min（可 `MCHAT_ASK_TIMEOUT_MS` 覆盖）**：手机异步作答时 5min 太短，人一离开卡就超时，回来打字回答也没 pending 可消费（本轮实测多张卡超时 + 裸数字/字母回答无法自动匹配）。放宽到 30min 后，卡在 pending 期间点选 or 直接打字（裸数字/选项原文，`parseTypedAskAnswer`）都能被消费 —— 一并解掉"超时"和"打字回答歧义"。（`orchestrator/ask/manager.ts` `DEFAULT_ASK_TIMEOUT_MS`）
 - **新增 `/reload`（`/restart`）飞书命令：一键重启 daemon**：改动要重启才生效，之前只能到电脑前跑 `launchctl kickstart`。现飞书发 `/reload` 即重启（延迟 1.5s 让回复先发出，再 kickstart；launchd 拉起新进程加载最新代码 + 重装 hooks）。dev/非 launchd 托管无 label → 静默忽略（tsx watch 本就自动 reload）。（`im-lark/lark/commands.ts` + `/help`）
 

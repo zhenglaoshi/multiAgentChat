@@ -53,6 +53,10 @@ describe('isHighRiskCommand — 不该拦（常规）', () => {
       'echo hi > out.txt',            // 写普通文件不拦
       'chmod +x script.sh',
       'chmod 644 x',
+      'npm test 2>/dev/null',            // /dev/null 重定向不拦(最常见的误报源)
+      'ls > /dev/null 2>&1',
+      'cmd >/dev/null',
+      'cat /dev/stdin',
     ]) {
       expect(risky(c), c).toBe(false);
     }
@@ -60,5 +64,37 @@ describe('isHighRiskCommand — 不该拦（常规）', () => {
   it('空/空白安全', () => {
     expect(risky('')).toBe(false);
     expect(risky('   ')).toBe(false);
+  });
+});
+
+describe('isHighRiskCommand — 引号/heredoc 里的危险文本不误报（数据≠命令）', () => {
+  it('echo / 打印危险文本 → 不拦', () => {
+    expect(risky('echo "rm -rf /"')).toBe(false);
+    expect(risky("echo 'sudo mkfs'")).toBe(false);
+  });
+  it('git commit message 提到危险命令 → 不拦', () => {
+    expect(risky('git commit -m "fix: handle rm -rf and mkfs edge cases"')).toBe(false);
+    expect(risky('git commit -q -F /tmp/msg')).toBe(false); // 消息在文件里，命令行无危险文本
+  });
+  it('heredoc 体里的危险文本 → 不拦', () => {
+    expect(risky("git commit -F - <<'EOF'\nfix rm -rf / and dd of=/dev handling\nEOF")).toBe(false);
+  });
+  it('grep 危险模式串 → 不拦', () => {
+    expect(risky('grep -r "rm -rf" .')).toBe(false);
+  });
+});
+
+describe('isHighRiskCommand — 执行字符串包装仍要拦（不漏报）', () => {
+  it('sh -c / bash -c "危险" → 拦', () => {
+    expect(risky('sh -c "rm -rf /tmp/x"')).toBe(true);
+    expect(risky('bash -c "sudo systemctl stop x"')).toBe(true);
+  });
+  it('mysql -e / psql -c "DROP/TRUNCATE" → 拦', () => {
+    expect(risky('mysql -e "DROP DATABASE prod"')).toBe(true);
+    expect(risky('psql -c "TRUNCATE TABLE users"')).toBe(true);
+  });
+  it('unquoted 真高危照拦', () => {
+    expect(risky('rm -rf /tmp/x')).toBe(true);
+    expect(risky('git push --force')).toBe(true);
   });
 });
