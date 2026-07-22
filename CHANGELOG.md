@@ -6,6 +6,11 @@
 
 ## [未发布]
 
+### 2026-07-23
+
+**新增**
+- **TAPD 建需求补「选类别」级联步骤（修「缺需求类别 id 拿不到工作流流转」）**：`/tapd new` 原来是 ①选项目 → ②表单（用项目默认类别建，导致建出的需求缺 `workitem_type_id`，之后「🔄 改状态」拿不到工作流 → 报「缺需求类别 id」）。现补上中间一级 **②选需求类别(workitem_type)**：选完项目 `listWorkitemTypes` 拉该项目类别——**>1 个才弹级联选择卡**（`tapd-nw-c`），0/1 个自动跳过（1 个则自动带上）；建时带 `workitem_type_id` → 建出的需求后续改状态就能正常流转。`/tapd`（列指派给我）+ 卡上「🔄 改状态」本就完整，未改。（`im-lark/lark/tapd-flow.ts` 新增 `pickProjectShowCategory`/`pickCategoryShowForm` 替 `pickProjectShowForm` + `handlers.ts` 新增 `tapd-nw-c` 路由）
+
 ### 2026-07-22
 
 **改动**
