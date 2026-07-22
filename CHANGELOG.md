@@ -8,6 +8,9 @@
 
 ### 2026-07-22
 
+**改动**
+- **进度卡「执行中」头显示完整工作路径**：原来头部只放文件夹 basename（`📁multiAgentChat`），且 cwd 空时连 basename 都没有，多 tab 时看不清哪个任务在哪跑。改成 **homeified 完整路径**（`📁~/ihealth-project/multiAgentChat`，过长中间省略保头尾），底部 metaLine 也一并 homeify。（`im-lark/lark/cards.ts` `progressCard`）
+
 **新增**
 - **明文凭证脱敏 —— 阶段2：claude+codex 静态文件脱敏 + memories 落盘脱敏 + daemon 定期任务 + 打包成 skill**：① **文件脱敏** `orchestrator/secrets/scrub.ts` `scrubSecrets()` + CLI `agent secrets scan|scrub`（本地 fs 操作不走 daemon）—— 扫 claude（projects/history/backups）+ codex（sessions/history）的 `.jsonl`，逐行 `redact()`；dry-run 默认、`--apply` 就地写、`skipRecentMin` 保护活跃会话、默认不留 `.bak`（.bak 含明文）；不碰 `~/.codex/auth.json`（凭证存储本身）和 codex sqlite 库（报告里点名提醒）。真机 dry-run 实测在 claude 历史里查出 90+ 文件含明文（DB密码/华为云阿里云AK/JWT/OpenAI/careyclaw token）。② **memories 落盘脱敏**：`notifier.persistTaskMemory` 存 prompt/outputPreview 前先 `redactText`。③ **daemon 定期任务** `secret-scrub-scheduler.ts`（opt-in `SECRET_SCRUB_ENABLED=1`）：默认报告模式（dry-run 推"发现 N 处"），`SECRET_SCRUB_APPLY=1` 才就地脱敏且恒跳过近 24h 活跃会话（改写 transcript 是破坏性操作→显式 opt-in）。④ **skill** `skills/multiagent-secret-guard/SKILL.md`（daemon 幂等自动装，`ensureSkillInstalled` 泛化成装多个 bundled skill）。⚠ codex sqlite 库未覆盖（v1）；真实泄露的密钥仍需到各控制台 rotate。（`orchestrator/secrets/scrub.ts` + `framework/control/cli.ts` + `im-lark/monitor/secret-scrub-scheduler.ts` + `im-lark/monitor/notifier.ts` + `apps/daemon/src/index.ts` + `.env.example` + `skills/multiagent-secret-guard/`）
 - **脱敏 skill 补齐：`/connect` 对接项 + SKILL.md 回显行为准则**：① SKILL.md 顶部加**给 agent 的行为准则**——遇凭证默认绝不明文回显、只在用户明确要求(或 `/raw on`)才显示、别依赖系统兜底（落实原始需求"除非明确说需要明文显示"）。② `orchestrator/integrations/registry.ts` 加 `secret-guard` 对接项（group 其他）：回显脱敏默认全程开+skill 内置，`/connect` 里配的是"定期扫历史会话"三开关（`SECRET_SCRUB_ENABLED/APPLY/INTERVAL_HOURS`）。（`skills/multiagent-secret-guard/SKILL.md` + `orchestrator/integrations/registry.ts`）

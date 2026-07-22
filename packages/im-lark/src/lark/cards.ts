@@ -2,6 +2,7 @@ import type { ApprovalRequest, AskRequest, PerfItem, Plan, TapdItem, Integration
 import { tapdSummary, TAPD_KIND_LABEL } from 'multiagent-orchestrator';
 import { inferTabStatus, getHostPermissionSpec, type TabStatusInfo, type HostPermissionStatus } from 'multiagent-host-mac';
 import type { TerminalTab } from 'multiagent-host-mac';
+import { homedir } from 'node:os';
 
 function homeify(p: string, home: string): string {
   return p.startsWith(home) ? '~' + p.slice(home.length) : p;
@@ -685,14 +686,12 @@ export function progressCard(data: ProgressCardData) {
     ? data.taskDescription.slice(0, 40) + '…'
     : data.taskDescription;
 
-  // 文件夹名塞进标题（basename），让"在哪执行"一眼可见；完整路径仍在底部灰字 metaLine
-  const folderName = data.cwd
-    ? data.cwd.replace(/\/+$/, '').split('/').pop() || data.cwd
-    : '';
-  const folderTag = folderName ? `📁${folderName} · ` : '';
+  // 具体路径塞进标题（homeified 完整路径，过长中间省略保头尾），让"在哪执行"一眼可见。
+  const cwdShown = data.cwd ? homeify(data.cwd.replace(/\/+$/, ''), homedir()) : '';
+  const folderTag = cwdShown ? `📁${smartTrim(cwdShown, 42)} · ` : '';
 
   const metaParts: string[] = [];
-  if (data.cwd) metaParts.push(`📁 ${data.cwd}`);
+  if (cwdShown) metaParts.push(`📁 ${cwdShown}`);
   metaParts.push(`⏱ ${elapsed}`);
   metaParts.push(`${updatedSec}s 前更新`);
   if (data.quietUntilDone && data.state === 'running') {
