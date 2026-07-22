@@ -86,17 +86,20 @@ async function installClaudeCodeHooks(): Promise<void> {
   const stopHookPath = resolve(binDir, 'mchat-stop-hook');
   const preToolUseHookPath = resolve(binDir, 'mchat-pretooluse-hook');
   const postToolUseHookPath = resolve(binDir, 'mchat-posttooluse-hook');
+  const permissionHookPath = resolve(binDir, 'mchat-permission-hook');
   const taskHookPath = resolve(binDir, 'mchat-task-hook');
 
   const stopOk = existsSync(stopHookPath);
   const preOk = existsSync(preToolUseHookPath);
   const postOk = existsSync(postToolUseHookPath);
+  const permOk = existsSync(permissionHookPath);
   const taskOk = existsSync(taskHookPath);
   if (!stopOk) logger.warn('bin/mchat-stop-hook not found', { stopHookPath });
   if (!preOk) logger.warn('bin/mchat-pretooluse-hook not found', { preToolUseHookPath });
   if (!postOk) logger.warn('bin/mchat-posttooluse-hook not found', { postToolUseHookPath });
+  if (!permOk) logger.warn('bin/mchat-permission-hook not found', { permissionHookPath });
   if (!taskOk) logger.warn('bin/mchat-task-hook not found', { taskHookPath });
-  if (!stopOk && !preOk && !postOk && !taskOk) return;
+  if (!stopOk && !preOk && !postOk && !permOk && !taskOk) return;
 
   type HookEntry = {
     matcher?: string;
@@ -132,6 +135,7 @@ async function installClaudeCodeHooks(): Promise<void> {
             (h.command.includes('mchat-stop-hook') ||
               h.command.includes('mchat-pretooluse-hook') ||
               h.command.includes('mchat-posttooluse-hook') ||
+              h.command.includes('mchat-permission-hook') ||
               h.command.includes('mchat-task-hook') ||
               h.command.includes('mchat-hook-echo')),
         );
@@ -162,6 +166,13 @@ async function installClaudeCodeHooks(): Promise<void> {
         hooks: [{ type: 'command', command: postToolUseHookPath }],
       });
     }
+    if (permOk) {
+      // Bash PreToolUse → 高危命令抢在原生提示前推飞书审批卡（见 bin/mchat-permission-hook）
+      cfg.hooks.PreToolUse!.push({
+        matcher: 'Bash',
+        hooks: [{ type: 'command', command: permissionHookPath }],
+      });
+    }
     if (taskOk) {
       // Task 工具 PreToolUse → SOP 阶段自动 --start（框架强制打点，见 bin/mchat-task-hook）
       cfg.hooks.PreToolUse!.push({
@@ -175,6 +186,7 @@ async function installClaudeCodeHooks(): Promise<void> {
       stopHookPath: stopOk ? stopHookPath : null,
       preToolUseHookPath: preOk ? preToolUseHookPath : null,
       postToolUseHookPath: postOk ? postToolUseHookPath : null,
+      permissionHookPath: permOk ? permissionHookPath : null,
       removedOld: { Stop: removedStop, PreToolUse: removedPre, PostToolUse: removedPost },
     });
   } catch (e) {

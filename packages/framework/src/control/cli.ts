@@ -19,6 +19,7 @@ import type {
   LarkAskData,
   LarkResolveChatData,
   LarkSendData,
+  PermissionGateData,
   TabScreenData,
   TabKeysData,
   WeComSendData,
@@ -1923,6 +1924,33 @@ async function cmdSecrets(flags: Flags): Promise<void> {
   }
 }
 
+/**
+ * `agent permission-gate --origin-pid N --origin-cwd C`（命令从 stdin 读）
+ * PreToolUse(Bash) hook 用：把命令送 daemon 判高危 + 阻塞审批，stdout 回 {"decision":...}。
+ * 任何异常（daemon 不可达等）→ 输出 passthrough（fail-safe，绝不自动 allow）。
+ */
+async function cmdPermissionGate(flags: Flags): Promise<void> {
+  const piped = await readStdinIfPiped();
+  const command = (piped ?? flags.positional.join(' ')).trim();
+  if (!command) {
+    stdout.write(JSON.stringify({ decision: 'passthrough' }) + '\n');
+    return;
+  }
+  try {
+    const data = await sendOnce<PermissionGateData>({
+      op: 'permission.gate',
+      command,
+      ...(flags.originPid !== undefined ? { originPid: flags.originPid } : {}),
+      ...(flags.originCwd !== undefined ? { originCwd: flags.originCwd } : {}),
+    });
+    stdout.write(
+      JSON.stringify({ decision: data.decision, ...(data.reason ? { reason: data.reason } : {}) }) + '\n',
+    );
+  } catch {
+    stdout.write(JSON.stringify({ decision: 'passthrough' }) + '\n');
+  }
+}
+
 async function main(): Promise<void> {
   const [, , cmd = 'help', ...rest] = argv;
   const flags = parseArgs(rest);
@@ -1963,6 +1991,8 @@ async function main(): Promise<void> {
         return await cmdLark(flags);
       case 'secrets':
         return await cmdSecrets(flags);
+      case 'permission-gate':
+        return await cmdPermissionGate(flags);
       case 'ask-disarm':
         return await cmdAskDisarm(flags);
       case 'wecom':

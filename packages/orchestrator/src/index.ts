@@ -12,5 +12,6 @@ export * from './integrations/index.js';
 export * from './subagents/index.js';
 export * from './knowledge/index.js';
 export * from './secrets/index.js';
+export * from './guard/index.js';
 export * from './tapd/index.js';
 export * from './report/index.js';

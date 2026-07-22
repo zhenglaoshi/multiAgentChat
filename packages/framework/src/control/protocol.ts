@@ -148,6 +148,22 @@ export interface LarkSendCardOp {
  * （清 chat.askArm），防止用户之后误点已作答菜单的卡片把方向键注错终端。
  * daemon 用 originPid/originCwd 反查 tab tty，清所有 chat 里指向它的 askArm。
  */
+/**
+ * PreToolUse(Bash) hook 触发：命令若高危 → 推飞书审批卡阻塞等批准，返回 allow/deny；
+ * 非高危 / 无对应 chat / 超时 → passthrough（hook 不给决定，回退 claude 原生权限提示，fail-safe）。
+ */
+export interface PermissionGateOp {
+  op: 'permission.gate';
+  /** 待执行的 shell 命令（从 hook stdin 读，避免 argv 转义） */
+  command: string;
+  originPid?: number;
+  originCwd?: string;
+}
+export interface PermissionGateData {
+  decision: 'allow' | 'deny' | 'passthrough';
+  reason?: string;
+}
+
 export interface AskDisarmOp {
   op: 'ask.disarm';
   /** 触发本 hook 的 Claude Code 进程 pid（process.ppid），daemon `ps -o tty=` 反查 tab */
@@ -451,6 +467,7 @@ export type Request =
   | ChatSetActiveRequest
   | LarkSendTextOp
   | AskDisarmOp
+  | PermissionGateOp
   | LarkSendCardOp
   | LarkSendFileOp
   | LarkSendImageOp

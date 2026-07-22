@@ -7,6 +7,7 @@ import { basename, dirname, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import * as Lark from '@larksuiteoapi/node-sdk';
 import { approvals, asks, knowledgeQueue, listEntries, statsSummary } from 'multiagent-orchestrator';
+import { isHighRiskCommand } from 'multiagent-orchestrator';
 import { listAllChats, loadChat, saveChat } from 'multiagent-im-lark';
 import { originShellPushCard, sendCardMessage, sendFile, sendImage, sendTextMessage, patchCard, tapdClaimCard } from 'multiagent-im-lark';
 import { loadClaim, saveClaim, TAPD_STAGE_LABEL, type TapdStage } from 'multiagent-orchestrator';
@@ -55,6 +56,7 @@ import type {
   ChatSetActiveData,
   LarkResolveChatData,
   LarkSendData,
+  PermissionGateData,
   Request,
   Response,
   TabCloseData,
@@ -562,6 +564,82 @@ async function handleAskDisarm(
     sendOk<LarkSendData>(sock, { details: { disarmed: n } });
   } catch (e) {
     sendErr(sock, (e as Error).message);
+  }
+  sock.end();
+}
+
+/** tty → chatId（复用 resolve-chat 逻辑：pending tty → 该 chat；否则最近活跃 chat）。 */
+async function resolveChatIdForTty(tty?: string): Promise<string | null> {
+  if (tty) {
+    const pendings = pendingTracker.forTty(tty);
+    if (pendings.length > 0) {
+      return pendings.reduce((a, b) => (a.sentAt > b.sentAt ? a : b)).chatId;
+    }
+  }
+  const chats = await listAllChats();
+  if (chats.length === 0) return null;
+  return [...chats].sort((a, b) => b.lastActiveAt - a.lastActiveAt)[0]!.chatId;
+}
+
+/**
+ * PreToolUse(Bash) 权限 gate：命令高危 → 推飞书审批卡阻塞等结果 → allow/deny；
+ * 非高危 / 反查不到 chat / 超时 → passthrough（回退 claude 原生权限提示，fail-safe，绝不自动放行）。
+ */
+async function handlePermissionGate(
+  sock: Socket,
+  req: Extract<Request, { op: 'permission.gate' }>,
+) {
+  try {
+    const verdict = isHighRiskCommand(req.command);
+    if (!verdict.risky) {
+      sendOk<PermissionGateData>(sock, { decision: 'passthrough' });
+      sock.end();
+      return;
+    }
+    let tty: string | undefined;
+    if (req.originPid !== undefined || req.originCwd !== undefined) {
+      const origin = await resolveOriginTab(req.originPid, req.originCwd);
+      tty = origin?.tty;
+    }
+    const chatId = await resolveChatIdForTty(tty);
+    if (!chatId) {
+      // 远程无处可问 → 回退本地原生提示
+      sendOk<PermissionGateData>(sock, { decision: 'passthrough' });
+      sock.end();
+      return;
+    }
+    const shortTty = tty ? (tty.startsWith('/dev/') ? tty.slice(5) : tty) : '?';
+    const cwdShown = req.originCwd ? req.originCwd.replace(homedir(), '~') : '?';
+    const cmd = req.command.length > 800 ? req.command.slice(0, 800) + ' …' : req.command;
+    const body = [
+      `🚨 **高危命令** · ${verdict.reason}`,
+      `📁 \`${cwdShown}\`  ·  🏷 \`${shortTty}\``,
+      '```bash',
+      cmd,
+      '```',
+      `<font color='grey'>批准 = 执行；拒绝 = 拦下（claude 收到"用户拒绝"）；5 分钟不响应 → 回退本地提示</font>`,
+    ].join('\n');
+    const { result } = await approvals.create({
+      title: `🚨 高危命令待批 · ${verdict.reason}`,
+      body,
+      chatId,
+    });
+    const final = await result;
+    const decision =
+      final.status === 'approved' ? 'allow' : final.status === 'rejected' ? 'deny' : 'passthrough';
+    logger.info('permission gate resolved', { decision, reason: verdict.reason, tty });
+    sendOk<PermissionGateData>(sock, {
+      decision,
+      ...(verdict.reason ? { reason: verdict.reason } : {}),
+    });
+  } catch (e) {
+    // 出错 → passthrough（fail-safe，不自动放行也不误拦）
+    logger.warn('permission gate error → passthrough', { err: (e as Error).message });
+    try {
+      sendOk<PermissionGateData>(sock, { decision: 'passthrough' });
+    } catch {
+      sendErr(sock, (e as Error).message);
+    }
   }
   sock.end();
 }
@@ -1654,6 +1732,8 @@ async function dispatch(sock: Socket, req: Request): Promise<void> {
       return handleLarkSendText(sock, req);
     case 'ask.disarm':
       return handleAskDisarm(sock, req);
+    case 'permission.gate':
+      return handlePermissionGate(sock, req);
     case 'lark.send-card':
       return handleLarkSendCard(sock, req);
     case 'lark.send-file':

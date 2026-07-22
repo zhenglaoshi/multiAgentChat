@@ -1,0 +1,96 @@
+#!/usr/bin/env node
+/*
+ * multiAgentChat — Claude Code PreToolUse hook (matcher=Bash)
+ *
+ * 用途：claude 要跑**高危** shell 命令(rm -rf / git push --force / sudo / 写.env / 删库…)时，
+ * 抢在原生"Allow this tool?"提示前，把命令推成飞书审批卡阻塞等你点批准/拒绝：
+ *   批准 → 返回 permissionDecision:allow(直接执行，不弹原生提示)
+ *   拒绝 → permissionDecision:deny
+ *   非高危 / 反查不到 chat / 超时 / daemon 不可达 → **不给决定**(退出无输出)，
+ *     回退 claude 原生权限流程(fail-safe，绝不自动放行危险命令)。
+ *
+ * 判高危的权威逻辑在 daemon(orchestrator isHighRiskCommand，单一事实源+有测试)。
+ * 本 hook 只做一个**极廉价的关键词预筛**：命令不含任何风险关键词 → 直接放行、连 daemon 都不调，
+ * 避免给绝大多数普通 Bash(ls/npm/cat/git status…)加上 `agent` 启动开销。预筛是**超集**触发，
+ * 不会漏(漏了才危险)；命中预筛才交 daemon 权威判定。
+ *
+ * NOTE: ESM only（package.json "type":"module"，require() 会 crash，见 stop-hook）。
+ * 设 MCHAT_HOOK_DEBUG=1 打开 /tmp/mchat-permission-hook.log。
+ */
+import { spawnSync } from 'node:child_process';
+import { appendFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const DEBUG = process.env['MCHAT_HOOK_DEBUG'] === '1';
+const DEBUG_LOG = '/tmp/mchat-permission-hook.log';
+// 审批最长等 5min，hook 子进程给 6min 上限兜底(超了当 passthrough)
+const GATE_TIMEOUT_MS = 6 * 60 * 1000;
+
+// 超集预筛：只要命令**可能**触到 daemon 的高危规则就交给 daemon。宁多勿漏。
+const MAYBE_RISKY =
+  /\b(rm|sudo|chmod|dd|mkfs|diskutil|kill|killall)\b|git\s+(push|reset|clean|remote)|\.env\b|\b(curl|wget)\b|\b(DROP|TRUNCATE)\b|:\(\)/i;
+
+function dbg(msg) {
+  if (!DEBUG) return;
+  try {
+    appendFileSync(DEBUG_LOG, `[${new Date().toISOString()}] ${msg}\n`);
+  } catch {}
+}
+
+let raw = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', (c) => (raw += c));
+process.stdin.on('error', () => process.exit(0));
+process.stdin.on('end', () => {
+  try {
+    const payload = raw.trim() ? JSON.parse(raw) : {};
+    if (payload?.tool_name !== 'Bash') return process.exit(0);
+    const command = payload?.tool_input?.command;
+    if (typeof command !== 'string' || !command.trim()) return process.exit(0);
+    // 廉价预筛：明显安全 → 直接放行(不给决定，走 claude 正常流程)
+    if (!MAYBE_RISKY.test(command)) return process.exit(0);
+
+    const agentBin = resolve(HERE, 'agent');
+    const args = ['permission-gate', '--origin-pid', String(process.ppid)];
+    if (typeof payload.cwd === 'string' && payload.cwd) {
+      args.push('--origin-cwd', payload.cwd);
+    }
+    dbg(`gate check ppid=${process.ppid} cmd=${command.slice(0, 120)}`);
+    const res = spawnSync(agentBin, args, {
+      input: command,
+      encoding: 'utf8',
+      timeout: GATE_TIMEOUT_MS,
+      stdio: ['pipe', 'pipe', 'ignore'],
+    });
+    if (res.error || res.status !== 0 || !res.stdout) {
+      dbg(`gate spawn issue → passthrough (err=${res.error?.message} status=${res.status})`);
+      return process.exit(0); // fail-safe
+    }
+    let decision = 'passthrough';
+    try {
+      decision = (JSON.parse(res.stdout.trim()) || {}).decision ?? 'passthrough';
+    } catch {
+      return process.exit(0);
+    }
+    dbg(`decision=${decision}`);
+    if (decision === 'allow' || decision === 'deny') {
+      process.stdout.write(
+        JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse',
+            permissionDecision: decision,
+            permissionDecisionReason:
+              decision === 'allow' ? '飞书已批准（multiAgentChat）' : '飞书已拒绝（multiAgentChat）',
+          },
+        }),
+      );
+    }
+    // passthrough → 无输出，回退 claude 原生提示
+    process.exit(0);
+  } catch (e) {
+    dbg('caught: ' + (e && e.message));
+    process.exit(0);
+  }
+});
