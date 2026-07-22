@@ -332,6 +332,7 @@ const HELP_TEXT = [
   '                                 （关闭状态下走自适应节流：3.5s→15s→30s→60s 随任务时长）',
   '  **/raw on/off**                明文模式：默认脱敏出站凭证(AK/SK/密码/token→[REDACTED])；on=看明文(10min 后自动恢复)',
   '  **/reload**                     从飞书一键重启 daemon（加载最新代码 + 重装 hooks；launchd 托管时有效）',
+  '  **/perm-reset**                 清空"学习放行"库（高危命令审批的自动放行记录，恢复每次都问）',
   '  /help                         本帮助',
   '',
   '**转发到 tab（Claude Code / skill 命令）**',
@@ -1631,6 +1632,15 @@ export async function handleCommand(
     return {
       kind: 'text',
       text: '🔄 正在重启 daemon…（约 5 秒，launchd 自动拉起新进程、加载最新代码 + 重装 hooks）。\n若长时间无响应，可能是 dev 模式（tsx watch 改文件即自动 reload，无需本命令）。',
+    };
+  }
+
+  if (name === 'perm-reset') {
+    const { clearLearned } = await import('multiagent-orchestrator');
+    const n = clearLearned();
+    return {
+      kind: 'text',
+      text: `🧹 已清空学习放行库（${n} 条）。所有高危命令恢复"每次都问",直到重新学习。`,
     };
   }
 

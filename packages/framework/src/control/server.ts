@@ -7,7 +7,7 @@ import { basename, dirname, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import * as Lark from '@larksuiteoapi/node-sdk';
 import { approvals, asks, knowledgeQueue, listEntries, statsSummary } from 'multiagent-orchestrator';
-import { isHighRiskCommand } from 'multiagent-orchestrator';
+import { isHighRiskCommand, isLearnedAllowed, learnedProgress, recordDecision } from 'multiagent-orchestrator';
 import { listAllChats, loadChat, saveChat } from 'multiagent-im-lark';
 import { originShellPushCard, sendCardMessage, sendFile, sendImage, sendTextMessage, patchCard, tapdClaimCard } from 'multiagent-im-lark';
 import { loadClaim, saveClaim, TAPD_STAGE_LABEL, type TapdStage } from 'multiagent-orchestrator';
@@ -596,6 +596,16 @@ async function handlePermissionGate(
       sock.end();
       return;
     }
+    // 学习型放行：这条高危命令已被你批准够多次（近似精确、灾难命令除外）→ 直接放行不再弹卡。
+    if (isLearnedAllowed(req.command)) {
+      logger.info('permission gate: learned auto-allow', { reason: verdict.reason });
+      sendOk<PermissionGateData>(sock, {
+        decision: 'allow',
+        ...(verdict.reason ? { reason: `${verdict.reason}（已学习放行）` } : {}),
+      });
+      sock.end();
+      return;
+    }
     let tty: string | undefined;
     if (req.originPid !== undefined || req.originCwd !== undefined) {
       const origin = await resolveOriginTab(req.originPid, req.originCwd);
@@ -611,13 +621,18 @@ async function handlePermissionGate(
     const shortTty = tty ? (tty.startsWith('/dev/') ? tty.slice(5) : tty) : '?';
     const cwdShown = req.originCwd ? req.originCwd.replace(homedir(), '~') : '?';
     const cmd = req.command.length > 800 ? req.command.slice(0, 800) + ' …' : req.command;
+    const prog = learnedProgress(req.command);
+    const learnLine = prog
+      ? `<font color='grey'>已批准 ${prog.approvals} 次；再批准 ${prog.remaining} 次将自动放行此命令（/perm-reset 可清空学习）</font>`
+      : `<font color='grey'>此命令属最灾难类，不学习放行、每次都会问</font>`;
     const body = [
       `🚨 **高危命令** · ${verdict.reason}`,
       `📁 \`${cwdShown}\`  ·  🏷 \`${shortTty}\``,
       '```bash',
       cmd,
       '```',
-      `<font color='grey'>批准 = 执行；拒绝 = 拦下（claude 收到"用户拒绝"）；5 分钟不响应 → 回退本地提示</font>`,
+      `<font color='grey'>批准 = 执行；拒绝 = 拦下（claude 收到"用户拒绝"）；不响应 → 回退本地提示</font>`,
+      learnLine,
     ].join('\n');
     const { result } = await approvals.create({
       title: `🚨 高危命令待批 · ${verdict.reason}`,
@@ -627,6 +642,9 @@ async function handlePermissionGate(
     const final = await result;
     const decision =
       final.status === 'approved' ? 'allow' : final.status === 'rejected' ? 'deny' : 'passthrough';
+    // 记学习：批准 → 计数+1；拒绝 → 永不再自动放行该命令；超时不记（未表态）。
+    if (final.status === 'approved') recordDecision(req.command, true);
+    else if (final.status === 'rejected') recordDecision(req.command, false);
     logger.info('permission gate resolved', { decision, reason: verdict.reason, tty });
     sendOk<PermissionGateData>(sock, {
       decision,
