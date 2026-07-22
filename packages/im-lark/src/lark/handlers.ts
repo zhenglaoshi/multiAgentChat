@@ -2884,6 +2884,7 @@ end run
     const decision = action === 'approve' ? 'approved' : 'rejected';
     const result = await approvals.resolve(approvalId, decision, `feishu:${operator}`);
     if (!result) {
+      // 已完成/不存在 → 无卡可 patch，用 toast 提示即可
       return {
         toast: {
           type: 'error',
@@ -2891,12 +2892,21 @@ end run
         },
       };
     }
-    return {
-      toast: {
-        type: 'success',
-        content: decision === 'approved' ? '✅ 已批准' : '❌ 已拒绝',
-      },
-    };
+    // ⚠ 不 return toast：toast 会让飞书把这张卡当"已处理、无更新"，盖掉 'resolved' 监听
+    // 发起的 patchCard（把卡刷成「✅ 已批准 by X / ❌ 已拒绝」+ 去掉按钮）→ 用户点了像没反应
+    // （CLAUDE.md 硬约定：卡片刷新 vs toast 二选一，本项目一律选卡片刷新）。
+    // return {} 让 patch 生效 = 明确、持久的响应（按钮消失、状态变绿/红 + 谁批的）。
+    // 兜底：万一 resolved 监听没拿到 cardMessageId 而 patch 不了，这里补一张 ack 回执卡。
+    if (!result.cardMessageId) {
+      return {
+        card: ackCard({
+          title: decision === 'approved' ? '✅ 已批准' : '❌ 已拒绝',
+          body: `审批 \`${approvalId}\` 已${decision === 'approved' ? '批准，命令将执行' : '拒绝，命令已拦下'}。`,
+          template: decision === 'approved' ? 'green' : 'red',
+        }),
+      };
+    }
+    return {};
   }
 
   return undefined;
