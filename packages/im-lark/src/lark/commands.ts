@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import { readdir, readFile } from 'node:fs/promises';
 import { homedir, hostname, networkInterfaces } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -330,6 +331,7 @@ const HELP_TEXT = [
   '  **/quiet on/off**              静默模式：长任务只发首次+完成，中间不刷进度卡',
   '                                 （关闭状态下走自适应节流：3.5s→15s→30s→60s 随任务时长）',
   '  **/raw on/off**                明文模式：默认脱敏出站凭证(AK/SK/密码/token→[REDACTED])；on=看明文(10min 后自动恢复)',
+  '  **/reload**                     从飞书一键重启 daemon（加载最新代码 + 重装 hooks；launchd 托管时有效）',
   '  /help                         本帮助',
   '',
   '**转发到 tab（Claude Code / skill 命令）**',
@@ -1609,6 +1611,27 @@ export async function handleCommand(
       return { kind: 'text', text: '🔒 已恢复脱敏：出站凭证重新脱成 [REDACTED-X]。' };
     }
     return { kind: 'text', text: `未知参数：${arg}\n用法：/raw on  /raw off  /raw status` };
+  }
+
+  if (name === 'reload' || name === 'restart') {
+    // 从飞书一键重启 daemon（launchd 会立刻拉起新进程，加载最新代码 + 重装 hooks）。
+    // 延迟 1.5s kickstart：让本条"重启中"回复先由 caller 发出去，再杀进程。
+    // dev(tsx watch)/未托管 launchd 时无此 label → kickstart 失败静默忽略（dev 改文件本就自动 reload）。
+    const uid = typeof process.getuid === 'function' ? process.getuid() : 0;
+    setTimeout(() => {
+      try {
+        spawn('launchctl', ['kickstart', '-k', `gui/${uid}/com.multiagent-chat.daemon`], {
+          stdio: 'ignore',
+          detached: true,
+        }).unref();
+      } catch {
+        /* dev / 非 launchd 托管 → 忽略 */
+      }
+    }, 1500);
+    return {
+      kind: 'text',
+      text: '🔄 正在重启 daemon…（约 5 秒，launchd 自动拉起新进程、加载最新代码 + 重装 hooks）。\n若长时间无响应，可能是 dev 模式（tsx watch 改文件即自动 reload，无需本命令）。',
+    };
   }
 
   if (name === 'webdash' || name === 'wd' || name === 'web') {

@@ -8,6 +8,10 @@
 
 ### 2026-07-23
 
+**改动 / 修复**
+- **ask 交互卡默认超时 5min → 30min（可 `MCHAT_ASK_TIMEOUT_MS` 覆盖）**：手机异步作答时 5min 太短，人一离开卡就超时，回来打字回答也没 pending 可消费（本轮实测多张卡超时 + 裸数字/字母回答无法自动匹配）。放宽到 30min 后，卡在 pending 期间点选 or 直接打字（裸数字/选项原文，`parseTypedAskAnswer`）都能被消费 —— 一并解掉"超时"和"打字回答歧义"。（`orchestrator/ask/manager.ts` `DEFAULT_ASK_TIMEOUT_MS`）
+- **新增 `/reload`（`/restart`）飞书命令：一键重启 daemon**：改动要重启才生效，之前只能到电脑前跑 `launchctl kickstart`。现飞书发 `/reload` 即重启（延迟 1.5s 让回复先发出，再 kickstart；launchd 拉起新进程加载最新代码 + 重装 hooks）。dev/非 launchd 托管无 label → 静默忽略（tsx watch 本就自动 reload）。（`im-lark/lark/commands.ts` + `/help`）
+
 **新增**
 - **Fleet 主动监控（daemon 主动盯舰队：卡住哨兵 + 闲置提议 + 每早摘要）**：让 daemon 从"遥控器"进化成"副驾"——不只被动转发，还主动发现问题/机会并推飞书。`im-lark/monitor/fleet-monitor.ts` `startFleetMonitor`，**零额外 AppleScript**（全读 `watcher` 单例缓存 `getCachedTabs/getCachedHistory/getCacheAge` + `pendingTracker.recentDone/forTty`）。三件事：① **卡住哨兵**：`claude-active` 忙碌但 history **字符数**连续 M 分钟(默认 8)无变化 → 推 🟠 告警（每次停滞只报一次，用 charLen 而非行数因 claude TUI `\r` 重绘）；② **闲置提议**：tab 非 busy + 无 active pending + 最近 done 距今 ≥ N 分钟(默认 10) → 推 💡 建议卡（每个 done 只提醒一次）；③ **每早摘要**：到点(默认 09:00)推「🌅 昨夜舰队摘要」（过去 24h done + 当前在跑，仿 report-scheduler 的 fired 去重）。推送仅发给 `watchAllTabs===true` 的 chat（没在看的不打扰），`FLEET_MONITOR_ENABLED=0` 整体关，阈值/时间 env 可调。纯判定逻辑抽 `fleet-monitor-logic.ts`（`stuckDecision`/`digestDue`/`localDayStr`）+ 9 单测。typecheck 绿、76 测试全过。（`im-lark/monitor/fleet-monitor{,-logic}.ts` + `im-lark/src/index.ts` + `apps/daemon/src/index.ts` + `.env.example`）
 - **TAPD 建需求补「选类别」级联步骤（修「缺需求类别 id 拿不到工作流流转」）**：`/tapd new` 原来是 ①选项目 → ②表单（用项目默认类别建，导致建出的需求缺 `workitem_type_id`，之后「🔄 改状态」拿不到工作流 → 报「缺需求类别 id」）。现补上中间一级 **②选需求类别(workitem_type)**：选完项目 `listWorkitemTypes` 拉该项目类别——**>1 个才弹级联选择卡**（`tapd-nw-c`），0/1 个自动跳过（1 个则自动带上）；建时带 `workitem_type_id` → 建出的需求后续改状态就能正常流转。`/tapd`（列指派给我）+ 卡上「🔄 改状态」本就完整，未改。（`im-lark/lark/tapd-flow.ts` 新增 `pickProjectShowCategory`/`pickCategoryShowForm` 替 `pickProjectShowForm` + `handlers.ts` 新增 `tapd-nw-c` 路由）

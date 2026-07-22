@@ -2,7 +2,15 @@ import { EventEmitter } from 'node:events';
 import { logger } from '../logger.js';
 import type { AskAnswer, AskAnswerForm, AskFormQuestion, AskRequest, AskType } from './types.js';
 
-export const DEFAULT_ASK_TIMEOUT_MS = 5 * 60 * 1000;
+/**
+ * ask 卡默认超时。手机异步作答场景下 5min 太短（人常离开手机，回来卡已超时，
+ * 打字回答也没 pending 可消费了）。默认放宽到 30min，并可用 `MCHAT_ASK_TIMEOUT_MS`（毫秒）覆盖。
+ * 卡在 pending 期间：用户点选 or 直接打字（裸数字/选项原文）都能被 parseTypedAskAnswer 消费。
+ */
+export const DEFAULT_ASK_TIMEOUT_MS = (() => {
+  const v = Number(process.env['MCHAT_ASK_TIMEOUT_MS']);
+  return Number.isFinite(v) && v >= 30_000 ? v : 30 * 60 * 1000;
+})();
 
 interface PendingResolver {
   resolveP: (req: AskRequest) => void;
