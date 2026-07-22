@@ -1866,6 +1866,21 @@ process.stdout.on('error', (e: NodeJS.ErrnoException) => {
   if (e.code === 'EPIPE') exit(0);
 });
 
+/**
+ * `agent ask-disarm --origin-pid <ppid> [--origin-cwd <cwd>]`
+ * PostToolUse(AskUserQuestion) hook 用：本地作答后清掉飞书选项卡的 armed 状态。
+ */
+async function cmdAskDisarm(flags: Flags): Promise<void> {
+  const req: Extract<Request, { op: 'ask.disarm' }> = {
+    op: 'ask.disarm',
+    ...(flags.originPid !== undefined ? { originPid: flags.originPid } : {}),
+    ...(flags.originCwd !== undefined ? { originCwd: flags.originCwd } : {}),
+  };
+  const data = await sendOnce<LarkSendData>(req);
+  const n = (data.details as { disarmed?: number } | undefined)?.disarmed ?? 0;
+  stdout.write(`ask-disarm: ${n} chat(s) cleared\n`);
+}
+
 async function main(): Promise<void> {
   const [, , cmd = 'help', ...rest] = argv;
   const flags = parseArgs(rest);
@@ -1904,6 +1919,8 @@ async function main(): Promise<void> {
         return await cmdRecentCwds();
       case 'lark':
         return await cmdLark(flags);
+      case 'ask-disarm':
+        return await cmdAskDisarm(flags);
       case 'wecom':
         return await cmdWeCom(flags);
       case 'install-skill':

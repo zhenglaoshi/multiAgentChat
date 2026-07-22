@@ -464,7 +464,15 @@ async function handleLarkSendText(
     //  - 其他情况（含 origin === activeTty、反查失败、--plain） → 走文本，
     //    有 origin 时前面加 `🖥 ttys004 · project` identifier 前缀
     const isActive = origin ? chat.activeTty === origin.tty : false;
-    const useCard = origin && !isActive && !req.plain;
+    const hasQuickAnswer = !!(
+      req.question &&
+      req.quickAnswerOptions &&
+      req.quickAnswerOptions.length > 0
+    );
+    // 普通推送：只有非 activeTty 才用卡片（activeTty 自己走文本，避免每条 Stop hook 变卡）。
+    // 例外：AskUserQuestion 带选项时，即使是 activeTty 也用卡片 —— 否则选项只能纯文本显示，
+    // 手机端点不了、方向键也驱动不了（本次修复的核心场景）。
+    const useCard = !!origin && !req.plain && (!isActive || hasQuickAnswer);
 
     if (useCard && origin) {
       const card = originShellPushCard({
@@ -486,15 +494,23 @@ async function handleLarkSendText(
       });
     }
 
+    // AskUserQuestion 带选项 → arm askArm：飞书点选项 / 裸数字回复走"方向键驱动本地原生
+    // 选择菜单"（handlers 里 ask-select / dispatchSendToTab 拦截消费）。无论 active 与否都 arm。
+    if (hasQuickAnswer && origin) {
+      chat.askArm = { tty: origin.tty, options: req.quickAnswerOptions!, at: Date.now() };
+    }
     // question=true + 反查到 tty + 与 activeTty 不同 → 记 pendingAnswerTty
     // （与 activeTty 相同时，sendToActiveTab 会自然走 activeTty，不需要 override）
     if (req.question && origin && !isActive) {
       chat.pendingAnswerTty = origin.tty;
       chat.pendingAnswerAt = Date.now();
+    }
+    if ((hasQuickAnswer || (req.question && !isActive)) && origin) {
       await saveChat(chat);
-      logger.info('pendingAnswerTty set', {
+      logger.info('askArm/pendingAnswerTty set', {
         chatId: req.chatId,
         tty: origin.tty,
+        hasQuickAnswer,
       });
     }
 
@@ -503,6 +519,47 @@ async function handleLarkSendText(
         ? { originTty: origin.tty, ...(useCard ? { renderedAs: 'card' } : { renderedAs: 'text' }) }
         : {},
     });
+  } catch (e) {
+    sendErr(sock, (e as Error).message);
+  }
+  sock.end();
+}
+
+/**
+ * PostToolUse(AskUserQuestion) hook → 本地作答后关卡：反查 origin tty，清掉所有 chat 里
+ * 指向该 tty 的 askArm（+ pendingAnswerTty）。防止用户之后误点已作答菜单的卡片，把方向键
+ * 注进已经不是菜单的终端（"本地 PC 别受影响"的安全网）。不 gate（清状态永远安全）。
+ */
+async function handleAskDisarm(
+  sock: Socket,
+  req: Extract<Request, { op: 'ask.disarm' }>,
+) {
+  try {
+    let tty: string | undefined;
+    if (req.originPid !== undefined || req.originCwd !== undefined) {
+      const origin = await resolveOriginTab(req.originPid, req.originCwd);
+      tty = origin?.tty;
+    }
+    if (!tty) {
+      sendOk<LarkSendData>(sock, { details: { disarmed: 0 } });
+      sock.end();
+      return;
+    }
+    const chats = await listAllChats();
+    let n = 0;
+    for (const chat of chats) {
+      if (chat.askArm && chat.askArm.tty === tty) {
+        delete chat.askArm;
+        if (chat.pendingAnswerTty === tty) {
+          delete chat.pendingAnswerTty;
+          delete chat.pendingAnswerAt;
+        }
+        await saveChat(chat);
+        n++;
+      }
+    }
+    logger.info('ask.disarm', { tty, disarmed: n });
+    sendOk<LarkSendData>(sock, { details: { disarmed: n } });
   } catch (e) {
     sendErr(sock, (e as Error).message);
   }
@@ -1595,6 +1652,8 @@ async function dispatch(sock: Socket, req: Request): Promise<void> {
       return handleChatSetActive(sock, req);
     case 'lark.send-text':
       return handleLarkSendText(sock, req);
+    case 'ask.disarm':
+      return handleAskDisarm(sock, req);
     case 'lark.send-card':
       return handleLarkSendCard(sock, req);
     case 'lark.send-file':

@@ -143,6 +143,19 @@ export interface LarkSendCardOp {
   card: unknown;
 }
 
+/**
+ * PostToolUse(AskUserQuestion) hook 触发：本地作答后关掉飞书那张选项卡的 armed 状态
+ * （清 chat.askArm），防止用户之后误点已作答菜单的卡片把方向键注错终端。
+ * daemon 用 originPid/originCwd 反查 tab tty，清所有 chat 里指向它的 askArm。
+ */
+export interface AskDisarmOp {
+  op: 'ask.disarm';
+  /** 触发本 hook 的 Claude Code 进程 pid（process.ppid），daemon `ps -o tty=` 反查 tab */
+  originPid?: number;
+  /** 触发时 Claude Code 的 cwd；ppid 反查失败时用它匹配 tab */
+  originCwd?: string;
+}
+
 export interface LarkSendFileOp {
   op: 'lark.send-file';
   chatId: string;
@@ -437,6 +450,7 @@ export type Request =
   | ChatGetRequest
   | ChatSetActiveRequest
   | LarkSendTextOp
+  | AskDisarmOp
   | LarkSendCardOp
   | LarkSendFileOp
   | LarkSendImageOp

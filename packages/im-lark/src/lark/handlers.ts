@@ -1,7 +1,8 @@
 import * as Lark from '@larksuiteoapi/node-sdk';
 import { approvals, asks } from 'multiagent-orchestrator';
 import { loadChat, saveChat } from '../chats/store.js';
-import { PENDING_ANSWER_TTL_MS, RECENT_REPLY_TTL_MS } from '../chats/types.js';
+import { PENDING_ANSWER_TTL_MS, RECENT_REPLY_TTL_MS, ASK_ARM_TTL_MS } from '../chats/types.js';
+import { buildDownEnterSeq, resolveAskAnswerIndex } from './ask-drive.js';
 import { logger } from 'multiagent-orchestrator';
 import { recordCwd } from 'multiagent-host-mac';
 import { formatRecallPrefix, recall, tokenize } from 'multiagent-orchestrator';
@@ -243,6 +244,62 @@ async function patchOrigToReceipt(
   } catch (e) {
     logger.warn('patchCard receipt failed', { err: (e as Error).message, messageId });
   }
+}
+
+// ---- AskUserQuestion（claude 原生上下键选择菜单）方向键驱动 ----
+// buildDownEnterSeq / resolveAskAnswerIndex 是纯逻辑，抽到 ./ask-drive.ts 便于单测。
+
+/**
+ * 卡片点选项（按钮 ask-select / 下拉 askans|）→ 用方向键驱动源 shell 里 claude 的
+ * 原生 AskUserQuestion 菜单选中第 index 项。
+ * guard：必须仍处于 armed（chat.askArm 匹配该 tty 且未过期）—— 否则本地可能已作答 /
+ * 菜单已关闭，此时注方向键会打进已经不是菜单的终端，直接拒绝（toast 提示，不 patch）。
+ */
+async function driveAskSelectFromCard(
+  client: Lark.Client,
+  data: CardActionEvent,
+  chatId: string,
+  tty: string,
+  index: number,
+  label: string,
+): Promise<{ toast?: { type: string; content: string }; card?: unknown }> {
+  const chat = await loadChat(chatId);
+  const arm = chat.askArm;
+  if (!arm || arm.tty !== tty || Date.now() - arm.at > ASK_ARM_TTL_MS) {
+    return { toast: { type: 'info', content: '该选择菜单已作答或已过期' } };
+  }
+  const tabs = await listTabs();
+  if (!tabs.find((t) => t.tty === tty)) {
+    delete chat.askArm;
+    if (chat.pendingAnswerTty === tty) {
+      delete chat.pendingAnswerTty;
+      delete chat.pendingAnswerAt;
+    }
+    await saveChat(chat).catch(() => {});
+    return {
+      toast: { type: 'error', content: `tab ${tty} 不存在了` },
+      card: ackCard({ title: '❌ 发送失败', body: `tab \`${tty}\` 已经不在了`, template: 'red' }),
+    };
+  }
+  try {
+    await sendKeys(tty, buildDownEnterSeq(index));
+  } catch (e) {
+    return { toast: { type: 'error', content: (e as Error).message } };
+  }
+  // 消费 arm（本轮已作答）；pendingAnswerTty 也清（不再 one-shot 路由这条问题）
+  delete chat.askArm;
+  if (chat.pendingAnswerTty === tty) {
+    delete chat.pendingAnswerTty;
+    delete chat.pendingAnswerAt;
+  }
+  await saveChat(chat).catch(() => {});
+  const shown = label || arm.options[index] || `选项 ${index + 1}`;
+  void patchOrigToReceipt(
+    client,
+    data,
+    `✓ 已选『${shown.length > 20 ? shown.slice(0, 20) + '…' : shown}』(↓×${index}+⏎) → ${tty}`,
+  );
+  return {};
 }
 
 /**
@@ -1033,6 +1090,41 @@ async function dispatchSendToTab(
     logger.warn('dispatchSendToTab: 空 text，跳过注入', { tty: tab.tty, targetLabel });
     await replyText(client, ctx, `⚠️ 消息内容为空，没发送到 ${tab.tty}（是不是只发了 @目标、或图片没配文字？直接把要说的内容打出来）`).catch(() => {});
     return;
+  }
+
+  // AskUserQuestion 方向键驱动：该 tab 正卡在 claude 原生选择菜单（askArm）+ 这条回复能映射到
+  // 某个选项（裸数字 / 选项文本）→ 用 sendKeys 发 (index)↓+回车 驱动菜单选中，而不是 do script
+  // 打文本（打文本移动不了高亮、选不中，历史 bug）。映射不出（改主意 / 自由输入 / 想 @ 别处）→
+  // 不劫持，照常落到下方文本注入（无回归）；本地已作答时 arm 已被 PostToolUse 清掉，也不会命中。
+  // 仅对**用户直接回复**生效：chain/batch 编排步骤（有 batchInfo/chainInfo）是完整任务 prompt，
+  // 不该被当成选项应答（即便碰巧是裸数字）。
+  if (!batchInfo && !chainInfo) {
+    const askChat = await loadChat(ctx.chatId).catch(() => null);
+    const arm = askChat?.askArm;
+    if (arm && arm.tty === tab.tty && Date.now() - arm.at <= ASK_ARM_TTL_MS) {
+      const idx = resolveAskAnswerIndex(text, arm.options);
+      if (idx >= 0) {
+        try {
+          await sendKeys(tab.tty, buildDownEnterSeq(idx));
+        } catch (e) {
+          await replyText(client, ctx, `❌ 驱动选择菜单失败：${(e as Error).message}`).catch(() => {});
+          return;
+        }
+        delete askChat!.askArm;
+        if (askChat!.pendingAnswerTty === tab.tty) {
+          delete askChat!.pendingAnswerTty;
+          delete askChat!.pendingAnswerAt;
+        }
+        await saveChat(askChat!).catch(() => {});
+        const label = arm.options[idx] ?? `选项 ${idx + 1}`;
+        await replyText(
+          client,
+          ctx,
+          `✓ 已选『${label.length > 24 ? label.slice(0, 24) + '…' : label}』(↓×${idx}+⏎) → ${tab.tty}`,
+        ).catch(() => {});
+        return;
+      }
+    }
   }
 
   // gate 排队：目标 tab 有 awaiting-gate 的 SOP → claude 阻塞在 gate 等审批，注入也不会被处理。
@@ -1907,10 +1999,33 @@ async function handleCardAction(
     return await buildBrowseReply(target);
   }
 
-  // originShellPushCard 的下拉选择：value 是 `answer|<tty>|<label>`，用户选中后
-  // 直接把 label 打进源 shell（同 send-to-tab 语义，只是组件不同）。
+  // AskUserQuestion 选项按钮：点了发方向键 (index)↓+回车 驱动源 shell 的原生选择菜单。
+  if (action === 'ask-select') {
+    const tty = value['tty'] as string | undefined;
+    const index = Number(value['index']);
+    const label = (value['label'] as string | undefined) ?? '';
+    if (!tty || !Number.isInteger(index) || index < 0) {
+      return { toast: { type: 'error', content: '无效选项' } };
+    }
+    return await driveAskSelectFromCard(client, data, chatId, tty, index, label);
+  }
+
+  // originShellPushCard 的下拉选择：
+  //  - `askans|<tty>|<index>` → AskUserQuestion 箭头菜单，方向键驱动（同 ask-select）
+  //  - `answer|<tty>|<label>` → 老路径：把 label 打进源 shell（send-to-tab 语义）
   if (action === 'answer-select') {
     const option = data.action?.option;
+    if (option && option.startsWith('askans|')) {
+      const rest = option.slice('askans|'.length);
+      const sep = rest.indexOf('|');
+      if (sep < 0) return { toast: { type: 'error', content: '无效选项格式' } };
+      const tty = rest.slice(0, sep);
+      const index = Number(rest.slice(sep + 1));
+      if (!Number.isInteger(index) || index < 0) {
+        return { toast: { type: 'error', content: '无效选项编号' } };
+      }
+      return await driveAskSelectFromCard(client, data, chatId, tty, index, '');
+    }
     if (!option || !option.startsWith('answer|')) {
       return { toast: { type: 'error', content: '无效的选项' } };
     }

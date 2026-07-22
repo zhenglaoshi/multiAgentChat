@@ -26,6 +26,17 @@ export interface ChatState {
   recentReplyTty?: string;
   /** recentReplyTty 的最近命中时间戳；超过 RECENT_REPLY_TTL_MS 视为过期。 */
   recentReplyAt?: number;
+  /**
+   * 当前 armed 的 AskUserQuestion 交互（单问题单选）。PreToolUse hook 把
+   * question+options 推来、daemon 反查到 origin tty 时写入（见 server handleLarkSendText）。
+   * 存在 → 该 tty 正卡在 claude 原生"上下键选择菜单"里；飞书应答必须用 **方向键驱动**
+   * （sendKeys `(index)↓ + 回车`），而不是 `do script` 打选项文本 —— 打文本移动不了
+   * 菜单高亮、选不中（历史 bug：选项推飞书变纯文本、回复不起作用、shell 卡在选项处）。
+   * 依赖"菜单刚渲染、高亮固定在第 1 项"的前提（远程只有飞书一方在操作 → 可靠）。
+   * 被应答（点选项 / 裸数字或选项文本回复）后清除；本地作答由 PostToolUse hook 走
+   * `ask.disarm` 清除；超 ASK_ARM_TTL_MS 视为过期。options 为有序 label 列表，index 0-based。
+   */
+  askArm?: { tty: string; options: string[]; at: number };
   createdAt: number;
   lastActiveAt: number;
 }
@@ -34,3 +45,8 @@ export interface ChatState {
 export const PENDING_ANSWER_TTL_MS = 10 * 60 * 1000;
 /** recentReplyTty 过期时间：5 分钟。sticky 对话在这段时间内每次回复自动刷新。 */
 export const RECENT_REPLY_TTL_MS = 5 * 60 * 1000;
+/**
+ * askArm 过期时间：5 分钟。原生 AskUserQuestion 菜单弹出后长时间不答 → 视为已放弃 /
+ * 已在本地作答；过期后飞书点选项 / 裸数字回复不再驱动方向键（避免注错已关闭的菜单）。
+ */
+export const ASK_ARM_TTL_MS = 5 * 60 * 1000;

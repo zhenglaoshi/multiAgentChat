@@ -1,0 +1,64 @@
+#!/usr/bin/env node
+/*
+ * multiAgentChat — Claude Code PostToolUse hook (matcher=AskUserQuestion)
+ *
+ * 用途：AskUserQuestion 工具完成后（用户在**本地终端**里选完，或飞书方向键驱动选完）
+ * 触发本 hook → 通知 daemon `agent ask-disarm`，清掉飞书那张选项卡的 armed 状态
+ * （chat.askArm）。防止用户之后误点已作答菜单的卡片，把方向键注进已经不是菜单的终端
+ * ——「本地照常选、本地 PC 别受影响」的安全网。
+ *
+ * ~/.claude/settings.json 里 hooks.PostToolUse 用 matcher="AskUserQuestion" 指向本脚本。
+ * stdin 是 Claude Code 给的 JSON（含 tool_name / session_id / cwd）。
+ *
+ * Fire-and-forget：spawn detached，hook 立即 exit 0，不 block。任何异常吞掉（exit 0）。
+ * 设 MCHAT_HOOK_DEBUG=1 打开 /tmp/mchat-posttooluse-hook.log 调试。
+ *
+ * NOTE: ESM only（package.json 里 "type": "module"，require() 会 crash，见 stop-hook）。
+ */
+import { spawn } from 'node:child_process';
+import { appendFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const DEBUG = process.env['MCHAT_HOOK_DEBUG'] === '1';
+const DEBUG_LOG = '/tmp/mchat-posttooluse-hook.log';
+
+function dbg(msg) {
+  if (!DEBUG) return;
+  try {
+    appendFileSync(DEBUG_LOG, `[${new Date().toISOString()}] ${msg}\n`);
+  } catch {}
+}
+
+let raw = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', (chunk) => {
+  raw += chunk;
+});
+process.stdin.on('error', () => process.exit(0));
+process.stdin.on('end', () => {
+  try {
+    const payload = raw.trim() ? JSON.parse(raw) : {};
+    // matcher 已限定 AskUserQuestion，这里再兜一层：非 AskUserQuestion 直接跳过
+    if (payload?.tool_name && payload.tool_name !== 'AskUserQuestion') {
+      return process.exit(0);
+    }
+    const agentBin = resolve(HERE, 'agent');
+    const args = ['ask-disarm', '--origin-pid', String(process.ppid)];
+    if (typeof payload.cwd === 'string' && payload.cwd) {
+      args.push('--origin-cwd', payload.cwd);
+    }
+    dbg(`disarm ppid=${process.ppid} cwd=${payload.cwd ?? ''}`);
+    const proc = spawn(agentBin, args, {
+      stdio: ['ignore', 'ignore', 'ignore'],
+      detached: true,
+    });
+    proc.on('error', (e) => dbg('spawn error: ' + e.message));
+    proc.unref();
+    process.exit(0);
+  } catch (e) {
+    dbg('caught: ' + (e && e.message));
+    process.exit(0);
+  }
+});

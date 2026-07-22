@@ -6,6 +6,11 @@
 
 ## [未发布]
 
+### 2026-07-22
+
+**修复**
+- **飞书点 AskUserQuestion 选项 / 回复选项没反应，claude 原生选择菜单一直卡住（推到飞书是纯文本、回复不起作用的真凶）**：claude 在 tab 里弹原生 `AskUserQuestion`（上下键选择菜单）时，PreToolUse hook 已把 question+options 推成飞书卡，但点选项按钮 / 下拉 / 回复走的是 `sendKeysRaw`(=`do script`) 把**选项 label 当文本**打进菜单 —— 箭头菜单靠 ↑↓ 移动高亮、打文本移动不了 → 选不中、shell 卡在选项处。治本：应答 AskUserQuestion 一律改用**方向键驱动** `sendKeys((index)↓ + 回车)`（依赖"菜单刚渲染、高亮固定第 1 项、远程只飞书一方操作"）。① `chats/types.ts` 加 `askArm{tty,options,at}` 状态（+ `ASK_ARM_TTL_MS` 5min）；② `server handleLarkSendText` 在 question+options 时 arm（**activeTty 也 arm 并强制出卡**，否则 active tab 的选项只能纯文本、点不了）；③ `cards.originShellPushCard` 选项按钮改 `ask-select{tty,index}`、下拉改 `askans|<tty>|<index>`（携带 0-based index，不再传 label 文本）；④ `handlers` 新增 `ask-select` 回调 + `answer-select` 认 `askans|` + `driveAskSelectFromCard`（guard：arm 过期/tab 没了/本地已答则拒绝、toast 提示，不注错终端）；⑤ `dispatchSendToTab` 顶部拦截：armed 且回复能映射到选项（裸数字 / 选项文本，`resolveAskAnswerIndex`）→ 方向键驱动，映射不出照常走文本（无回归）；⑥ **本地照常选、本地 PC 别受影响**：不 deny 工具（原生菜单照常弹）+ `--auto` 受 `watchAllTabs` gate（未 watch 的独立 session 不推卡）+ 新增 `bin/mchat-posttooluse-hook`（matcher=AskUserQuestion）本地作答后 `agent ask-disarm` 清 `askArm`，防用户之后误点已作答的卡把方向键注错终端。新增 CLI `agent ask-disarm` + 控制协议 `ask.disarm` op + daemon 幂等装 PostToolUse hook。typecheck 通过；⚠ 待真机验证：原生菜单 (index)↓+回车 是否稳定选中（高亮起始位/多问题/多选场景暂只覆盖单问题单选）。（`im-lark/chats/types.ts` + `framework/control/{server,cli,protocol}.ts` + `im-lark/lark/{cards,handlers}.ts` + `bin/mchat-posttooluse-hook` + `apps/daemon/src/index.ts`）
+
 ### 2026-07-21
 
 **新增**

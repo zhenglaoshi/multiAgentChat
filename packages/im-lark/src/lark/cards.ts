@@ -1769,6 +1769,15 @@ function encodeAnswerOption(tty: string, label: string): string {
 }
 
 /**
+ * AskUserQuestion 箭头菜单下拉 value 编码：`askans|<tty>|<index>`（0-based）。
+ * 与 `answer|` 区分：answer-select 回调命中 `askans|` → sendKeys `(index)↓+回车` 驱动本地
+ * 原生选择菜单（打文本选不中，见 handlers driveAskSelectFromCard）；`answer|` 是老的打文本路径。
+ */
+function encodeAskSelect(tty: string, index: number): string {
+  return `askans|${tty}|${index}`;
+}
+
+/**
  * 非 activeTty 的 shell 通过 hook 推消息到飞书时用的卡片。
  * header 显示 `❓/💬 ttys004`。
  * 快答组件（根据 options 数）：
@@ -1800,7 +1809,11 @@ export function originShellPushCard(d: OriginShellPushCardData) {
           content: longOpts ? `${i + 1}. ${smartTrim(label, 14)}` : truncate(label, 18),
         },
         type: i === 0 ? ('primary' as const) : ('default' as const),
-        value: { action: 'send-to-tab', tty: d.tty, text: label },
+        // question（AskUserQuestion）→ ask-select：点了发方向键 (index)↓+回车 驱动本地箭头菜单；
+        // 非 question（罕见的一般快答）→ 老的 send-to-tab 打文本。
+        value: d.question
+          ? { action: 'ask-select', tty: d.tty, index: i, label }
+          : { action: 'send-to-tab', tty: d.tty, text: label },
       }))
     : null;
 
@@ -1816,7 +1829,8 @@ export function originShellPushCard(d: OriginShellPushCardData) {
             tag: 'plain_text' as const,
             content: longOpts ? `${i + 1}. ${smartTrim(label, 56)}` : truncate(label, 60),
           },
-          value: encodeAnswerOption(d.tty, label),
+          // question → askans|<tty>|<index>（方向键驱动）；否则老的 answer|<tty>|<label>（打文本）
+          value: d.question ? encodeAskSelect(d.tty, i) : encodeAnswerOption(d.tty, label),
         })),
         value: { action: 'answer-select' },
       }

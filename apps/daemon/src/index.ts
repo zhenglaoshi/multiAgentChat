@@ -84,15 +84,18 @@ async function installClaudeCodeHooks(): Promise<void> {
   const binDir = resolve(HERE, '..', '..', '..', 'bin');
   const stopHookPath = resolve(binDir, 'mchat-stop-hook');
   const preToolUseHookPath = resolve(binDir, 'mchat-pretooluse-hook');
+  const postToolUseHookPath = resolve(binDir, 'mchat-posttooluse-hook');
   const taskHookPath = resolve(binDir, 'mchat-task-hook');
 
   const stopOk = existsSync(stopHookPath);
   const preOk = existsSync(preToolUseHookPath);
+  const postOk = existsSync(postToolUseHookPath);
   const taskOk = existsSync(taskHookPath);
   if (!stopOk) logger.warn('bin/mchat-stop-hook not found', { stopHookPath });
   if (!preOk) logger.warn('bin/mchat-pretooluse-hook not found', { preToolUseHookPath });
+  if (!postOk) logger.warn('bin/mchat-posttooluse-hook not found', { postToolUseHookPath });
   if (!taskOk) logger.warn('bin/mchat-task-hook not found', { taskHookPath });
-  if (!stopOk && !preOk && !taskOk) return;
+  if (!stopOk && !preOk && !postOk && !taskOk) return;
 
   type HookEntry = {
     matcher?: string;
@@ -104,6 +107,7 @@ async function installClaudeCodeHooks(): Promise<void> {
       hooks?: {
         Stop?: HookEntry[];
         PreToolUse?: HookEntry[];
+        PostToolUse?: HookEntry[];
         [k: string]: HookEntry[] | undefined;
       };
       [k: string]: unknown;
@@ -126,6 +130,7 @@ async function installClaudeCodeHooks(): Promise<void> {
             typeof h.command === 'string' &&
             (h.command.includes('mchat-stop-hook') ||
               h.command.includes('mchat-pretooluse-hook') ||
+              h.command.includes('mchat-posttooluse-hook') ||
               h.command.includes('mchat-task-hook') ||
               h.command.includes('mchat-hook-echo')),
         );
@@ -135,6 +140,7 @@ async function installClaudeCodeHooks(): Promise<void> {
 
     const removedStop = stripOld('Stop');
     const removedPre = stripOld('PreToolUse');
+    const removedPost = stripOld('PostToolUse');
 
     if (stopOk) {
       cfg.hooks.Stop!.push({
@@ -146,6 +152,13 @@ async function installClaudeCodeHooks(): Promise<void> {
       cfg.hooks.PreToolUse!.push({
         matcher: 'AskUserQuestion',
         hooks: [{ type: 'command', command: preToolUseHookPath }],
+      });
+    }
+    if (postOk) {
+      // AskUserQuestion PostToolUse → 本地作答后关卡（清 chat.askArm，见 bin/mchat-posttooluse-hook）
+      cfg.hooks.PostToolUse!.push({
+        matcher: 'AskUserQuestion',
+        hooks: [{ type: 'command', command: postToolUseHookPath }],
       });
     }
     if (taskOk) {
@@ -160,7 +173,8 @@ async function installClaudeCodeHooks(): Promise<void> {
     logger.info('Claude Code hooks upserted', {
       stopHookPath: stopOk ? stopHookPath : null,
       preToolUseHookPath: preOk ? preToolUseHookPath : null,
-      removedOld: { Stop: removedStop, PreToolUse: removedPre },
+      postToolUseHookPath: postOk ? postToolUseHookPath : null,
+      removedOld: { Stop: removedStop, PreToolUse: removedPre, PostToolUse: removedPost },
     });
   } catch (e) {
     logger.warn('failed to upsert Claude Code hooks', {
