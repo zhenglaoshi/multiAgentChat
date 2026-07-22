@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path';
 import { approvals } from 'multiagent-orchestrator';
 import { getAgentAdapter } from 'multiagent-orchestrator';
 import { loadChat, saveChat } from '../chats/store.js';
+import { getUnmaskSecrets, setUnmaskSecrets, unmaskRemainingSec } from './redact-gate.js';
 import { recall, tokenize } from 'multiagent-orchestrator';
 import { memoryStore } from 'multiagent-orchestrator';
 import {
@@ -328,6 +329,7 @@ const HELP_TEXT = [
   '  **/wd** 或 /web /webdash        web dashboard 访问 URL（公网/LAN/mDNS/localhost 多路径）',
   '  **/quiet on/off**              静默模式：长任务只发首次+完成，中间不刷进度卡',
   '                                 （关闭状态下走自适应节流：3.5s→15s→30s→60s 随任务时长）',
+  '  **/raw on/off**                明文模式：默认脱敏出站凭证(AK/SK/密码/token→[REDACTED])；on=看明文(10min 后自动恢复)',
   '  /help                         本帮助',
   '',
   '**转发到 tab（Claude Code / skill 命令）**',
@@ -1582,6 +1584,31 @@ export async function handleCommand(
       return { kind: 'text', text: '🔊 静默模式已关闭，恢复实时进度卡（自适应节流 3.5s→60s）' };
     }
     return { kind: 'text', text: `未知参数：${arg}\n用法：/quiet on  /quiet off  /quiet status` };
+  }
+
+  if (name === 'raw') {
+    const arg = rest.toLowerCase().trim();
+    if (arg === '' || arg === 'status') {
+      const on = getUnmaskSecrets();
+      return {
+        kind: 'text',
+        text: on
+          ? `🔓 明文模式：开启（还剩 ${Math.ceil(unmaskRemainingSec() / 60)} 分钟自动恢复脱敏）\n此刻推飞书/落盘的凭证**不脱敏**。用完请 /raw off。`
+          : `🔒 脱敏中（默认）：推飞书/落盘的 AK/SK/密码/token 会被脱成 [REDACTED-X]。\n需要看明文 → /raw on（10 分钟后自动恢复）。`,
+      };
+    }
+    if (arg === 'on' || arg === 'true' || arg === '1') {
+      setUnmaskSecrets(true);
+      return {
+        kind: 'text',
+        text: '🔓 明文模式已开启：接下来 10 分钟内推飞书/落盘的凭证**不脱敏**（到期自动恢复）。\n⚠ 明文会明文外泄到手机 & 磁盘，看完请立即 /raw off。',
+      };
+    }
+    if (arg === 'off' || arg === 'false' || arg === '0') {
+      setUnmaskSecrets(false);
+      return { kind: 'text', text: '🔒 已恢复脱敏：出站凭证重新脱成 [REDACTED-X]。' };
+    }
+    return { kind: 'text', text: `未知参数：${arg}\n用法：/raw on  /raw off  /raw status` };
   }
 
   if (name === 'webdash' || name === 'wd' || name === 'web') {

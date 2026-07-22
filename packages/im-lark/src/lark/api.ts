@@ -2,6 +2,7 @@ import { createReadStream, existsSync, statSync } from 'node:fs';
 import { basename, extname, resolve as resolvePath } from 'node:path';
 import * as Lark from '@larksuiteoapi/node-sdk';
 import { logger } from 'multiagent-orchestrator';
+import { redactMaybe, redactCardMaybe } from './redact-gate.js';
 
 /**
  * 网络/瞬时错误自动重试：ENOTFOUND / ETIMEDOUT / ECONNRESET / 5xx / 429
@@ -106,6 +107,8 @@ export async function sendTextMessage(
   text: string,
   options: { plain?: boolean } = {},
 ): Promise<void> {
+  // 回显脱敏：出站前把明文凭证脱掉（除非 /raw 明文模式）。见 redact-gate.ts。
+  text = redactMaybe(text);
   if (!options.plain && looksLikeMarkdown(text)) {
     await sendMarkdownMessage(client, chatId, text);
     return;
@@ -127,6 +130,7 @@ export async function sendCardMessage(
   chatId: string,
   card: unknown,
 ): Promise<void> {
+  card = redactCardMaybe(card);
   await withRetry('sendCard', () =>
     client.im.message.create({
       params: { receive_id_type: 'chat_id' },
@@ -147,6 +151,7 @@ export async function sendCardReturnId(
   chatId: string,
   card: unknown,
 ): Promise<string> {
+  card = redactCardMaybe(card);
   const resp = await withRetry('sendCardReturnId', () =>
     client.im.message.create({
       params: { receive_id_type: 'chat_id' },
@@ -173,6 +178,7 @@ export async function patchCard(
   messageId: string,
   card: unknown,
 ): Promise<void> {
+  card = redactCardMaybe(card);
   await withRetry('patchCard', () =>
     client.im.message.patch({
       path: { message_id: messageId },
