@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import {
   tapdClientOrNull,
   listCreateProjects,
+  listWorkitemTypes,
   createTapdStory,
   listStatusTransitions,
   updateTapdStatus,
@@ -19,9 +20,9 @@ import {
 } from './cards.js';
 
 /**
- * `/tapd new` 建需求两步流程的状态机 + 编排：
- *   ① 选项目（位置）→ ② 表单填「主题(标题)+内容(描述)」→ 建。
- * 创建人/开发负责人自动=当前账号（TAPD_NICK），不问。需求类别用项目默认（不再单独选）。
+ * `/tapd new` 建需求流程的状态机 + 编排：
+ *   ① 选项目（位置）→ ② 选需求类别(workitem_type，>1 个才问；决定工作流) → ③ 表单填「主题+内容」→ 建。
+ * 创建人/开发负责人自动=当前账号（TAPD_NICK），不问。带上 workitem_type_id → 建出的需求后续改状态拿得到流转。
  * 草稿在内存（TTL 30min，建需求一般 <1min 完成；daemon 重启则重来，可接受）。
  * 所有 MCP 调用走 orchestrator 的 tasks-api（Node 侧，不经 tab 里的 claude）。
  */
@@ -33,6 +34,18 @@ interface CreateDraft {
   createdAt: number;
   ws?: number;
   wsName?: string;
+  /** ②选的需求类别(workitem_type_id)——决定工作流，建时带上，后续改状态才拿得到流转。 */
+  wt?: string;
+  wtName?: string;
+}
+
+/** v1 grey 收尾 ack 卡（把上一步选择卡 patch 成"已选"，避免重复选；v1→v1 patch 安全）。 */
+function stepAck(header: string, body: string): unknown {
+  return {
+    config: { wide_screen_mode: true, update_multi: true },
+    header: { template: 'grey', title: { tag: 'plain_text', content: header } },
+    elements: [{ tag: 'div', text: { tag: 'lark_md', content: body } }],
+  };
 }
 
 const drafts = new Map<string, CreateDraft>();
@@ -92,8 +105,13 @@ export async function startCreateFlow(chatId: string, rawArg: string): Promise<C
   };
 }
 
-/** ①选完项目 → 返回②「填主题+内容」表单卡 + 一张把原选项目卡收尾的 ack（同 v1 schema，供 patch）。 */
-export async function pickProjectShowForm(
+/**
+ * ①选完项目 → 拉该项目的**需求类别(workitem_type)**：
+ *  - 有多个 → 返回②「选类别」级联卡（决定工作流，建时带上 → 后续改状态才拿得到流转）。
+ *  - 0/1 个 → 跳过选类别（1 个则自动带上），直接进③表单。
+ * 同时返回把「选项目」卡收尾的 ack（v1→v1 patch 安全）。
+ */
+export async function pickProjectShowCategory(
   draftId: string,
   optionValue: string,
 ): Promise<CardOrError & { ack?: unknown }> {
@@ -105,16 +123,64 @@ export async function pickProjectShowForm(
   draft.ws = ws;
   draft.wsName = name;
 
+  const conn = tapdClientOrNull();
+  if (!conn) return { error: 'TAPD 未配置' };
+
+  let types: { id: string; name: string }[] = [];
+  try {
+    types = await listWorkitemTypes(conn.client, ws);
+  } catch {
+    types = []; // 拉类别失败 → 退化到"不选类别"（用项目默认），不阻断建单
+  }
+
+  const ack = stepAck('📝 新建 TAPD 需求 · ①已选项目', `已选项目：**${name}**`);
+
+  if (types.length > 1) {
+    return {
+      card: tapdSelectCard({
+        header: '📝 新建 TAPD 需求 · ②选类别',
+        body: `项目「${name}」的需求类别（决定工作流；选对了后续改状态才拿得到流转）`,
+        placeholder: `选择需求类别…（${types.length}）`,
+        action: 'tapd-nw-c',
+        draftId,
+        options: types.map((t) => ({ label: t.name, value: `${t.id}|${t.name}` })),
+      }),
+      ack,
+    };
+  }
+
+  // 0/1 个类别 → 跳过选类别，直接表单
+  if (types.length === 1) {
+    draft.wt = types[0]!.id;
+    draft.wtName = types[0]!.name;
+  }
   return {
-    card: tapdCreateFormCard({ draftId, projectName: name, ...(draft.prefillTitle ? { title: draft.prefillTitle } : {}) }),
-    // 原「选项目」卡（v1 schema）→ 收尾提示，避免用户重复选（v1→v1 patch 安全）
-    ack: {
-      config: { wide_screen_mode: true, update_multi: true },
-      header: { template: 'grey', title: { tag: 'plain_text', content: '📝 新建 TAPD 需求 · ①已选项目' } },
-      elements: [
-        { tag: 'div', text: { tag: 'lark_md', content: `已选项目：**${name}**\n请在下方新卡片填写「主题 + 内容」并创建。` } },
-      ],
-    },
+    card: tapdCreateFormCard({
+      draftId,
+      projectName: name,
+      ...(draft.prefillTitle ? { title: draft.prefillTitle } : {}),
+    }),
+    ack,
+  };
+}
+
+/** ②选完需求类别 → 存草稿 → 返回③表单卡 + 把「选类别」卡收尾的 ack。 */
+export async function pickCategoryShowForm(
+  draftId: string,
+  optionValue: string,
+): Promise<CardOrError & { ack?: unknown }> {
+  const draft = drafts.get(draftId);
+  if (!draft || !draft.ws) return { error: '草稿已过期，请重新 `/tapd new`' };
+  const { id, name } = splitOpt(optionValue);
+  draft.wt = id;
+  draft.wtName = name;
+  return {
+    card: tapdCreateFormCard({
+      draftId,
+      projectName: draft.wsName ?? String(draft.ws),
+      ...(draft.prefillTitle ? { title: draft.prefillTitle } : {}),
+    }),
+    ack: stepAck('📝 新建 TAPD 需求 · ②已选类别', `项目：**${draft.wsName ?? draft.ws}**\n需求类别：**${name}**`),
   };
 }
 
@@ -136,6 +202,7 @@ export async function submitCreate(
     workspaceId: draft.ws,
     name: title,
     ...(content ? { description: content } : {}),
+    ...(draft.wt ? { workitemTypeId: draft.wt } : {}),
     nick: conn.nick,
   });
   const projectName = draft.wsName ?? String(draft.ws);

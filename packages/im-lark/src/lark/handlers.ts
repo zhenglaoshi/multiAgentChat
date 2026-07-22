@@ -2520,15 +2520,32 @@ end run
   // ==== TAPD 建任务级联（选项目 → 选类别 → 建）+ 列表状态变更 ====
   // 全部：立即 return {}（不 toast，避免盖 patch），重活 fire-and-forget patch/send。
   if (action === 'tapd-nw-p') {
-    // ①选完项目 → 表单卡(2.0)另发**新消息**（不 patch 原 v1 选项目卡，避免跨 schema patch 不生效）；
-    // 原选项目卡 patch 成 v1 ack 收尾（v1→v1 安全）。
+    // ①选完项目 → 拉需求类别：多个→发②选类别卡(v1)，0/1个→直接发③表单卡(2.0)。
+    // 两种都是"另发新消息 + 把原选项目卡 patch 成 v1 ack 收尾"（避免跨 schema patch 不生效）。
     const draftId = value['d'] as string | undefined;
     const option = data.action?.option;
     if (!draftId || !option) return { toast: { type: 'error', content: '缺草稿/选项' } };
     const messageId = getMessageId(data);
     void (async () => {
       const flow = await import('./tapd-flow.js');
-      const r = await flow.pickProjectShowForm(draftId, option);
+      const r = await flow.pickProjectShowCategory(draftId, option);
+      if (r.error) { void sendText(client, chatId, `❌ ${r.error}`); return; }
+      const { sendCardMessage } = await import('./api.js');
+      void sendCardMessage(client, chatId, r.card);
+      if (r.ack && messageId) void patchCard(client, messageId, r.ack);
+    })();
+    return {};
+  }
+
+  if (action === 'tapd-nw-c') {
+    // ②选完需求类别 → 发③表单卡(2.0)另发新消息；原选类别卡 patch 成 v1 ack 收尾。
+    const draftId = value['d'] as string | undefined;
+    const option = data.action?.option;
+    if (!draftId || !option) return { toast: { type: 'error', content: '缺草稿/选项' } };
+    const messageId = getMessageId(data);
+    void (async () => {
+      const flow = await import('./tapd-flow.js');
+      const r = await flow.pickCategoryShowForm(draftId, option);
       if (r.error) { void sendText(client, chatId, `❌ ${r.error}`); return; }
       const { sendCardMessage } = await import('./api.js');
       void sendCardMessage(client, chatId, r.card);
