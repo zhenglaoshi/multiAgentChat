@@ -6,6 +6,11 @@
 
 ## [未发布]
 
+### 2026-07-23
+
+**新增**
+- **Fleet 主动监控（daemon 主动盯舰队：卡住哨兵 + 闲置提议 + 每早摘要）**：让 daemon 从"遥控器"进化成"副驾"——不只被动转发，还主动发现问题/机会并推飞书。`im-lark/monitor/fleet-monitor.ts` `startFleetMonitor`，**零额外 AppleScript**（全读 `watcher` 单例缓存 `getCachedTabs/getCachedHistory/getCacheAge` + `pendingTracker.recentDone/forTty`）。三件事：① **卡住哨兵**：`claude-active` 忙碌但 history **字符数**连续 M 分钟(默认 8)无变化 → 推 🟠 告警（每次停滞只报一次，用 charLen 而非行数因 claude TUI `\r` 重绘）；② **闲置提议**：tab 非 busy + 无 active pending + 最近 done 距今 ≥ N 分钟(默认 10) → 推 💡 建议卡（每个 done 只提醒一次）；③ **每早摘要**：到点(默认 09:00)推「🌅 昨夜舰队摘要」（过去 24h done + 当前在跑，仿 report-scheduler 的 fired 去重）。推送仅发给 `watchAllTabs===true` 的 chat（没在看的不打扰），`FLEET_MONITOR_ENABLED=0` 整体关，阈值/时间 env 可调。纯判定逻辑抽 `fleet-monitor-logic.ts`（`stuckDecision`/`digestDue`/`localDayStr`）+ 9 单测。typecheck 绿、76 测试全过。（`im-lark/monitor/fleet-monitor{,-logic}.ts` + `im-lark/src/index.ts` + `apps/daemon/src/index.ts` + `.env.example`）
+
 ### 2026-07-22
 
 **改动**

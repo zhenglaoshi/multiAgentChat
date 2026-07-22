@@ -29,4 +29,5 @@ export * from './chats/store.js';
 export * from './chats/types.js';
 export * from './monitor/report-scheduler.js';
 export * from './monitor/secret-scrub-scheduler.js';
+export * from './monitor/fleet-monitor.js';
 export { getUnmaskSecrets, setUnmaskSecrets, unmaskRemainingSec } from './lark/redact-gate.js';
