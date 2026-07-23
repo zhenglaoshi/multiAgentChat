@@ -7,7 +7,7 @@ import { approvals } from 'multiagent-orchestrator';
 import { getAgentAdapter } from 'multiagent-orchestrator';
 import { loadChat, saveChat } from '../chats/store.js';
 import { getUnmaskSecrets, setUnmaskSecrets, unmaskRemainingSec } from './redact-gate.js';
-import { recall, tokenize } from 'multiagent-orchestrator';
+import { ragRecall } from 'multiagent-orchestrator';
 import { memoryStore } from 'multiagent-orchestrator';
 import {
   listSubagents,
@@ -1498,20 +1498,18 @@ export async function handleCommand(
       lines.push('', '用 `/recall <关键词>` 搜历史');
       return { kind: 'text', text: lines.join('\n') };
     }
-    const keywords = tokenize(query);
-    const results = await recall({ keywords, limit: 10, minScore: 0.3 });
+    // 跨会话 RAG-lite：BM25 over memories+knowledge，中文 bigram（比原 keyword recall 准）
+    const results = await ragRecall({ query, limit: 10 });
     if (results.length === 0) {
-      return { kind: 'text', text: `🔍 没找到 "${query}" 相关的任务历史` };
+      return { kind: 'text', text: `🔍 没找到 "${query}" 相关的历史（记忆 + 知识）` };
     }
-    const lines: string[] = [`🔍 **找到 ${results.length} 条相关任务**`];
+    const lines: string[] = [`🔍 **找到 ${results.length} 条相关历史（记忆 + 知识）**`];
     for (const r of results) {
-      const m = r.memory;
-      const ago = fmtAgoSec(m.endedAt);
-      const files = m.filesProduced?.length
-        ? `\n  📎 ${m.filesProduced.slice(0, 2).join('  ')}`
-        : '';
+      const d = r.doc;
+      const tag = d.kind === 'knowledge' ? '💡知识' : '📋记忆';
+      const cwdTail = d.cwd ? homeify(d.cwd) : '';
       lines.push(
-        `**${r.score.toFixed(1)}** · ${ago} · \`${homeify(m.cwd)}\`\n  "${truncatePrompt(m.prompt, 80)}"${files}`,
+        `**${r.score.toFixed(1)}** · ${tag} · ${fmtAgoSec(d.at)}${cwdTail ? ` · \`${cwdTail}\`` : ''}\n  "${truncatePrompt(d.title, 80)}"`,
       );
     }
     return { kind: 'text', text: lines.join('\n\n') };

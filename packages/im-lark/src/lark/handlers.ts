@@ -5,7 +5,7 @@ import { PENDING_ANSWER_TTL_MS, RECENT_REPLY_TTL_MS, ASK_ARM_TTL_MS } from '../c
 import { buildDownEnterSeq, resolveAskAnswerIndex } from './ask-drive.js';
 import { logger } from 'multiagent-orchestrator';
 import { recordCwd } from 'multiagent-host-mac';
-import { formatRecallPrefix, recall, tokenize } from 'multiagent-orchestrator';
+import { ragRecall, formatRagPrefix } from 'multiagent-orchestrator';
 import { pendingTracker } from '../monitor/pending.js';
 import { recordInbound } from '../monitor/ws-watchdog.js';
 import { captureScreen, closeTabGracefully, detectSelfTty, forceEnter, getHistory, getUserFocus, launchAgentInTab, launchClaudeInTab, listTabs, newTab, openPermissionPane, send, sendKeys, sendKeysRaw } from 'multiagent-host-mac';
@@ -1196,26 +1196,24 @@ async function dispatchSendToTab(
     logger.info('system guidance injected (first time / 6h+)', { tty: tab.tty });
   }
 
-  // 2. 检索相关历史 → 注入
+  // 2. 检索相关历史 → 注入（跨会话 RAG-lite：BM25 over memories+knowledge，中文 bigram）
   let recallPrefix = '';
   try {
-    const keywords = tokenize(text);
-    const results = await recall({
+    const results = await ragRecall({
+      query: text,
       ...(tab.cwd ? { cwd: tab.cwd } : {}),
-      keywords,
       limit: 3,
-      minScore: 1.5,           // 提高门槛，避免跨任务噪音
     });
-    recallPrefix = formatRecallPrefix(results);
+    recallPrefix = formatRagPrefix(results);
     if (recallPrefix) {
-      logger.info('context injected', {
+      logger.info('context injected (rag)', {
         tty: tab.tty,
         hits: results.length,
         scores: results.map((r) => r.score.toFixed(2)),
       });
     }
   } catch (e) {
-    logger.warn('recall failed', { err: (e as Error).message });
+    logger.warn('rag recall failed', { err: (e as Error).message });
   }
 
   // claude TUI 检测前置 — 决定是否在 prompt 末尾追加短提醒
