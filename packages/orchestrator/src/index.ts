@@ -15,3 +15,4 @@ export * from './secrets/index.js';
 export * from './guard/index.js';
 export * from './tapd/index.js';
 export * from './report/index.js';
+export * from './dogfood/index.js';

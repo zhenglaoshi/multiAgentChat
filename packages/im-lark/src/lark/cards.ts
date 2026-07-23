@@ -3157,3 +3157,47 @@ export function hostPermissionCard(denied: HostPermissionStatus[]) {
     ],
   };
 }
+
+// ---- Dogfood 自审报告卡 ----
+
+export interface AuditCardFinding {
+  severity: 'high' | 'medium' | 'low';
+  category: string;
+  title: string;
+  detail?: string;
+}
+
+/** dogfood 自审报告卡：列出发现(按严重度图标)。无发现→绿；出错→红。 */
+export function auditReportCard(findings: AuditCardFinding[], opts?: { error?: string }) {
+  const sevIcon: Record<string, string> = { high: '🔴', medium: '🟠', low: '⚪' };
+  const template = opts?.error ? 'red' : findings.length ? 'orange' : 'green';
+  const elements: unknown[] = [];
+  if (opts?.error) {
+    elements.push({
+      tag: 'div',
+      text: { tag: 'lark_md', content: `自审跑失败：${opts.error}` },
+    });
+  } else if (findings.length === 0) {
+    elements.push({ tag: 'div', text: { tag: 'lark_md', content: '✓ 没发现明显问题（CHANGELOG↔docs / 报错日志 / TODO）。' } });
+  } else {
+    const blocks = findings.slice(0, 10).map((f) => {
+      const icon = sevIcon[f.severity] ?? '⚪';
+      const detail = f.detail ? `\n  <font color='grey'>${f.detail}</font>` : '';
+      return `${icon} **[${f.category}]** ${f.title}${detail}`;
+    });
+    elements.push({ tag: 'div', text: { tag: 'lark_md', content: blocks.join('\n\n') } });
+    elements.push({ tag: 'hr' });
+    elements.push({
+      tag: 'div',
+      text: { tag: 'lark_md', content: '<font color=\'grey\'>只报告不改仓库(v1)。要修哪条直接 @tab 派活给 claude。</font>' },
+    });
+  }
+  return {
+    config: { wide_screen_mode: true },
+    header: {
+      template,
+      title: { tag: 'plain_text', content: `🔧 自审报告${findings.length ? ` · ${findings.length} 条` : ''}` },
+    },
+    elements,
+  };
+}

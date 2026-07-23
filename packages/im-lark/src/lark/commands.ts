@@ -7,6 +7,7 @@ import { approvals } from 'multiagent-orchestrator';
 import { getAgentAdapter } from 'multiagent-orchestrator';
 import { loadChat, saveChat } from '../chats/store.js';
 import { getUnmaskSecrets, setUnmaskSecrets, unmaskRemainingSec } from './redact-gate.js';
+import { runAuditAndReport } from '../monitor/dogfood-scheduler.js';
 import { ragRecall } from 'multiagent-orchestrator';
 import { memoryStore } from 'multiagent-orchestrator';
 import {
@@ -333,6 +334,7 @@ const HELP_TEXT = [
   '  **/raw on/off**                明文模式：默认脱敏出站凭证(AK/SK/密码/token→[REDACTED])；on=看明文(10min 后自动恢复)',
   '  **/reload**                     从飞书一键重启 daemon（加载最新代码 + 重装 hooks；launchd 托管时有效）',
   '  **/perm-reset**                 清空"学习放行"库（高危命令审批的自动放行记录，恢复每次都问）',
+  '  **/selfaudit** 或 /dogfood      项目自审：claude -p 审 CHANGELOG↔docs/报错日志/TODO → 报告卡（只报告不改码）',
   '  /help                         本帮助',
   '',
   '**转发到 tab（Claude Code / skill 命令）**',
@@ -1639,6 +1641,15 @@ export async function handleCommand(
     return {
       kind: 'text',
       text: `🧹 已清空学习放行库（${n} 条）。所有高危命令恢复"每次都问",直到重新学习。`,
+    };
+  }
+
+  if (name === 'selfaudit' || name === 'dogfood') {
+    // fire-and-forget：跑 claude -p 自审(1-2min)完成后由 dogfood-scheduler 用存下的 client 推报告卡
+    void runAuditAndReport(chatId);
+    return {
+      kind: 'text',
+      text: '🔧 自审进行中…（claude -p 审 CHANGELOG↔docs / 报错日志 / TODO/FIXME，约 1-2min）完成后推「自审报告」卡。',
     };
   }
 

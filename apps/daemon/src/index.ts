@@ -26,6 +26,7 @@ import { startCareyclawKeyReminder } from 'multiagent-im-lark';
 import { startReportScheduler } from 'multiagent-im-lark';
 import { startSecretScrubScheduler } from 'multiagent-im-lark';
 import { startFleetMonitor } from 'multiagent-im-lark';
+import { startDogfoodScheduler } from 'multiagent-im-lark';
 import { attachWatcherToLark } from 'multiagent-im-lark';
 import { installWsWatchdog } from 'multiagent-im-lark';
 import { attachStageMemoryListener } from 'multiagent-orchestrator';
@@ -1389,6 +1390,7 @@ async function main() {
   if (!isIntegrationDisabled('report')) startReportScheduler(lark.client);
   startSecretScrubScheduler(lark.client); // opt-in: 需 SECRET_SCRUB_ENABLED=1
   startFleetMonitor(lark.client); // 主动监控：卡住哨兵/闲置提议/每早摘要（FLEET_MONITOR_ENABLED=0 关）
+  startDogfoodScheduler(lark.client); // 自审：/audit 手动 + 每周(DOGFOOD_ENABLED=1)
   await ensureSkillInstalled();
   // skill 型对接（careyclaw 等）：缺失则幂等自动安装官方技能（失败静默，不阻塞启动）
   for (const it of INTEGRATIONS) if (it.skillType) void ensureIntegrationSkills(it);
