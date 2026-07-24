@@ -39,6 +39,7 @@ const SYSTEM_GUIDANCE = [
   '    退出码：0=answered，1=cancelled，2=timeout',
   '- 不要调 AskUserQuestion 或在 TUI 里等键盘输入，用户手机端看不见 TUI —— **一定要用 `agent lark ask`**',
   '- 高风险操作（写数据库 / git push --force / rm -rf / 改 .env）先 `agent request-approval --title --body` 等批准',
+  '- **改代码必过评审门**：动了产品代码、交付/提交前，用 Task 工具**并行**派 `code-reviewer` + `security-reviewer` 审 `git diff`；有 high/critical 问题就按建议改、再复审，直到两者都通过才算完成（纯文档/配置/注释改动豁免）。',
   '- 不要直接调任何 webhook（功能弱、不支持文件）',
   '- **「龙虾」= CareyClaw 平台**（bot.ihealthcn.com）。用户说「龙虾/careyclaw 有没有XX接口 / 这个接口怎么调 / 帮我拿XX数据」→ 触发已装的 **careyclaw-apis** 技能（检索/试调平台业务 API）；说「龙虾/careyclaw 部署/发布应用」→ 触发 **careyclaw-deploy** 技能。首次会给浏览器授权链接（用 `agent lark send-text` 把链接推给用户去点）。',
   '',
