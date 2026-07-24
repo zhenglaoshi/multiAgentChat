@@ -94,6 +94,14 @@ export const INTEGRATIONS: Integration[] = [
     ],
   },
   {
+    key: 'perm-gate', name: '高危命令审批', group: '其他', anyOf: true,
+    desc: 'claude 跑高危 shell 命令前推飞书审批卡(默认全程开)。此处设【授权等级】默认档:0全自动/1仅致命(默认)/2标准/3严格/4偏执。随时改用飞书 /perm-level(弹卡即切,无需重启)',
+    fields: [
+      { env: 'PERM_LEVEL', label: '授权等级 0-4(默认1仅致命)', placeholder: '1' },
+      { env: 'PERM_LEARN_THRESHOLD', label: '学习放行阈值(同命令批准N次自动放行,默认3)', placeholder: '3' },
+    ],
+  },
+  {
     key: 'secret-guard', name: '明文凭证脱敏', group: '其他', anyOf: true,
     desc: '回显脱敏(推飞书/落盘前脱 AK/SK/密码/token)默认全程开启 + 已内置 skill；此处配【定期扫历史会话】。手动:agent secrets scan|scrub；飞书 /raw 临时看明文',
     fields: [

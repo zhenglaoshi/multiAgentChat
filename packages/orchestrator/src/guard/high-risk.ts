@@ -44,7 +44,7 @@ const RULES: RiskRule[] = [
  * 避免 `echo "rm -rf /"`、`git commit -m "…rm -rf…"`、写文档提到危险命令等**误报**
  * （那些危险文本是数据、不会执行）。
  */
-function stripDataLiterals(cmd: string): string {
+export function stripDataLiterals(cmd: string): string {
   let s = cmd;
   // heredoc 体：<<['"]?DELIM ... 换行 DELIM
   s = s.replace(/<<-?\s*(['"]?)([A-Za-z_]\w*)\1[\s\S]*?\n\s*\2(?=\s|$)/g, ' ');
@@ -59,7 +59,7 @@ function stripDataLiterals(cmd: string): string {
  * 命中这些时，引号里的内容其实要跑 → 连**原始命令**一起扫（不放过 `sh -c "rm -rf /"`、
  * `mysql -e "DROP DATABASE"`），不能只看剥掉数据后的视图。
  */
-const EXEC_STRING_RE =
+export const EXEC_STRING_RE =
   /\beval\b|\b(?:sh|bash|zsh|dash|ksh)\s+-\w*c\b|\b(?:mysql|psql|mongosh|mongo|redis-cli|sqlite3|clickhouse-client)\b[^\n]*\s-[ec]\b|\b(?:node|python3?|ruby|perl)\s+-e\b/i;
 
 /**

@@ -51,7 +51,7 @@ const CLAUDE_TUI_REMINDER = [
   '⚠ 回到飞书 — 飞书看不见你的 TUI 屏幕。**先在 TUI 完整回答用户，然后再** `agent lark send-text "<同样一份摘要>"` 推到飞书（两个渠道并行，不能只推不答）。要用户从选项里选（单/多选）或填文本，**用 `agent lark ask single|multi|input`**（stdout 拿答案 JSON），不要用 AskUserQuestion 或在 TUI 里 wait 键盘。',
 ].join('\n');
 import { patchCard, sendCardReturnId, sendImage } from './api.js';
-import { ackCard, askCard, batchProgressCard, browseCard, careyclawKeyCard, careyclawKeyFormCard, chainProgressCard, closeIdleConfirmCard, closeTabConfirmCard, connectConfirmCard, connectFormCard, connectStatusCard, planCard, progressCard, receiptCard, tapdClaimCard, type BatchTaskItem, type ChainStepItem } from './cards.js';
+import { ackCard, askCard, batchProgressCard, browseCard, careyclawKeyCard, careyclawKeyFormCard, chainProgressCard, closeIdleConfirmCard, closeTabConfirmCard, connectConfirmCard, connectFormCard, connectStatusCard, permLevelCard, planCard, progressCard, receiptCard, tapdClaimCard, type BatchTaskItem, type ChainStepItem } from './cards.js';
 import { getCareyclawKeyStatus, setCareyclawKey } from 'multiagent-orchestrator';
 import { generatePlan, getPlan } from 'multiagent-orchestrator';
 import { getPerfItem, savePerfItem, markPerfSnoozed, markPerfIgnoredForever, createPerfStory } from 'multiagent-orchestrator';
@@ -1884,6 +1884,19 @@ async function handleCardAction(
       client, chatId,
       `📂 已在 Mac 打开${label}授权面板。\n到电脑旁勾选 node（launchd 模式）/ Terminal（dev 模式）后，回来点【🔄 我授好了 · 重启复检】。\n⚠️ 授权只能在 Mac 本地点，远程点不了。`,
     );
+    return {};
+  }
+
+  if (action === 'perm-level-set') {
+    const level = Number(value['level']);
+    if (!Number.isInteger(level) || level < 0 || level > 4) {
+      return { toast: { type: 'error', content: '无效等级' } };
+    }
+    const orch = await import('multiagent-orchestrator');
+    const set = orch.setPermLevel(level);
+    // patch 卡刷新成"已选中该档"（return {} 让 patch 生效，别 return toast）
+    const mid = getMessageId(data);
+    if (mid) void patchCard(client, mid, permLevelCard(set, orch.PERM_LEVEL_LABELS)).catch(() => {});
     return {};
   }
 

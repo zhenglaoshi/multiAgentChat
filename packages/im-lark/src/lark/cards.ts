@@ -3158,6 +3158,35 @@ export function hostPermissionCard(denied: HostPermissionStatus[]) {
   };
 }
 
+// ---- 权限授权等级卡 ----
+
+/** 权限授权等级选择卡：5 档按钮，当前档 primary 标记，点击即切(action perm-level-set)。 */
+export function permLevelCard(current: number, labels: Record<number, string>) {
+  const rows = [0, 1, 2, 3, 4].map((n) => ({
+    tag: 'div',
+    text: {
+      tag: 'lark_md',
+      content: `${n === current ? '**▶ ' : ''}L${n} · ${labels[n] ?? ''}${n === current ? '（当前）**' : ''}`,
+    },
+  }));
+  const buttons = [0, 1, 2, 3, 4].map((n) => ({
+    tag: 'button' as const,
+    text: { tag: 'plain_text' as const, content: n === current ? `✓ L${n}` : `L${n}` },
+    type: n === current ? ('primary' as const) : ('default' as const),
+    value: { action: 'perm-level-set', level: n },
+  }));
+  return {
+    config: { wide_screen_mode: true, update_multi: true },
+    header: { template: 'blue', title: { tag: 'plain_text', content: '🎚 权限审批授权等级' } },
+    elements: [
+      ...rows,
+      { tag: 'hr' },
+      { tag: 'action', actions: buttons },
+      { tag: 'div', text: { tag: 'lark_md', content: '<font color=\'grey\'>选的档决定"高危拦到哪一层"；越低越自动、越高越谨慎。学习型放行在各档内仍生效。</font>' } },
+    ],
+  };
+}
+
 // ---- Dogfood 自审报告卡 ----
 
 export interface AuditCardFinding {

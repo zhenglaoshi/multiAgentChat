@@ -6,6 +6,11 @@
 
 ## [未发布]
 
+### 2026-07-24
+
+**新增**
+- **权限审批细分等级（自治档位，0-4 可选 + `/connect` 对接项）**：把权限 gate 从"高危一刀切"升级成 **5 档阈值**。命令按风险分 4 tier（catastrophic 致命 / high 高危 / medium 中危 / none），选的 **LEVEL 决定拦到哪层**：L0 全自动(不拦)、**L1 仅致命(默认)**、L2 标准(=原高危全拦)、L3 严格(+中危:任何 push/rm/publish/kill/chmod)、L4 偏执(每条都问)。① `orchestrator/guard/perm-level.ts`：`riskTier`(复用 `stripDataLiterals`/`EXEC_STRING_RE`/`isHighRiskCommand` 防引号误判) + `tierGatedAtLevel` + `getPermLevel`(运行时覆盖 `data/guard/perm-level.json` > `PERM_LEVEL` env > 默认 1) + `setPermLevel`；② `server handlePermissionGate` 改用 `shouldGate(cmd, level)`，审批卡显示 tier + 当前档；③ 飞书 **`/perm-level`**（弹 5 档选择卡，点即切、无需重启）+ `/perm-level 0-4` 速设；④ **`/connect` 加「高危命令审批」对接项**（设 `PERM_LEVEL`/`PERM_LEARN_THRESHOLD` 默认，用户反馈 connect 里没有）。10 单测（`riskTier`/`tierGatedAtLevel`/`shouldGate`）。默认 L1 比之前 L2 更宽松（呼应误报困扰）。（`orchestrator/guard/{perm-level,high-risk}.ts` + `framework/control/server.ts` + `im-lark/lark/{cards,handlers,commands}.ts` + `orchestrator/integrations/registry.ts`）
+
 ### 2026-07-23
 
 **新增**

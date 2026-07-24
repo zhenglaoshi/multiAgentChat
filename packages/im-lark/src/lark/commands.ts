@@ -47,6 +47,7 @@ import {
 import {
   chooseDirCard,
   dashboardCard,
+  permLevelCard,
   tabsCard,
   templateDetailCard,
   templateListCard,
@@ -333,6 +334,7 @@ const HELP_TEXT = [
   '                                 （关闭状态下走自适应节流：3.5s→15s→30s→60s 随任务时长）',
   '  **/raw on/off**                明文模式：默认脱敏出站凭证(AK/SK/密码/token→[REDACTED])；on=看明文(10min 后自动恢复)',
   '  **/reload**                     从飞书一键重启 daemon（加载最新代码 + 重装 hooks；launchd 托管时有效）',
+  '  **/perm-level**                 权限审批授权等级（0全自动~4偏执，弹卡选或 /perm-level 0-4）',
   '  **/perm-reset**                 清空"学习放行"库（高危命令审批的自动放行记录，恢复每次都问）',
   '  **/selfaudit** 或 /dogfood      项目自审：claude -p 审 CHANGELOG↔docs/报错日志/TODO → 报告卡（只报告不改码）',
   '  /help                         本帮助',
@@ -1642,6 +1644,21 @@ export async function handleCommand(
       kind: 'text',
       text: `🧹 已清空学习放行库（${n} 条）。所有高危命令恢复"每次都问",直到重新学习。`,
     };
+  }
+
+  if (name === 'perm-level' || name === 'permlevel') {
+    const orch = await import('multiagent-orchestrator');
+    const arg = rest.trim();
+    if (arg === '') {
+      // 无参 → 弹等级选择卡（点按钮即切）
+      return { kind: 'card', card: permLevelCard(orch.getPermLevel(), orch.PERM_LEVEL_LABELS) };
+    }
+    const n = Number(arg.replace(/^L/i, ''));
+    if (!Number.isInteger(n) || n < 0 || n > 4) {
+      return { kind: 'text', text: '用法：/perm-level（弹卡选）或 /perm-level 0-4' };
+    }
+    const set = orch.setPermLevel(n);
+    return { kind: 'text', text: `🎚 授权等级已设为 **L${set}** · ${orch.PERM_LEVEL_LABELS[set]}` };
   }
 
   if (name === 'selfaudit' || name === 'dogfood') {
