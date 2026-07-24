@@ -286,6 +286,41 @@ async function ensureSkillInstalled(): Promise<void> {
 }
 
 /**
+ * 幂等把项目自带的 subagent 定义 agents/*.md upsert 到 ~/.claude/agents/。
+ * 让 security-reviewer 等随项目走、可复现（跟 skill 安装同思路）。内容相同则跳过。
+ */
+async function ensureAgentsInstalled(): Promise<void> {
+  const HERE = fileURLToPath(new URL('.', import.meta.url));
+  const projectRoot = resolve(HERE, '..', '..', '..');
+  const srcDir = join(projectRoot, 'agents');
+  if (!existsSync(srcDir)) return;
+  const dstDir = join(homedir(), '.claude', 'agents');
+  try {
+    const { readdir } = await import('node:fs/promises');
+    await mkdir(dstDir, { recursive: true });
+    for (const f of await readdir(srcDir)) {
+      if (!f.endsWith('.md')) continue;
+      const src = join(srcDir, f);
+      const dst = join(dstDir, f);
+      try {
+        const srcContent = await readFile(src, 'utf8');
+        let dstContent: string | null = null;
+        if (existsSync(dst)) {
+          try { dstContent = await readFile(dst, 'utf8'); } catch { /* ignore */ }
+        }
+        if (dstContent === srcContent) continue;
+        await writeFile(dst, srcContent, 'utf8');
+        logger.info(dstContent === null ? 'agent installed' : 'agent updated', { name: f });
+      } catch (e) {
+        logger.warn('agent upsert failed', { name: f, err: (e as Error).message });
+      }
+    }
+  } catch (e) {
+    logger.warn('ensureAgentsInstalled failed', { err: (e as Error).message });
+  }
+}
+
+/**
  * 检查 Node 版本。低于 22 直接 die —— ESM + tsx watch + fetch 都需要 22+。
  */
 function assertNodeVersion(): void {
@@ -1392,6 +1427,7 @@ async function main() {
   startFleetMonitor(lark.client); // 主动监控：卡住哨兵/闲置提议/每早摘要（FLEET_MONITOR_ENABLED=0 关）
   startDogfoodScheduler(lark.client); // 自审：/audit 手动 + 每周(DOGFOOD_ENABLED=1)
   await ensureSkillInstalled();
+  await ensureAgentsInstalled();
   // skill 型对接（careyclaw 等）：缺失则幂等自动安装官方技能（失败静默，不阻塞启动）
   for (const it of INTEGRATIONS) if (it.skillType) void ensureIntegrationSkills(it);
   await installClaudeCodeHooks();
