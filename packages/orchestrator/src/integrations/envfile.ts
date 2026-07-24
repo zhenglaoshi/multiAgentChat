@@ -2,6 +2,7 @@ import { readFile, writeFile, rename } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { INTEGRATIONS, type Integration } from './registry.js';
 import { skillsInstalled } from './skills.js';
+import { claudeMdBlockPresent } from './claudemd.js';
 import { codexAgentStatus } from '../agents/codex-status.js';
 
 const ENV_PATH = resolve('./.env');
@@ -77,6 +78,7 @@ export interface IntegrationStatus {
   core: boolean;
   skill: boolean;      // skill 型对接（装技能而非填 env，无停用）
   agent?: boolean;     // agent 型对接（检测 CLI/登录/notify，如 codex）
+  claudeMd?: boolean;  // claudeMd 型对接（写/删全局 CLAUDE.md 规则块，断开=真删）
   missing: string[];   // 缺哪些 env / 技能 / 前置条件
 }
 
@@ -89,6 +91,10 @@ export async function integrationStatuses(): Promise<IntegrationStatus[]> {
     if (it.skillType) {
       const connected = await skillsInstalled(it);
       return { key: it.key, name: it.name, group: it.group, desc: it.desc, connected, disabled: false, core: false, skill: true, missing: connected ? [] : (it.skills ?? []).map((s) => s.name) };
+    }
+    if (it.claudeMdType) {
+      const connected = await claudeMdBlockPresent(it);
+      return { key: it.key, name: it.name, group: it.group, desc: it.desc, connected, disabled: false, core: false, skill: false, claudeMd: true, missing: [] };
     }
     if (it.agentType === 'codex') {
       const st = await codexAgentStatus();

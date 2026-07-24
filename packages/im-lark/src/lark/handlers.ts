@@ -39,7 +39,6 @@ const SYSTEM_GUIDANCE = [
   '    退出码：0=answered，1=cancelled，2=timeout',
   '- 不要调 AskUserQuestion 或在 TUI 里等键盘输入，用户手机端看不见 TUI —— **一定要用 `agent lark ask`**',
   '- 高风险操作（写数据库 / git push --force / rm -rf / 改 .env）先 `agent request-approval --title --body` 等批准',
-  '- **改代码必过评审门**：动了产品代码、交付/提交前，用 Task 工具**并行**派 `code-reviewer` + `security-reviewer` 审 `git diff`；有 high/critical 问题就按建议改、再复审，直到两者都通过才算完成（纯文档/配置/注释改动豁免）。',
   '- 不要直接调任何 webhook（功能弱、不支持文件）',
   '- **「龙虾」= CareyClaw 平台**（bot.ihealthcn.com）。用户说「龙虾/careyclaw 有没有XX接口 / 这个接口怎么调 / 帮我拿XX数据」→ 触发已装的 **careyclaw-apis** 技能（检索/试调平台业务 API）；说「龙虾/careyclaw 部署/发布应用」→ 触发 **careyclaw-deploy** 技能。首次会给浏览器授权链接（用 `agent lark send-text` 把链接推给用户去点）。',
   '',
@@ -57,7 +56,7 @@ import { getCareyclawKeyStatus, setCareyclawKey } from 'multiagent-orchestrator'
 import { generatePlan, getPlan } from 'multiagent-orchestrator';
 import { getPerfItem, savePerfItem, markPerfSnoozed, markPerfIgnoredForever, createPerfStory } from 'multiagent-orchestrator';
 import type { PerfItem } from 'multiagent-orchestrator';
-import { integrationStatuses, getIntegration, upsertEnvKeys, setIntegrationDisabled, installIntegrationSkills } from 'multiagent-orchestrator';
+import { integrationStatuses, getIntegration, upsertEnvKeys, setIntegrationDisabled, installIntegrationSkills, installClaudeMdBlock, removeClaudeMdBlock } from 'multiagent-orchestrator';
 import { spawn } from 'node:child_process';
 import { utimesSync } from 'node:fs';
 
@@ -1590,6 +1589,19 @@ async function handleCardAction(
       })();
       return { toast: { type: 'info', content: '安装技能中…' } };
     }
+    // claudeMd 型（代码评审门）：往全局 ~/.claude/CLAUDE.md 写规则块，即刻生效不重启
+    if (it.claudeMdType) {
+      logger.info('connect claudeMd 写入(飞书触发)', { key: it.key, by: `feishu:${data.operator?.open_id ?? 'unknown'}` });
+      (async () => {
+        try {
+          await installClaudeMdBlock(it);
+          void sendText(client, chatId, `📥 已对接「${it.name}」：规则已写入全局 ~/.claude/CLAUDE.md，即刻对你**所有项目**的每个 claude session 生效（无需重启）。断开：/connect 里点该项的「🗑 移除规则」。`);
+        } catch (e) {
+          void sendText(client, chatId, `❌ 写入规则失败：${(e as Error).message}`);
+        }
+      })();
+      return { toast: { type: 'info', content: '写入规则中…' } };
+    }
     // agent 型（codex）：检测状态 + 发引导，不填 env 不装技能
     if (it.agentType === 'codex') {
       (async () => {
@@ -1690,6 +1702,24 @@ async function handleCardAction(
       }
     })();
     return {}; // 同上：靠卡刷新 + sendText 反馈，不 return toast
+  }
+
+  if (action === 'connect-remove') {
+    // claudeMd 型断开：真删全局 CLAUDE.md 里的规则块（区别于 env 型的软停用 connect-disable）
+    const key = value['key'] as string | undefined;
+    const it = key ? getIntegration(key) : undefined;
+    if (!it) return { toast: { type: 'error', content: '未知对接' } };
+    logger.info('connect claudeMd 移除(飞书触发)', { key: it.key, by: `feishu:${data.operator?.open_id ?? 'unknown'}` });
+    (async () => {
+      try {
+        await removeClaudeMdBlock(it);
+        await patchOrigToReceipt(client, data, `🗑 已断开 · ${it.name}`, '规则已从全局 CLAUDE.md 删除', 'grey');
+        void sendText(client, chatId, `🗑 已断开「${it.name}」：规则块已从全局 ~/.claude/CLAUDE.md 删除，后续 claude session 不再受此约束（无需重启）。想恢复就 /connect 重新对接。`);
+      } catch (e) {
+        void sendText(client, chatId, `❌ 移除规则失败：${(e as Error).message}`);
+      }
+    })();
+    return {}; // 靠卡刷新 + sendText 反馈，不 return toast（会盖 patchCard）
   }
 
   if (action === 'perf-claim') {

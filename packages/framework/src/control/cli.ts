@@ -1570,6 +1570,18 @@ async function cmdConnect(flags: Flags): Promise<void> {
     else die(`技能安装失败：${r.failed.join(', ')}`);
     return;
   }
+  // claudeMd 型（代码评审门）：往全局 ~/.claude/CLAUDE.md 写规则块，即刻生效不重启
+  if (it.claudeMdType) {
+    const { installClaudeMdBlock, removeClaudeMdBlock } = await import('multiagent-orchestrator');
+    if (flags.positional[1] === 'remove') {
+      await removeClaudeMdBlock(it);
+      stdout.write(`✓ 已从全局 ~/.claude/CLAUDE.md 移除「${it.name}」规则。\n`);
+      return;
+    }
+    await installClaudeMdBlock(it);
+    stdout.write(`✓ 已把「${it.name}」规则写入全局 ~/.claude/CLAUDE.md（对所有项目的 claude session 生效，无需重启）。\n  断开：飞书 /connect → 该项「移除规则」，或 \`agent connect ${it.key} remove\`。\n`);
+    return;
+  }
   // agent 型（codex）：检测 CLI/登录/notify + 给引导，不填 env
   if (it.agentType === 'codex') {
     const { codexAgentStatus, codexNextStep } = await import('multiagent-orchestrator');

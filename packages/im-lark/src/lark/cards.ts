@@ -2787,13 +2787,15 @@ export function connectStatusCard(statuses: IntegrationStatus[]) {
         ? (s.skill ? "<font color='grey'>⬜ 未安装</font>" : s.agent ? "<font color='grey'>⬜ 未就绪</font>" : "<font color='grey'>⬜ 未对接</font>")
         : s.disabled
           ? "<font color='orange'>⏸ 已停用（配置保留）</font>"
-          : (s.skill ? "<font color='green'>✅ 已安装</font>" : s.agent ? "<font color='green'>✅ 就绪</font>" : "<font color='green'>✅ 已启用</font>");
+          : (s.skill ? "<font color='green'>✅ 已安装</font>" : s.agent ? "<font color='green'>✅ 就绪</font>" : s.claudeMd ? "<font color='green'>✅ 已写入全局</font>" : "<font color='green'>✅ 已启用</font>");
       const todo = s.agent && s.missing.length ? ` · <font color='orange'>待办：${s.missing.join('、')}</font>` : '';
       elements.push({ tag: 'div', text: { tag: 'lark_md', content: `${badge}　**${s.name}**\n<font color='grey'>${s.desc}</font>${todo}` } });
       if (s.core) continue; // 核心(飞书)不可停用
       let btn: unknown | null = null;
       if (!s.connected) {
-        btn = { tag: 'button', text: { tag: 'plain_text', content: s.skill ? `📥 安装` : s.agent ? `📋 查看引导` : `🔌 对接` }, type: 'primary', value: { action: 'connect-config', key: s.key } };
+        btn = { tag: 'button', text: { tag: 'plain_text', content: s.skill ? `📥 安装` : s.agent ? `📋 查看引导` : s.claudeMd ? `📥 写入规则` : `🔌 对接` }, type: 'primary', value: { action: 'connect-config', key: s.key } };
+      } else if (s.claudeMd) {
+        btn = { tag: 'button', text: { tag: 'plain_text', content: `🗑 移除规则` }, type: 'default', value: { action: 'connect-remove', key: s.key } }; // 断开=真删全局块
       } else if (s.skill || s.agent) {
         continue; // skill 型已装 / agent 型已就绪：无需停用
       } else if (s.disabled) {

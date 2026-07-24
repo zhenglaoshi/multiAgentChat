@@ -28,6 +28,10 @@ export interface Integration {
   skills?: IntegrationSkill[];
   /** agent 型对接：不填 env 不装技能，"对接"=检测 CLI 装没装/登录没/notify 钩子装没装 + 给引导（如 codex）。 */
   agentType?: 'codex';
+  /** claudeMd 型对接：对接=往全局 ~/.claude/CLAUDE.md 写规则块，断开=删掉。规则内容见 claudeMdRule。 */
+  claudeMdType?: boolean;
+  /** claudeMd 型的规则正文（写入全局 CLAUDE.md，外面自动包 sentinel 标记）。 */
+  claudeMdRule?: string;
 }
 
 /** 本项目所有可选对接。状态由 .env 里对应 env 是否有值判定。 */
@@ -67,6 +71,30 @@ export const INTEGRATIONS: Integration[] = [
     key: 'codex', name: 'Codex CLI (多 agent)', group: '开发',
     desc: '让 codex tab 也能远程调度 + 响应回传飞书（对标 claude）。检测 CLI/登录/notify 钩子',
     fields: [], agentType: 'codex',
+  },
+  {
+    key: 'review-gate', name: '代码评审门', group: '开发', claudeMdType: true,
+    desc: '对接=往全局 ~/.claude/CLAUDE.md 写一条规则：任意项目改代码、交付/提交前，必须并行派 code-reviewer + security-reviewer 审 git diff，有 high/critical 就改到过为止（纯文档/配置豁免）。断开即从全局删除。无需重启，即刻对所有项目的 claude session 生效',
+    fields: [],
+    claudeMdRule: [
+      '## 代码改动必过评审门（强制）',
+      '',
+      '在**任意项目**里改动 / 新增代码后，把结果交付（宣布完成 / 提交 / 结束回合）**之前**，',
+      '**必须**用 Task 工具**并行**派两个 subagent 审本次改动：',
+      '',
+      '- **`code-reviewer`** —— 质量：正确性隐患(空值/错误处理/资源泄露/竞态)、可读可维护、',
+      '  一致性、可测试性、架构耦合(循环依赖/分层)、健壮性、性能、依赖、可观测性、文档。',
+      '- **`security-reviewer`** —— 安全：注入、越权、密钥硬编码、危险命令/代码执行、',
+      '  SSRF/XXE、不安全反序列化、依赖漏洞、敏感数据泄露、加密误用。',
+      '',
+      '审的对象是 `git diff`（或本次改动的文件）。拿到结果后：',
+      '',
+      '1. 有 **high / critical** 问题 → **按建议改**，改完**再派这俩复审**，如此循环，直到两者都无 high+ 问题。',
+      '2. 只剩 low/medium 或无问题 → 可以交付；把审查结论简述给用户。',
+      '',
+      '**豁免**：纯文档 / 注释 / 配置 / 依赖锁文件的改动、或"本身就是在跑评审 / 只读分析"的会话，可跳过。',
+      '别把评审跳过当默认——**只要动了产品代码，就走这道门**。',
+    ].join('\n'),
   },
   {
     key: 'wecom', name: '企业微信', group: '传输',
