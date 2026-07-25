@@ -6,6 +6,11 @@
 
 ## [未发布]
 
+### 2026-07-25
+
+**修复**
+- **Stop hook meta 过滤补英文签名（拦掉「知识提取/协作效率评估器」英文 meta 漏推飞书）**：内部分析器（知识提取器 = `orchestrator/knowledge`；协作效率评估器 = 外部 prompt）跑在**交互式 claude**（命令行没 `-p`，headless 检测抓不到）里、且**输入为空**时，模型会回一段"你没给我数据，请把会话贴来"的 meta 澄清，被 `bin/mchat-stop-hook` 当普通回复转发到飞书（纯噪音，用户已两次反馈）。原 `looksLikeInternalMeta()` 签名只认下划线 JSON key（`prompt_quality`/`one_shot`）+ 中文词（`协作效率`/`提炼知识条目`），而这类 meta 回成**英文散文**（"prompt quality" 带空格、"one-shot" 带连字符、"collaboration metrics"、"Extracting knowledge entries"）时全绕过。补：① 下划线/空格/连字符归一（`prompt[\s_-]?quality`、`one[\s_-]?shot`）；② 协作效率英文（`collaboration (metrics|efficiency)`）；③ 知识提取英文"要数据"型（`knowledge entr…` + `incomplete/provide/paste/point me to`）。真实 hook 端到端验证：泄漏原文被 skip、3 条正常回复不误杀。可 `MCHAT_STOP_NO_META_FILTER=1` 关。（`bin/mchat-stop-hook` `looksLikeInternalMeta`）
+
 ### 2026-07-24
 
 **新增**

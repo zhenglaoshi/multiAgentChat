@@ -76,13 +76,23 @@ function isHeadlessSession() {
 function looksLikeInternalMeta(text) {
   if (process.env['MCHAT_STOP_NO_META_FILTER'] === '1') return false;
   const t = text;
-  if (/prompt_quality/.test(t)) return true;                       // 评分 schema 专有 key
-  if (/corrections/.test(t) && /one_shot/.test(t)) return true;    // 评分 schema 组合
-  if (/协作效率/.test(t)) return true;                              // 评估器专有词
-  // 知识提取器"要数据"型 meta：提炼/提取知识条目 + 请提供/缺少输入/粘贴
+  // —— 强签名：JSON schema 专有 key（下划线形态）/ 中文评估器专有词，正常回复几乎不出现，单条命中即判定 ——
+  if (/prompt_quality/.test(t)) return true;                          // 评分 schema key（下划线）
+  if (/corrections/.test(t) && /one_shot/.test(t)) return true;       // 评分 schema 组合（下划线）
+  if (/协作效率/.test(t)) return true;                                 // 中文评估器专有词
+  // —— 知识提取器"要数据"型 meta（中文）：提炼/提取知识条目 + 请提供/缺少输入/粘贴 ——
   if (/(提炼|提取)[^。\n]{0,8}知识条目/.test(t) && /(请提供|缺少输入|粘贴过来)/.test(t)) {
     return true;
   }
+  // —— 英文 meta：散文里的 "prompt quality"/"one-shot"/"collaboration efficiency"/"knowledge entries"
+  //    在本项目语境（多 agent 协作、prompt 设计）都是常用词，单条命中会误吞正常回复（违反"必须推飞书"）。
+  //    这类工具的噪音特征是"输入为空、向你要数据"，故要求【缺输入/请求数据措辞】+【评估器/知识词】**共现**
+  //    才判定 —— 精准打"你没给我数据"的澄清话，不误杀真结果或正常讨论。 ——
+  const asksForData = /(message is incomplete|you haven'?t provided|please provide the|provide the actual|paste them|point me to a file)/i.test(t);
+  // 四个分支都带 \b 词边界：否则 "one shot" 会被 "someone shot"/"anyone shot" 借壳命中，
+  // 叠加 asksForData 后误吞正常回复（如 "Someone shot down my PR, please provide the diff"）。
+  const evalOrKnow = /(\bprompt[\s_-]?quality\b|\bone[\s_-]?shot\b|\bcollaboration\s+(?:metrics|efficiency)\b|\bknowledge\s+entr(?:y|ies)\b)/i.test(t);
+  if (asksForData && evalOrKnow) return true;
   return false;
 }
 
