@@ -1,9 +1,9 @@
 import { EventEmitter } from 'node:events';
-import { logger } from 'multiagent-orchestrator';
-import { enrichTabsWithCwd, getHistory, listTabsRaw } from 'multiagent-host-mac';
+import { logger, detectAgentFromProcs, detectWedge } from 'multiagent-orchestrator';
+import { enrichTabsWithCwd, getHistory, listTabsRaw, sendCtrlC } from 'multiagent-host-mac';
 import type { TerminalTab } from 'multiagent-host-mac';
 import { detectWaitingForInput } from './detector.js';
-import { pendingTracker, type PendingOutput } from './pending.js';
+import { pendingTracker, recentlyRemoteWritten, forgetRemoteWrite, type PendingOutput } from './pending.js';
 
 interface TabSnapshot {
   tty: string;
@@ -36,8 +36,16 @@ export interface WatcherEvents {
     currentLen: number;
     outputTail: string;
   }) => void;
+  /** 裸 shell 被不配对引号卡进 `dquote>`/`quote>` 续行，watcher 已自动 Ctrl-C 解卡。
+   *  notifier 收到后给 watchAllTabs=true 的 chat 推一条告警。 */
+  shellUnwedged: (payload: { tty: string; promptLabel: string }) => void;
   error: (err: Error) => void;
 }
+
+// 卡死自愈：每个 tab 最多每 10s 查一次 history（省 osascript）；确认稳定卡死才 Ctrl-C
+const HEAL_CHECK_INTERVAL_MS = 10_000;
+// 只对「本项目最近 5min 内写过」的 tab 自愈——超出这窗口的裸 shell 视为用户自己在用，不碰
+const HEAL_REMOTE_WRITE_WINDOW_MS = 5 * 60 * 1000;
 
 const PENDING_HARD_TIMEOUT_MS = 60 * 60 * 1000;
 const PARAGRAPH_STABLE_MS = 30 * 1000;
@@ -82,6 +90,12 @@ export class TabWatcher {
   private cwdCache = new Map<string, { cwd: string; updatedAt: number }>();
   private static readonly CWD_STALE_MS = 5 * 60 * 1000; // 5min TTL 兜底
 
+  // 卡死自愈状态（per-tty）：上次查的时刻 / 上次 history 长度（稳定性判断）/ 已 Ctrl-C 过（防反复）
+  private stuckLastCheck = new Map<string, number>();
+  private stuckLastLen = new Map<string, number>();
+  private stuckHealed = new Set<string>();
+  private autoUnwedge = process.env['MCHAT_AUTO_UNWEDGE'] !== '0'; // 默认开，=0 关
+
   constructor(opts: { pollMs?: number; renotifyMs?: number } = {}) {
     // 默认 1s poll —— 让飞书卡片有"接近流式"的更新节奏（原来 3s 太慢）
     // 可通过 WATCHER_POLL_MS env 调整（500ms 更快但 CPU 稍高；≥5000 会明显滞后）
@@ -121,9 +135,14 @@ export class TabWatcher {
       await Promise.all(
         tabs.map((tab) => {
           seenTtys.add(tab.tty);
-          return this.processTab(tab).catch((e) => {
-            logger.warn('processTab failed', { tty: tab.tty, err: (e as Error).message });
-          });
+          return Promise.all([
+            this.processTab(tab).catch((e) => {
+              logger.warn('processTab failed', { tty: tab.tty, err: (e as Error).message });
+            }),
+            this.maybeHealStuckShell(tab).catch((e) => {
+              logger.warn('maybeHealStuckShell failed', { tty: tab.tty, err: (e as Error).message });
+            }),
+          ]);
         }),
       );
       // 清掉已经不存在的 tab 的 snapshot 和 cached history
@@ -132,6 +151,14 @@ export class TabWatcher {
       }
       for (const tty of this.cachedHistories.keys()) {
         if (!seenTtys.has(tty)) this.cachedHistories.delete(tty);
+      }
+      for (const tty of this.stuckLastCheck.keys()) {
+        if (!seenTtys.has(tty)) {
+          this.stuckLastCheck.delete(tty);
+          this.stuckLastLen.delete(tty);
+          this.stuckHealed.delete(tty);
+          forgetRemoteWrite(tty);
+        }
       }
       if (this.isFirstTick) {
         this.isFirstTick = false;
@@ -259,6 +286,54 @@ export class TabWatcher {
     }
 
     this.snapshots.set(tab.tty, next);
+  }
+
+  /**
+   * 卡死自愈：裸 shell（没跑 agent、无 pending）被不配对引号灌成 `dquote>`/`quote>` 续行卡死时，
+   * 自动 Ctrl-C 解卡。防误伤：① 只碰裸 shell（不碰 agent/TUI/有飞书任务的 tab）；② 每 10s 才查一次；
+   * ③ 要求 history 长度 ~10s 没变（稳定卡死，不是用户正在手打多行）才动手；④ 解过一次就不再反复按，
+   * 直到卡死解除。可 `MCHAT_AUTO_UNWEDGE=0` 关。
+   */
+  private async maybeHealStuckShell(tab: TerminalTab): Promise<void> {
+    if (!this.autoUnwedge) return;
+    if (tab.hasTUI) return;
+    if (detectAgentFromProcs(tab.processes)) return;      // 跑着 claude/codex → 不碰
+    if (pendingTracker.forTty(tab.tty).length > 0) return; // 有飞书任务在跑 → 别插手
+    // 只对「本项目最近写过」的 tab 自愈——避免误伤用户自己在裸 shell 里手打的多行/带引号命令
+    if (!recentlyRemoteWritten(tab.tty, HEAL_REMOTE_WRITE_WINDOW_MS)) return;
+
+    const now = Date.now();
+    const last = this.stuckLastCheck.get(tab.tty) ?? 0;
+    if (now - last < HEAL_CHECK_INTERVAL_MS) return;
+    this.stuckLastCheck.set(tab.tty, now);
+
+    let hist: string;
+    try {
+      hist = await getHistory(tab.tty);
+    } catch {
+      return;
+    }
+    const { wedged, prompt } = detectWedge(hist);
+    if (!wedged) {
+      // 卡死解除 / 本来就正常 → 清状态，下次新卡死能再解
+      this.stuckHealed.delete(tab.tty);
+      this.stuckLastLen.delete(tab.tty);
+      return;
+    }
+    if (this.stuckHealed.has(tab.tty)) return; // 已按过 Ctrl-C 还卡着 → 别反复骚扰
+
+    const prevLen = this.stuckLastLen.get(tab.tty);
+    this.stuckLastLen.set(tab.tty, hist.length);
+    if (prevLen === undefined || prevLen !== hist.length) return; // 首次见 / 还在变 → 下周期再判
+
+    try {
+      await sendCtrlC(tab.tty);
+      this.stuckHealed.add(tab.tty);
+      logger.info('auto-unwedge: Ctrl-C sent to stuck shell', { tty: tab.tty, prompt });
+      this.events.emit('shellUnwedged', { tty: tab.tty, promptLabel: prompt ?? '' });
+    } catch (e) {
+      logger.warn('auto-unwedge: Ctrl-C failed', { tty: tab.tty, err: (e as Error).message });
+    }
   }
 
   /**

@@ -154,6 +154,55 @@ export function closeTabConfirmCard(tty: string, opts?: { cwd?: string; hasAgent
   };
 }
 
+/**
+ * 裸 shell（没跑 claude/codex）收到「任务型」内容时的拦截卡。
+ * 直接把任务当 shell 命令灌进去会报错、引号不配对还会把 shell 卡进 `dquote>` 续行卡死，
+ * 所以先拦下来问：起 agent 执行 / 还是坚持按命令发。
+ * 每个可用 agent 一个「起并执行」按钮 + 一个「仍按命令发送」逃生按钮。token 关联暂存的原始 prompt。
+ */
+export function bareShellNoAgentCard(opts: {
+  tty: string;
+  promptPreview: string;
+  token: string;
+  agents: { kind: string; displayName: string }[];
+}) {
+  const emojiFor = (kind: string) => (kind === 'codex' ? '🐿' : '🤖');
+  const launchButtons = opts.agents.map((a) => ({
+    tag: 'button',
+    text: { tag: 'plain_text', content: `${emojiFor(a.kind)} 起 ${a.displayName} 并执行` },
+    type: 'primary',
+    value: { action: 'bare-shell-launch', token: opts.token, agent: a.kind },
+  }));
+  return {
+    config: { wide_screen_mode: true, update_multi: true },
+    header: { template: 'yellow', title: { tag: 'plain_text', content: `⚠️ ${opts.tty} 还没启动 claude/codex` } },
+    elements: [
+      {
+        tag: 'div',
+        text: {
+          tag: 'lark_md',
+          content:
+            `这条更像是给 agent 的**任务**，但 \`${opts.tty}\` 是个裸 shell。直接当命令发会报错，` +
+            `引号不配对还会把这个 shell 卡进 \`dquote>\` 续行**卡死**，所以先拦下来：\n\n` +
+            `> ${opts.promptPreview}`,
+        },
+      },
+      {
+        tag: 'action',
+        actions: [
+          ...launchButtons,
+          {
+            tag: 'button',
+            text: { tag: 'plain_text', content: '⌨️ 仍按 shell 命令发送' },
+            type: 'default',
+            value: { action: 'bare-shell-raw', token: opts.token },
+          },
+        ],
+      },
+    ],
+  };
+}
+
 /** 批量关空闲 tab 的确认卡（列出清单 + 数量）。确认=close-idle-do。 */
 export function closeIdleConfirmCard(ttys: { tty: string; cwd?: string; agentLabel?: string }[]) {
   const lines = ttys.map((t) => `· \`${t.tty}\`${t.agentLabel ? ` (${t.agentLabel})` : ''}${t.cwd ? ` — ${t.cwd}` : ''}`);

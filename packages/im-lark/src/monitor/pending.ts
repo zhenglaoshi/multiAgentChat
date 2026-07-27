@@ -130,3 +130,25 @@ class PendingTracker {
 }
 
 export const pendingTracker = new PendingTracker();
+
+// 本项目「远程写入」（飞书 dispatch / bare-shell-raw）过的 tab 时间戳。
+// 卡死自愈只对这些 tab 生效——避免误伤用户自己在裸 shell 里手打的多行/带引号命令。
+const remoteWriteAt = new Map<string, number>();
+const REMOTE_WRITE_MAX_AGE_MS = 10 * 60 * 1000; // 超 10min 的记录清掉（自愈窗口只 5min，留足余量）
+export function markRemoteWrite(tty: string): void {
+  const now = Date.now();
+  // 顺手清过期项——tab 关闭时 forgetRemoteWrite 已清一部分，但跑着 agent 的 tab 不经自愈路径、
+  // 关闭时可能漏清，这里兜底防常驻堆积（tty 会复用，量级本就有界）
+  for (const [k, v] of remoteWriteAt) {
+    if (now - v > REMOTE_WRITE_MAX_AGE_MS) remoteWriteAt.delete(k);
+  }
+  remoteWriteAt.set(tty, now);
+}
+export function recentlyRemoteWritten(tty: string, withinMs: number): boolean {
+  const t = remoteWriteAt.get(tty);
+  return t !== undefined && Date.now() - t <= withinMs;
+}
+/** tab 消失时清掉记录（watcher 兜底调用）。 */
+export function forgetRemoteWrite(tty: string): void {
+  remoteWriteAt.delete(tty);
+}

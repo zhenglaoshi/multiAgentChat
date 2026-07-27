@@ -4,6 +4,7 @@ import * as Lark from '@larksuiteoapi/node-sdk';
 import { approvals, asks, redactText } from 'multiagent-orchestrator';
 import type { ApprovalRequest, AskRequest } from 'multiagent-orchestrator';
 import { listAllChats, loadChat } from '../chats/store.js';
+import { sendText } from '../lark/reply.js';
 import { patchCard, sendCardMessage, sendCardReturnId } from '../lark/api.js';
 import {
   approvalCard,
@@ -123,6 +124,33 @@ async function maybePatchBatchCard(
       err: (e as Error).message,
     });
   }
+}
+
+/**
+ * 把批量任务里某一项显式标成 failed 并补进聚合卡——用于「该项还没走 pending 流程就被跳过」
+ * 的场景（如目标是没起 agent 的裸 shell）。否则该项永不进 batchItemsState，聚合卡会少一格、
+ * 分母缩水，用户看到"全部完成"却有项静默消失。
+ */
+export async function markBatchItemFailed(info: {
+  batchId: string;
+  batchMessageId: string;
+  tty: string;
+  taskDescription: string;
+  reason: string;
+  targetLabel?: string;
+}): Promise<void> {
+  const pseudo: PendingOutput = {
+    tty: info.tty,
+    chatId: '',
+    sentAt: Date.now(),
+    beforeLen: 0,
+    lastPushedLen: 0,
+    taskDescription: info.taskDescription,
+    batchId: info.batchId,
+    batchMessageId: info.batchMessageId,
+    ...(info.targetLabel ? { targetLabel: info.targetLabel } : {}),
+  };
+  await maybePatchBatchCard(pseudo, 'failed', info.reason);
 }
 
 /**
@@ -466,6 +494,26 @@ export function attachWatcherToLark(larkClient: Lark.Client): void {
         }
       }
       void home;
+    },
+  );
+  // 裸 shell 卡死自愈：watcher 自动 Ctrl-C 解卡后，给 watchAllTabs 的 chat 推一条告警
+  watcher.events.on(
+    'shellUnwedged',
+    async ({ tty, promptLabel }: { tty: string; promptLabel: string }) => {
+      if (!client) return;
+      try {
+        const chats = await listAllChats();
+        const watchers = chats.filter((c) => c.watchAllTabs === true);
+        const msg =
+          `🛟 ${tty} 之前卡在 shell 续行提示${promptLabel ? `（\`${promptLabel}\`）` : ''}——` +
+          `多半是往没起 claude/codex 的裸 shell 发了带引号的任务。已自动 Ctrl-C 解卡（会把 Terminal 切到前台），现在这个 tab 可以用了。\n` +
+          `想让它跑任务：先发 \`claude\` 或 \`codex\` 起 agent，再发任务即可。`;
+        for (const chat of watchers) {
+          await sendText(client, chat.chatId, msg).catch(() => {});
+        }
+      } catch (e) {
+        logger.warn('shellUnwedged push failed', { err: (e as Error).message });
+      }
     },
   );
   watcher.events.on('error', (err: Error) => {

@@ -6,10 +6,11 @@ import { buildDownEnterSeq, resolveAskAnswerIndex } from './ask-drive.js';
 import { logger } from 'multiagent-orchestrator';
 import { recordCwd } from 'multiagent-host-mac';
 import { ragRecall, formatRagPrefix } from 'multiagent-orchestrator';
-import { pendingTracker } from '../monitor/pending.js';
+import { pendingTracker, markRemoteWrite } from '../monitor/pending.js';
+import { healIfWedged } from '../monitor/stuck-shell.js';
 import { recordInbound } from '../monitor/ws-watchdog.js';
 import { captureScreen, closeTabGracefully, detectSelfTty, forceEnter, getHistory, getUserFocus, launchAgentInTab, launchClaudeInTab, listTabs, newTab, openPermissionPane, send, sendKeys, sendKeysRaw } from 'multiagent-host-mac';
-import { detectAgentFromProcs, listAgentAdapters } from 'multiagent-orchestrator';
+import { detectAgentFromProcs, listAgentAdapters, looksLikeAgentTask } from 'multiagent-orchestrator';
 
 // SYSTEM_GUIDANCE 的去重 — per-tab，每 tty 6h 内最多注入一次
 // 这是 module-level 内存状态，dev 重启会清空（重启后第一次注入是合理的）
@@ -51,17 +52,80 @@ const CLAUDE_TUI_REMINDER = [
   '⚠ 回到飞书 — 飞书看不见你的 TUI 屏幕。**先在 TUI 完整回答用户，然后再** `agent lark send-text "<同样一份摘要>"` 推到飞书（两个渠道并行，不能只推不答）。要用户从选项里选（单/多选）或填文本，**用 `agent lark ask single|multi|input`**（stdout 拿答案 JSON），不要用 AskUserQuestion 或在 TUI 里 wait 键盘。',
 ].join('\n');
 import { patchCard, sendCardReturnId, sendImage } from './api.js';
-import { ackCard, askCard, batchProgressCard, browseCard, careyclawKeyCard, careyclawKeyFormCard, chainProgressCard, closeIdleConfirmCard, closeTabConfirmCard, connectConfirmCard, connectFormCard, connectStatusCard, permLevelCard, planCard, progressCard, receiptCard, tapdClaimCard, type BatchTaskItem, type ChainStepItem } from './cards.js';
+import { ackCard, askCard, bareShellNoAgentCard, batchProgressCard, browseCard, careyclawKeyCard, careyclawKeyFormCard, chainProgressCard, closeIdleConfirmCard, closeTabConfirmCard, connectConfirmCard, connectFormCard, connectStatusCard, permLevelCard, planCard, progressCard, receiptCard, tapdClaimCard, type BatchTaskItem, type ChainStepItem } from './cards.js';
 import { getCareyclawKeyStatus, setCareyclawKey } from 'multiagent-orchestrator';
 import { generatePlan, getPlan } from 'multiagent-orchestrator';
 import { getPerfItem, savePerfItem, markPerfSnoozed, markPerfIgnoredForever, createPerfStory } from 'multiagent-orchestrator';
 import type { PerfItem } from 'multiagent-orchestrator';
 import { integrationStatuses, getIntegration, upsertEnvKeys, setIntegrationDisabled, installIntegrationSkills, installClaudeMdBlock, removeClaudeMdBlock } from 'multiagent-orchestrator';
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { utimesSync } from 'node:fs';
 
 // /connect：某对接提交的配置值暂存（确认后才写 .env）。ephemeral。
 const connectStaging = new Map<string, Record<string, string>>();
+
+// 裸 shell 拦截：把被拦下的原始任务 prompt 暂存，等用户在卡上点「起 agent 并执行」/「仍按命令发送」。
+// ephemeral（dev 重启清空 → 过期就让用户重发）。token → 原始上下文。
+interface BareShellStaged { tty: string; prompt: string; chatId: string; targetLabel?: string; at: number; }
+const bareShellStaging = new Map<string, BareShellStaged>();
+const BARE_SHELL_STAGE_TTL_MS = 30 * 60 * 1000;
+function stageBareShell(s: Omit<BareShellStaged, 'at'>): string {
+  const now = Date.now();
+  // 清理陈旧（>30min 没人点）+ 容量兜底（只留最近 20 条），防内存堆积
+  for (const [k, v] of bareShellStaging) {
+    if (now - v.at > BARE_SHELL_STAGE_TTL_MS) bareShellStaging.delete(k);
+  }
+  // 不可预测的随机 token（别用自增序号——token 是点卡时定位暂存任务的凭据，可枚举不安全）
+  const token = `bs_${randomUUID()}`;
+  bareShellStaging.set(token, { ...s, at: now });
+  if (bareShellStaging.size > 20) {
+    const oldest = [...bareShellStaging.entries()].sort((a, b) => a[1].at - b[1].at)[0];
+    if (oldest) bareShellStaging.delete(oldest[0]);
+  }
+  return token;
+}
+
+/**
+ * 在一个裸 shell tab 里起 agent（claude/codex），轮询等进程真的起来，再把 prompt 派发进去。
+ * 复用 SOP spawn 的「launch → 轮询进程名 → settle → dispatch」时序（过 trust/登录窗口）。
+ */
+async function launchAgentAndDispatch(
+  client: Lark.Client,
+  ctx: { messageId: string; chatId: string },
+  tty: string,
+  kind: Parameters<typeof launchAgentInTab>[1],
+  prompt: string,
+  targetLabel?: string,
+): Promise<void> {
+  const launched = await launchAgentInTab(tty, kind);
+  if (!launched.ok) {
+    await sendText(client, ctx.chatId, `❌ 在 ${tty} 起 ${kind} 失败：${launched.reason ?? '未知'}`);
+    return;
+  }
+  // 轮询等 agent 进程起来（最多 ~18s）；hasTUI 不认 claude/codex，用进程名判就绪
+  let ready: Awaited<ReturnType<typeof listTabs>>[number] | undefined;
+  for (let i = 0; i < 12; i++) {
+    await new Promise((r) => setTimeout(r, 1500));
+    const tabs = await listTabs();
+    const t = tabs.find((x) => x.tty === tty);
+    if (t && detectAgentFromProcs(t.processes)) { ready = t; break; }
+  }
+  if (!ready) {
+    await sendText(client, ctx.chatId, `⚠️ ${tty} 的 ${kind} 还没起来（可能卡在 trust/登录），任务没发。去那个 tab 看一眼再重试。`);
+    return;
+  }
+  // agent 进程在了 → 再 settle 2.5s 让它过完 trust/进主界面，再发 prompt（避免撞启动画面）
+  await new Promise((r) => setTimeout(r, 2500));
+  // 重新拿一次最新快照：settle 期间 agent 可能又崩回裸 shell（trust 二次确认失败/进程挂）。
+  // 用轮询时的旧快照会让 dispatchSendToTab 误判 hasAgent → 注入含引号的 guidance 反而卡死（正是本次要修的场景）。
+  const fresh = (await listTabs()).find((x) => x.tty === tty);
+  if (!fresh || !detectAgentFromProcs(fresh.processes)) {
+    await sendText(client, ctx.chatId, `⚠️ ${tty} 的 ${kind} 起来后又退回了裸 shell（可能卡在 trust/登录），任务没发。去看一眼再重试。`);
+    return;
+  }
+  await dispatchSendToTab(client, ctx, fresh, prompt, targetLabel);
+}
 import { readdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname, basename, resolve } from 'node:path';
@@ -1157,12 +1221,12 @@ async function dispatchSendToTab(
     batchId: batchInfo?.batchId,
   });
 
-  // 0. 裸 agent 名 → 启动对应 CLI。
-  //    目标 tab 还没跑 agent（普通 shell），且这条消息正好就是某个 agent 的名字（"codex" / "claude"）
-  //    → 意图是"进入该 CLI"而非"发 prompt"。直接 launchAgentInTab 裸启动 + 过 trust 弹窗，
-  //    **跳过** SYSTEM_GUIDANCE/recall/[本次任务] 包装 —— 那套是给 TUI 内 agent 看的，整坨塞进
-  //    shell 会被 `do script` 当命令执行，报一堆 command not found，agent 从没被干净启动。
-  if (!detectAgentFromProcs(tab.processes)) {
+  // 0. 裸 shell（没跑 agent）的特殊处理。
+  const hasAgent = detectAgentFromProcs(tab.processes) !== null;
+  if (!hasAgent) {
+    // 0a. 裸 agent 名 → 启动对应 CLI。
+    //    这条消息正好是某个 agent 的名字（"codex" / "claude"）→ 意图是"进入该 CLI"而非"发 prompt"。
+    //    直接 launchAgentInTab 裸启动 + 过 trust 弹窗，**跳过**下面的 guidance/recall/[本次任务] 包装。
     const word = text.trim().toLowerCase();
     const target = listAgentAdapters().find((a) => word === a.kind || word === a.binaryName);
     if (target) {
@@ -1183,51 +1247,112 @@ async function dispatchSendToTab(
       }
       return;
     }
-  }
 
-  // 1. 系统指令前缀：仅每个 tab 首次 / 6h 一次（避免每条消息都 250 字头）
-  const now = Date.now();
-  const lastShownAt = systemGuidanceShownAt.get(tab.tty);
-  const shouldInjectGuidance =
-    lastShownAt === undefined || now - lastShownAt >= SYSTEM_GUIDANCE_INTERVAL_MS;
-  const guidance = shouldInjectGuidance ? SYSTEM_GUIDANCE : '';
-  if (shouldInjectGuidance) {
-    systemGuidanceShownAt.set(tab.tty, now);
-    logger.info('system guidance injected (first time / 6h+)', { tty: tab.tty });
-  }
-
-  // 2. 检索相关历史 → 注入（跨会话 RAG-lite：BM25 over memories+knowledge，中文 bigram）
-  let recallPrefix = '';
-  try {
-    const results = await ragRecall({
-      query: text,
-      ...(tab.cwd ? { cwd: tab.cwd } : {}),
-      limit: 3,
-    });
-    recallPrefix = formatRagPrefix(results);
-    if (recallPrefix) {
-      logger.info('context injected (rag)', {
+    // 0b. 任务型内容灌进裸 shell → 被 `do script` 当命令跑（报 command not found），引号不配对
+    //     还会把 zsh 卡进 `dquote>`/`quote>` 续行**卡死**这个 tab（用户反复踩坑）。拦下来处理。
+    //     正经单行命令（npm test 等）不会命中，照常放行。
+    if (looksLikeAgentTask(text)) {
+      // 批量/任务链步骤打到裸 shell：是自动化流水线、没人在等交互卡 → 不弹卡，干净失败，
+      //   否则该步塞进等点击的卡里、永不进 pendingTracker → 链永久卡 running / 批量停在 N-1（静默挂死）。
+      if (chainInfo) {
+        const reason = `${tab.tty} 还没起 claude/codex（裸 shell），该步跳过——先在此 tab 起 agent 再重跑链`;
+        chainManager.markStepFailed(chainInfo.chainId, chainInfo.chainStepIndex, reason);
+        // 用 sendText（不用 replyText）：链第 2 步起 ctx.messageId 是合成的 'chain-advance'，
+        // reply API 拿假 message_id 会静默失败，用户就收不到这条本该显眼的终止提示了。
+        await sendText(client, ctx.chatId, `⚠️ 任务链步骤目标 ${tab.tty} 是裸 shell（没起 agent），已终止该链。先起 agent 再重跑。`).catch(() => {});
+        logger.info('bare shell task in chain → step failed', { tty: tab.tty, chainId: chainInfo.chainId });
+        return;
+      }
+      if (batchInfo) {
+        // 显式在聚合卡上把这项标成 failed（否则它永不进 batchItemsState → 卡上少一格、分母缩水、
+        // 用户看到"全部完成"却有项静默消失）。动态 import 规避 handlers↔notifier 循环依赖。
+        try {
+          const { markBatchItemFailed } = await import('../monitor/notifier.js');
+          await markBatchItemFailed({
+            batchId: batchInfo.batchId,
+            batchMessageId: batchInfo.batchMessageId,
+            tty: tab.tty,
+            taskDescription: extractTaskTitle(text),
+            reason: '跳过：目标是裸 shell（没起 claude/codex）',
+            ...(targetLabel ? { targetLabel } : {}),
+          });
+        } catch (e) {
+          logger.warn('markBatchItemFailed failed', { tty: tab.tty, err: (e as Error).message });
+        }
+        await sendText(client, ctx.chatId, `⚠️ 批量任务里 ${tab.tty} 是裸 shell（没起 claude/codex），这项没发。先在此 tab 起 agent 再单独重发。`).catch(() => {});
+        logger.info('bare shell task in batch → item skipped', { tty: tab.tty, batchId: batchInfo.batchId });
+        return;
+      }
+      // 直接的用户消息 → 弹交互卡问：起 claude/codex 执行 / 还是坚持按 shell 命令发
+      const token = stageBareShell({
         tty: tab.tty,
-        hits: results.length,
-        scores: results.map((r) => r.score.toFixed(2)),
+        prompt: text,
+        chatId: ctx.chatId,
+        ...(targetLabel ? { targetLabel } : {}),
       });
+      const one = text.trim().replace(/\s+/g, ' ');
+      const preview = one.length > 120 ? one.slice(0, 120) + '…' : one;
+      const agents = listAgentAdapters().map((a) => ({ kind: a.kind, displayName: a.displayName }));
+      await sendCard(
+        client,
+        ctx.chatId,
+        bareShellNoAgentCard({ tty: tab.tty, promptPreview: preview, token, agents }),
+      ).catch(() => {});
+      logger.info('bare shell task intercepted', { tty: tab.tty, targetLabel });
+      return;
     }
-  } catch (e) {
-    logger.warn('rag recall failed', { err: (e as Error).message });
+    // 否则：像正经 shell 命令（单行 ASCII、引号成对）→ 放行，但**不注入任何 AI 包装**（见下）。
   }
 
-  // claude TUI 检测前置 — 决定是否在 prompt 末尾追加短提醒
+  // 1+2. 系统指令前缀 + RAG 召回：只对**跑着 agent 的 TUI** 注入。裸 shell 灌这些会被当命令跑，
+  //      且 guidance 里含反引号/引号，灌进去必然把 shell 卡进续行 → 一律不注入。
+  let guidance = '';
+  let recallPrefix = '';
+  if (hasAgent) {
+    const now = Date.now();
+    const lastShownAt = systemGuidanceShownAt.get(tab.tty);
+    const shouldInjectGuidance =
+      lastShownAt === undefined || now - lastShownAt >= SYSTEM_GUIDANCE_INTERVAL_MS;
+    guidance = shouldInjectGuidance ? SYSTEM_GUIDANCE : '';
+    if (shouldInjectGuidance) {
+      systemGuidanceShownAt.set(tab.tty, now);
+      logger.info('system guidance injected (first time / 6h+)', { tty: tab.tty });
+    }
+    // 检索相关历史 → 注入（跨会话 RAG-lite：BM25 over memories+knowledge，中文 bigram）
+    try {
+      const results = await ragRecall({
+        query: text,
+        ...(tab.cwd ? { cwd: tab.cwd } : {}),
+        limit: 3,
+      });
+      recallPrefix = formatRagPrefix(results);
+      if (recallPrefix) {
+        logger.info('context injected (rag)', {
+          tty: tab.tty,
+          hits: results.length,
+          scores: results.map((r) => r.score.toFixed(2)),
+        });
+      }
+    } catch (e) {
+      logger.warn('rag recall failed', { err: (e as Error).message });
+    }
+  }
+
+  // claude TUI 检测 — 决定是否在 prompt 末尾追加短提醒
   const isClaudeTab = tab.processes.some((p) =>
     /(^|\/)claude(-code)?$/i.test(p) || p.toLowerCase().includes('claude'),
   );
 
-  const finalText =
-    guidance +
-    (recallPrefix || (guidance ? '[本次任务]\n' : '')) +
-    text +
-    (isClaudeTab ? CLAUDE_TUI_REMINDER : '');
+  // 裸 shell：原样发用户输入，不加任何包装（guidance/recall/reminder 都是给 TUI agent 的）。
+  const finalText = hasAgent
+    ? guidance +
+      (recallPrefix || (guidance ? '[本次任务]\n' : '')) +
+      text +
+      (isClaudeTab ? CLAUDE_TUI_REMINDER : '')
+    : text;
 
   const result = await send(tab.tty, finalText);
+  if (result.ok) markRemoteWrite(tab.tty); // 标记：本项目写过这个 tab（供卡死自愈只对远程写过的 tab 生效）
   logger.info('dispatchSendToTab: send result', { ok: result.ok, reason: result.reason, before: result.before });
 
   // 对 claude TUI tab 显式发 Return key 触发提交（do script 的 \n 在 claude prompt 里
@@ -1546,6 +1671,74 @@ async function handleCardAction(
       }
     })();
     return { toast: { type: 'success', content: `派发步骤 ${step + 1}` } };
+  }
+
+  // 裸 shell 拦截卡：点「起 agent 并执行」→ 起 claude/codex + 轮询就绪 + 补发原 prompt。
+  if (action === 'bare-shell-launch') {
+    const token = value['token'] as string | undefined;
+    const kind = value['agent'] as string | undefined;
+    const staged = token ? bareShellStaging.get(token) : undefined;
+    const mid = getMessageId(data);
+    if (!staged || !kind) {
+      if (mid) void patchCard(client, mid, receiptCard({ title: '⚠️ 该拦截已过期（dev 重启会清空），请重发任务。', template: 'grey' })).catch(() => {});
+      return {};
+    }
+    // 防御纵深：卡只属于它所在的 chat，点击事件的 chatId 必须与暂存时一致（防跨 chat 劫持 tab/输出）
+    if (staged.chatId !== chatId) {
+      logger.warn('bare-shell-launch: chatId mismatch, rejected', { token, staged: staged.chatId, got: chatId });
+      return {};
+    }
+    bareShellStaging.delete(token!);
+    if (mid) void patchCard(client, mid, receiptCard({ title: `🚀 正在 ${staged.tty} 起 ${kind} 并执行本任务…`, template: 'blue' })).catch(() => {});
+    const bctx = { messageId: 'bare-shell-launch', chatId };
+    (async () => {
+      try {
+        await launchAgentAndDispatch(
+          client,
+          bctx,
+          staged.tty,
+          kind as Parameters<typeof launchAgentInTab>[1],
+          staged.prompt,
+          staged.targetLabel,
+        );
+      } catch (e) {
+        void sendText(client, chatId, `❌ 在 ${staged.tty} 起 ${kind} 并执行失败：${(e as Error).message}`);
+      }
+    })();
+    return {};
+  }
+
+  // 裸 shell 拦截卡：点「仍按 shell 命令发送」→ 原样发；发完自查一次，卡进续行就自动 Ctrl-C 解卡。
+  if (action === 'bare-shell-raw') {
+    const token = value['token'] as string | undefined;
+    const staged = token ? bareShellStaging.get(token) : undefined;
+    const mid = getMessageId(data);
+    if (!staged) {
+      if (mid) void patchCard(client, mid, receiptCard({ title: '⚠️ 该拦截已过期，请重发任务。', template: 'grey' })).catch(() => {});
+      return {};
+    }
+    if (staged.chatId !== chatId) {
+      logger.warn('bare-shell-raw: chatId mismatch, rejected', { token, staged: staged.chatId, got: chatId });
+      return {};
+    }
+    bareShellStaging.delete(token!);
+    if (mid) void patchCard(client, mid, receiptCard({ title: `⌨️ 已按 shell 命令发送到 ${staged.tty}`, template: 'blue' })).catch(() => {});
+    (async () => {
+      try {
+        const r = await send(staged.tty, staged.prompt);
+        if (!r.ok) { void sendText(client, chatId, `❌ 发送到 ${staged.tty} 失败：${r.reason}`); return; }
+        markRemoteWrite(staged.tty);
+        // 逃生路径也可能把 shell 卡进续行 → 稍等自查一次，卡了就 Ctrl-C 解卡
+        await new Promise((res) => setTimeout(res, 1200));
+        const healed = await healIfWedged(staged.tty);
+        if (healed.healed) {
+          void sendText(client, chatId, `⚠️ ${staged.tty} 被这条卡进了续行（引号不配对），已自动 Ctrl-C 解卡（会把 Terminal 切到前台）。`);
+        }
+      } catch (e) {
+        void sendText(client, chatId, `❌ 发送到 ${staged.tty} 失败：${(e as Error).message}`);
+      }
+    })();
+    return {};
   }
 
   if (action === 'careyclaw-key-update') {

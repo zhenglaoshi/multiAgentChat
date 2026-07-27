@@ -237,3 +237,12 @@ export async function sendKeys(
   const out = await runScriptOrThrow(script, [tty]);
   if (out.trim() !== 'ok') throw new Error(`sendKeys: tab ${tty} 不存在`);
 }
+
+/**
+ * 往目标 tab 发一个 Ctrl-C（SIGINT / 中断当前行编辑）。
+ * 用途：裸 shell 被不配对引号卡进 `dquote>`/`quote>` 续行时，Ctrl-C 放弃当前输入、回到干净 prompt。
+ * 注意：走 System Events，会把 Terminal 拉到 frontmost（抢 0.2s 焦点）——只在确认卡死时调，别高频。
+ */
+export async function sendCtrlC(tty: string): Promise<void> {
+  await sendKeys(tty, 'ctrl+c');
+}
