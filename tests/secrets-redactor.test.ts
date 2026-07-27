@@ -6,10 +6,10 @@ describe('redact — 高置信度 token', () => {
     expect(redactText('key sk-ant-abcdefghijklmnopqrstuvwx done')).toContain('[REDACTED-ANTHROPIC]');
     expect(redactText('OPENAI sk-proj-ABCDEFGHIJKLMNOPQRSTUVWX')).toContain('[REDACTED-OPENAI]');
   });
-  it('AWS / 阿里云 / 华为云 AK', () => {
-    expect(redactText('AKIAIOSFODNN7EXAMPLE')).toBe('[REDACTED-AWS-AK]');
-    expect(redactText('LTAI5tABCDEFGH1234')).toBe('[REDACTED-ALIYUN-AK]');
-    expect(redactText('HXWZabcd12345678')).toBe('[REDACTED-HUAWEI-AK]');
+  it('AWS / 阿里云 / 华为云 AK —— 规则已移除，不再脱', () => {
+    expect(redactText('AKIAIOSFODNN7EXAMPLE')).toBe('AKIAIOSFODNN7EXAMPLE');
+    expect(redactText('LTAI5tABCDEFGH1234')).toBe('LTAI5tABCDEFGH1234');
+    expect(redactText('HXWZabcd12345678')).toBe('HXWZabcd12345678');
   });
   it('GitHub token / PAT', () => {
     expect(redactText('ghp_' + 'a'.repeat(36))).toBe('[REDACTED-GH-TOKEN]');
@@ -54,10 +54,11 @@ describe('redact — 不误伤 & 报告', () => {
     expect(redactText('普通中文说明，无凭证')).toBe('普通中文说明，无凭证');
   });
   it('hasSecrets 判断 + hits 统计', () => {
-    expect(hasSecrets('AKIAIOSFODNN7EXAMPLE')).toBe(true);
+    expect(hasSecrets('AKIAIOSFODNN7EXAMPLE')).toBe(false); // AK 规则已移除
+    expect(hasSecrets('sk-ant-abcdefghijklmnopqrstuvwx')).toBe(true);
     expect(hasSecrets('hello world')).toBe(false);
     const r = redact('AKIAIOSFODNN7EXAMPLE and sk-ant-abcdefghijklmnopqrstuvwx');
-    expect(r.redactedCount).toBe(2);
+    expect(r.redactedCount).toBe(1); // 只剩 sk-ant 命中
   });
   it('空串安全', () => {
     expect(redact('').clean).toBe('');

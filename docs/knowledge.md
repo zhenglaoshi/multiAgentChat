@@ -154,13 +154,14 @@ Sanitize 层脱敏了以下模式（先扫描后再送 LLM）：
 - `sk-ant-...`（Anthropic API key）
 - `ghp_...` / `gho_...` 等（GitHub Personal Access Token）
 - `sk-...` 40+ 位（OpenAI）
-- `AKIA...` 16 位（AWS access key）
 - JWT (`eyJ...eyJ...eyJ...`)
 - `*_SECRET` / `*_TOKEN` / `*_KEY` / `*_PASSWORD` 赋值行 → `NAME=<REDACTED>`
 - 邮箱脱到 `ab***@x***.com` 保留部分上下文
 - 40+ 位 hex 或 base64 长串
 
-**会漏掉的**：URL 里带的 token、连接串里的密码、自定义 secret 前缀。所以：
+> **AK（access key）类已按需求移除**：AWS（`AKIA/ASIA`）、阿里云（`LTAI`）、华为云（`HXWZ`）AK 前缀不再脱敏。
+
+**会漏掉的**：AK（见上）、URL 里带的 token、连接串里的密码、自定义 secret 前缀。所以：
 - **不要在 shell 里 `echo` 敏感信息** 是最好实践
 - 提取前的 chunkHash 只对 sanitized 版本算，不会以 secret 为索引
 - 后续可以加**自定义 pattern DB** 覆盖公司常见 secret 格式

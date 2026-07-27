@@ -6,6 +6,14 @@
 
 ## [未发布]
 
+### 2026-07-27
+
+**改动**
+- **脱敏规则移除全部 AK（access key）识别**（用户要求）：AK 类前缀过短/过泛易误伤，按需求从两处脱敏引擎里删掉所有 AK 相关规则，SK / password / token / 连接串等其余规则保留。① `orchestrator/secrets/redactor.ts`（回显脱敏 + at-rest scrub 单一事实源）：HIGH_RULES 删 `AWS-AK`(AKIA/ASIA)、`ALIYUN-AK`(LTAI)、`HUAWEI-AK`(HXWZ) 三条；CTX_RE 删上下文关键字 `access[_-]?key(?:[_-]?id)?` 与 `\bak\b`。② `orchestrator/knowledge/sanitize.ts`：删 `aws`(AKIA...) 规则。对应单测同步更新（AK 类现不脱、`redactedCount` 相应下调），`redactor`+`sanitize` 两文件共 19 用例全绿 + typecheck 通过。过 code-reviewer + security-reviewer 双评审：无 high/critical，两者仅提同一 medium（文档与代码脱钩）——已同步。（`orchestrator/secrets/redactor.ts` + `orchestrator/knowledge/sanitize.ts` + `tests/secrets-redactor.test.ts`）
+
+**文档**
+- **同步 AK 脱敏移除**：`skills/multiagent-secret-guard/SKILL.md`（去掉"能识别类型"里的 3 类 AK + `access_key`/`ak` 上下文，加醒目提示"AK 已不再自动脱敏，遇 AK 明文自己掩码"）、`docs/knowledge.md`（隐私模型删 `AKIA...` 条 + "会漏掉的"补 AK）。避免 agent 误以为 AK 有系统兜底而放松警惕。
+
 ### 2026-07-25
 
 **修复**

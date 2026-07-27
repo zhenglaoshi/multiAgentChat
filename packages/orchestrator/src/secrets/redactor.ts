@@ -3,7 +3,7 @@
  *
  * 背景：本项目会把终端输出/助手回复推到飞书、落盘到 data/（memories/knowledge），
  * claude/codex 又把整段会话明文写进 ~/.claude、~/.codex。只要在 shell 里 `cat .env`、
- * 连库、看 API 返回，AK/SK/密码/token 就会明文外泄到手机或磁盘。
+ * 连库、看 API 返回，SK/密码/token 就会明文外泄到手机或磁盘（AK 类已按需求不脱）。
  *
  * 这个引擎被两处复用（保持检测规则一致，不再各写一套）：
  *   1. 回显脱敏（redact-on-echo）：飞书推送 / data 落盘前 —— 见 im-lark 的推送路径
@@ -38,11 +38,11 @@ interface HighRule {
 const CONN_RE =
   /\b((?:postgres|postgresql|mysql|mongodb(?:\+srv)?|redis|amqp):\/\/[^\s:@/"]+:)([^\s:@/"]+)(@)/g;
 
-/** 高置信度：命中即整体替换成 [REDACTED-<KIND>]。 */
+/**
+ * 高置信度：命中即整体替换成 [REDACTED-<KIND>]。
+ * 注：AK（AWS AKIA/ASIA、阿里云 LTAI、华为云 HXWZ）前缀规则已按需求移除。
+ */
 const HIGH_RULES: HighRule[] = [
-  { kind: 'AWS-AK', re: /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g },
-  { kind: 'ALIYUN-AK', re: /\bLTAI[0-9A-Za-z]{12,20}\b/g },
-  { kind: 'HUAWEI-AK', re: /\bHXWZ[0-9A-Za-z]{12,20}\b/g },
   { kind: 'ANTHROPIC', re: /\bsk-ant-[A-Za-z0-9\-_]{20,}/g },
   { kind: 'OPENAI', re: /\bsk-(?:proj-)?[A-Za-z0-9]{20,}/g },
   { kind: 'GH-TOKEN', re: /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,}/g },
@@ -55,11 +55,12 @@ const HIGH_RULES: HighRule[] = [
 ];
 
 /**
- * 上下文赋值：`password: "x" / api_key=x / ak = x`，只脱赋值右边的 value。
+ * 上下文赋值：`password: "x" / api_key=x / sk = x`，只脱赋值右边的 value。
  * group1 = key + 分隔符（含可选引号），group2 = value。
+ * 注：access_key / ak 关键字已按需求移除，不再脱 AK 类赋值。
  */
 const CTX_RE =
-  /((?:pass(?:wd|word)?|pwd|secret|access[_-]?key(?:[_-]?id)?|secret[_-]?key|app[_-]?secret|client[_-]?secret|api[_-]?key|auth[_-]?token|dev[_-]?token|\bak\b|\bsk\b)\s*["']?\s*[:=]\s*["']?)([A-Za-z0-9/+\-_.]{8,})/gi;
+  /((?:pass(?:wd|word)?|pwd|secret|secret[_-]?key|app[_-]?secret|client[_-]?secret|api[_-]?key|auth[_-]?token|dev[_-]?token|\bsk\b)\s*["']?\s*[:=]\s*["']?)([A-Za-z0-9/+\-_.]{8,})/gi;
 
 /** 占位符/明显非真值：命中则不脱（避免把 YOUR_KEY / xxxx / process.env.X 也脱了）。 */
 const PLACEHOLDER_RE =

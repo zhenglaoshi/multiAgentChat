@@ -15,8 +15,10 @@ claude/codex 又把**每一轮对话和工具输出**原样明文写进 `~/.clau
 
 在**组织回复 / 输出**时遇到账号密码、AK/SK、token、连接串、私钥等凭证：
 
-- **默认绝不明文回显**。用掩码代替：整体 `[REDACTED]`，或只留尾部辨识位（如 `sk-…a1b2`、`LTAI…7788`），
+- **默认绝不明文回显**。用掩码代替：整体 `[REDACTED]`，或只留尾部辨识位（如 `sk-…a1b2`），
   或干脆只说"已拿到密钥 / 已写入 .env / 已用于连接"而不打印值本身。
+- ⚠️ **AK（access key）类已按需求不再自动脱敏**（AWS/阿里云/华为云 AK 前缀、`access_key`/`ak` 上下文赋值都已移除），
+  系统兜底对 AK 已不存在，遇到 AK 明文务必自己按上面的准则主动掩码。
 - **只有用户明确要求看明文**时才明文显示——例如用户说"把完整 token 贴出来""我要看原始密码"，
   或在飞书发了 `/raw on`。没有明确要求 = 一律脱敏。
 - 生产库密码 / 私钥 / 线上密钥即便被要求，也先确认用途再给，并提醒用完 `/raw off`。
@@ -35,12 +37,14 @@ secret-guard 分两条防线，**同一套检测引擎**（`orchestrator/secrets
 
 ## 能识别的类型
 
-DB/AMQP 连接串密码（`scheme://user:PASS@`）、AWS AK（`AKIA/ASIA`）、阿里云 AK（`LTAI`）、
-华为云 AK（`HXWZ`）、Anthropic（`sk-ant-`）、OpenAI（`sk-`）、GitHub token/PAT（`ghp_`/`github_pat_`）、
-Slack（`xox*`）、Google（`AIza`）、GitLab（`glpat-`）、careyclaw（`oct_`）、JWT（`eyJ….….…`），
-以及 `password= / api_key: / secret: / access_key / ak / sk` 等**上下文赋值**（自动排除
-`YOUR_*`/`example_*`/`*_here`/`process.env.*` 等占位符）。**故意不含**"40 位以上 hex 一律脱"这类
-宽规则——会误伤 git SHA / 哈希、甚至损坏 transcript。宁可漏，不可乱。
+DB/AMQP 连接串密码（`scheme://user:PASS@`）、Anthropic（`sk-ant-`）、OpenAI（`sk-`）、
+GitHub token/PAT（`ghp_`/`github_pat_`）、Slack（`xox*`）、Google（`AIza`）、GitLab（`glpat-`）、
+careyclaw（`oct_`）、JWT（`eyJ….….…`），以及 `password= / api_key: / secret: / secret_key / sk`
+等**上下文赋值**（自动排除 `YOUR_*`/`example_*`/`*_here`/`process.env.*` 等占位符）。
+**故意不含**"40 位以上 hex 一律脱"这类宽规则——会误伤 git SHA / 哈希、甚至损坏 transcript。宁可漏，不可乱。
+
+> **AK（access key）类已按需求移除**：AWS（`AKIA/ASIA`）、阿里云（`LTAI`）、华为云（`HXWZ`）AK 前缀，
+> 以及 `access_key`/`ak` 上下文赋值都**不再识别/脱敏**。遇 AK 明文靠 agent 自己按上面的行为准则掩码。
 
 ## 回显脱敏开关：`/raw`（飞书命令）
 

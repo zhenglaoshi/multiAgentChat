@@ -7,7 +7,6 @@
  *   - OpenAI (sk-...)
  *   - Lark App Secret 格式（32 位十六进制通常）
  *   - JWT (eyJ...eyJ...) 长长的 base64
- *   - AWS access key (AKIA...)
  *   - 邮箱（保守：只脱 @ 后半段）
  *   - IP + port（保守，不脱本地）
  *   - .env 常见变量赋值行（*_SECRET *_TOKEN *_KEY *_PASSWORD *_PW =）
@@ -27,7 +26,7 @@ const RULES: Rule[] = [
   { name: 'anthropic', re: /\bsk-ant-[a-zA-Z0-9-_]{20,}/g, replace: '<REDACTED-ANTHROPIC>' },
   { name: 'github-pat', re: /\b(?:ghp|gho|ghs|ghr|ghu)_[a-zA-Z0-9]{20,}\b/g, replace: '<REDACTED-GH>' },
   { name: 'openai', re: /\bsk-[a-zA-Z0-9]{40,}\b/g, replace: '<REDACTED-OPENAI>' },
-  { name: 'aws', re: /\bAKIA[0-9A-Z]{16}\b/g, replace: '<REDACTED-AWS-KEY>' },
+  // 注：AWS access key (AKIA...) 规则已按需求移除
   { name: 'jwt', re: /\beyJ[a-zA-Z0-9_-]+\.eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+/g, replace: '<REDACTED-JWT>' },
   {
     name: 'env-secret-line',
