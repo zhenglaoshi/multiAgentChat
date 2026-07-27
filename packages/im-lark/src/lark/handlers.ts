@@ -241,6 +241,7 @@ interface CardActionEvent {
 
 async function buildBrowseReply(
   cwd: string,
+  page = 0,
 ): Promise<{ toast?: { type: string; content: string }; card?: unknown }> {
   if (!existsSync(cwd)) {
     return { toast: { type: 'error', content: `目录不存在：${cwd}` } };
@@ -268,9 +269,9 @@ async function buildBrowseReply(
     card: browseCard({
       currentCwd: cwd,
       parentCwd: parent === cwd ? undefined : parent,
-      subdirs: subdirs.slice(0, 30),
+      subdirs,          // 传全量，分页在卡片内部做（不再截断前 30）
       home: homedir(),
-      truncated: subdirs.length > 30,
+      page,
     }),
   };
 }
@@ -2222,6 +2223,7 @@ async function handleCardAction(
 
   if (action === 'browse-dir' || action === 'browse-dir-select') {
     let target: string | undefined;
+    let page = 0;
     if (action === 'browse-dir-select') {
       const option = data.action?.option;
       if (option?.startsWith('browse-dir|')) {
@@ -2229,9 +2231,12 @@ async function handleCardAction(
       }
     } else {
       target = value['cwd'] as string | undefined;
+      // 翻页：停在同目录换页（进入子目录时无 page → 从第 0 页开始）
+      const p = Number(value['page']);
+      if (Number.isInteger(p) && p >= 0) page = p;
     }
     if (!target) return { toast: { type: 'error', content: '缺 cwd' } };
-    return await buildBrowseReply(target);
+    return await buildBrowseReply(target, page);
   }
 
   // AskUserQuestion 选项按钮：点了发方向键 (index)↓+回车 驱动源 shell 的原生选择菜单。

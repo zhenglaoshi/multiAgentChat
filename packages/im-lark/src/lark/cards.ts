@@ -480,19 +480,38 @@ export interface BrowseCardEntry {
 export interface BrowseCardData {
   currentCwd: string;              // 当前浏览到哪
   parentCwd?: string;              // 上一层（用于「返回上级」）
-  subdirs: BrowseCardEntry[];      // 当前目录下的子文件夹
+  subdirs: BrowseCardEntry[];      // 当前目录下的**全部**子文件夹（卡片内部分页展示）
   home: string;
-  truncated?: boolean;             // 是否列表被截断（超过展示上限）
+  page?: number;                   // 当前页（0-based）；超过总页数会被夹到合法范围
+  truncated?: boolean;             // 已废弃：分页后不再截断，保留字段仅为兼容
 }
+
+/** 单页最多列多少子文件夹（feishu select_static 选项有上限，且太长下拉难滚 → 分页）。 */
+const BROWSE_PAGE_SIZE = 25;
 
 export function browseCard(data: BrowseCardData) {
   const cwdShown = homeify(data.currentCwd, data.home);
+  const total = data.subdirs.length;
+  const pageCount = Math.max(1, Math.ceil(total / BROWSE_PAGE_SIZE));
+  // 夹到合法范围（防越界 page）
+  const page = Math.min(Math.max(0, data.page ?? 0), pageCount - 1);
+  const start = page * BROWSE_PAGE_SIZE;
+  const end = Math.min(start + BROWSE_PAGE_SIZE, total);
+  const pageSlice = data.subdirs.slice(start, end);
+
+  const countLine =
+    total === 0
+      ? '（这里没有子文件夹）'
+      : pageCount > 1
+        ? `子文件夹 ${total} 个 · 第 ${page + 1}/${pageCount} 页（本页 ${start + 1}–${end}）`
+        : `子文件夹 ${total} 个`;
+
   const elements: unknown[] = [
     {
       tag: 'div',
       text: {
         tag: 'lark_md',
-        content: `📍 **当前**：\`${cwdShown}\`\n${data.subdirs.length === 0 ? '（这里没有子文件夹）' : `子文件夹 ${data.subdirs.length} 个${data.truncated ? '（已截断，显示前 30）' : ''}`}`,
+        content: `📍 **当前**：\`${cwdShown}\`\n${countLine}`,
       },
     },
     { tag: 'hr' },
@@ -519,13 +538,13 @@ export function browseCard(data: BrowseCardData) {
     },
   ];
 
-  if (data.subdirs.length > 0) {
+  if (total > 0) {
     elements.push({ tag: 'hr' });
     elements.push({
       tag: 'div',
       text: { tag: 'lark_md', content: '📂 **进入子文件夹**' },
     });
-    // 用 select_static 一次性列出（避免几十个按钮把卡片撑爆）
+    // 用 select_static 列出本页（避免几十个按钮把卡片撑爆 + 绕开 select 选项上限）
     elements.push({
       tag: 'action',
       actions: [
@@ -535,7 +554,7 @@ export function browseCard(data: BrowseCardData) {
             tag: 'plain_text',
             content: '选一个子文件夹进入…',
           },
-          options: data.subdirs.slice(0, 30).map((e) => ({
+          options: pageSlice.map((e) => ({
             text: {
               tag: 'plain_text',
               content: truncate(
@@ -549,6 +568,27 @@ export function browseCard(data: BrowseCardData) {
         },
       ],
     });
+    // 分页导航（仅多页时出现）：上一页 / 下一页，停在同目录、翻页
+    if (pageCount > 1) {
+      const navButtons: unknown[] = [];
+      if (page > 0) {
+        navButtons.push({
+          tag: 'button',
+          text: { tag: 'plain_text', content: '◀ 上一页' },
+          type: 'default',
+          value: { action: 'browse-dir', cwd: data.currentCwd, page: page - 1 },
+        });
+      }
+      if (page < pageCount - 1) {
+        navButtons.push({
+          tag: 'button',
+          text: { tag: 'plain_text', content: '下一页 ▶' },
+          type: 'default',
+          value: { action: 'browse-dir', cwd: data.currentCwd, page: page + 1 },
+        });
+      }
+      elements.push({ tag: 'action', actions: navButtons });
+    }
   }
 
   elements.push({ tag: 'hr' });
