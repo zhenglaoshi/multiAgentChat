@@ -1362,8 +1362,20 @@ async function dispatchSendToTab(
     // do script 已经把字符送进去，等 0.4s 让字符进 claude 输入缓冲再补 Enter
     await new Promise((r) => setTimeout(r, 400));
     try {
-      await forceEnter(tab.tty);
-      logger.info('forceEnter sent', { tty: tab.tty });
+      const fe = await forceEnter(tab.tty);
+      logger.info('forceEnter sent', { tty: tab.tty, ok: fe.ok, blocked: fe.blocked, frontApp: fe.frontApp });
+      if (fe.blocked) {
+        // 系统弹框/锁屏抢了焦点，前台守卫拦住没盲按回车（防误触弹框默认键）。
+        // 命令文本已注入 tab 但没提交 → 告警，让用户处理完弹框后重发/补回车。
+        const who = fe.frontApp ? `「${fe.frontApp}」` : '锁屏/未知窗口';
+        void sendText(
+          client,
+          ctx.chatId,
+          `⚠️ 命令已发到 ${tab.tty}，但**没执行**——前台被 ${who} 挡住（系统弹框或锁屏）。\n` +
+          `盲按回车可能误触它的默认按钮（如权限「允许」），所以跳过了。\n` +
+          `👉 处理完弹框 / 解锁并把 Terminal 切回该 tab 后，**重发一次刚才的命令**即可（会重新注入并回车）。`,
+        ).catch(() => {});
+      }
     } catch (e) {
       logger.warn('forceEnter failed', { err: (e as Error).message });
     }

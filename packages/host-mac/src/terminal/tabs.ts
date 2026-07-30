@@ -364,8 +364,11 @@ export async function newTab(opts: NewTabOptions = {}): Promise<string> {
  * 流程：
  *  1. 记录原 frontmost app
  *  2. activate Terminal + 选定目标 tab
- *  3. System Events keystroke return
- *  4. 立即切回原 app（减少打扰，~200ms 闪屏）
+ *  3. **前台守卫**：确认前台确实是 Terminal 且前台窗口选中 tab 就是目标 tty 才发 Return；
+ *     否则（系统弹框 / 锁屏抢焦点，activate 顶不上去）**不盲按**——盲按会把 Return 打到
+ *     弹框上、甚至误触其默认按钮（如权限「允许」），既没提交命令又有副作用。返回 "blocked"。
+ *  4. System Events key code 36（Return）
+ *  5. 立即切回原 app（减少打扰，~200ms 闪屏）
  */
 const FORCE_ENTER_SCRIPT = `
 on run argv
@@ -378,30 +381,62 @@ on run argv
     end tell
   end try
 
-  set didEnter to false
+  -- 阶段1：纯匹配、零焦点副作用（仿 CLOSE_SCRIPT）。匹配的 try 只吞"某窗口枚举 tab 失败"，
+  -- 不吞焦点操作的错——把 activate/set frontmost 放阶段2循环外，脚本真出错时会抛、被上层捕获，
+  -- 不会误当成"被弹框挡住"。
+  set foundWin to missing value
+  set foundTab to missing value
   tell application "Terminal"
     repeat with w in windows
       try
         repeat with t in tabs of w
           if (tty of t) is equal to targetTty then
-            activate
-            set frontmost of w to true
-            set selected tab of w to t
-            delay 0.15
-            tell application "System Events"
-              key code 36  -- Return key
-            end tell
-            set didEnter to true
+            set foundWin to w
+            set foundTab to t
             exit repeat
           end if
         end repeat
-        if didEnter then exit repeat
       end try
+      if foundWin is not missing value then exit repeat
     end repeat
   end tell
+  if foundWin is missing value then return "not-found"
 
-  -- 切回原 app（如果不是 Terminal 本身）
-  if didEnter and prevAppName is not "" and prevAppName is not "Terminal" then
+  -- 阶段2：循环外改焦点（失败就抛，别吞）
+  tell application "Terminal"
+    activate
+    set frontmost of foundWin to true
+    set selected tab of foundWin to foundTab
+  end tell
+  delay 0.15
+
+  -- 前台守卫：弹框/锁屏抢焦点时 activate 顶不上去，此时绝不发回车
+  set frontApp to ""
+  try
+    tell application "System Events"
+      set frontApp to name of (first application process whose frontmost is true)
+    end tell
+  end try
+  set curTty to ""
+  try
+    tell application "Terminal"
+      set curTty to (tty of selected tab of front window)
+    end tell
+  end try
+
+  set didEnter to false
+  set blockedApp to ""
+  if frontApp is "Terminal" and curTty is equal to targetTty then
+    tell application "System Events"
+      key code 36  -- Return key
+    end tell
+    set didEnter to true
+  else
+    set blockedApp to frontApp
+  end if
+
+  -- 切回原 app（成功/blocked 都切——阶段2已真实动过焦点，一律恢复以减少打扰）
+  if prevAppName is not "" and prevAppName is not "Terminal" then
     try
       tell application "System Events"
         set frontmost of (first application process whose name is prevAppName) to true
@@ -412,7 +447,7 @@ on run argv
   if didEnter then
     return "ok"
   else
-    return "not-found"
+    return "blocked|" & blockedApp
   end if
 end run
 `;
@@ -458,13 +493,31 @@ export async function getUserFocus(): Promise<{
   }
 }
 
+/** forceEnter 的结果：区分「回车已发」「被前台弹框/锁屏挡住没敢发」「没找到 tab」。 */
+export interface ForceEnterResult {
+  /** Return 确实发出去了 */
+  ok: boolean;
+  /** 前台不是目标 tab（系统弹框/锁屏抢了焦点）→ 为防误触弹框默认按钮，没发回车 */
+  blocked: boolean;
+  /** blocked 时的前台 app 名（'' = 拿不到，多半是锁屏 loginwindow） */
+  frontApp?: string;
+}
+
+/** 解析 FORCE_ENTER_SCRIPT 的输出（"ok" / "blocked|<app>" / "not-found"）→ 结果结构。纯函数，便于单测。 */
+export function parseForceEnterOutput(out: string): ForceEnterResult {
+  const s = out.trim();
+  if (s === 'ok') return { ok: true, blocked: false };
+  if (s.startsWith('blocked|')) return { ok: false, blocked: true, frontApp: s.slice('blocked|'.length) };
+  return { ok: false, blocked: false };
+}
+
 /**
  * 在目标 tab 显式发一次 Return 键。
  * 用于 claude TUI 这种"\n 不提交 prompt"的程序。
+ * 带前台守卫：只有确认前台就是目标 Terminal tab 才真按 Return，被弹框/锁屏挡住则返回 blocked。
  */
-export async function forceEnter(tty: string): Promise<boolean> {
-  const out = await runScriptOrThrow(FORCE_ENTER_SCRIPT, [tty]);
-  return out.trim() === 'ok';
+export async function forceEnter(tty: string): Promise<ForceEnterResult> {
+  return parseForceEnterOutput(await runScriptOrThrow(FORCE_ENTER_SCRIPT, [tty]));
 }
 
 // 关**单个 tab**（不是整窗）：选中目标 tab → 前台化 → System Events Cmd-W（= Close Tab，
