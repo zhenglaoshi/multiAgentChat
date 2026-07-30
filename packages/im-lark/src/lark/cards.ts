@@ -13,6 +13,15 @@ function truncate(s: string, n: number): string {
 }
 
 /**
+ * 用户可控字符串拼进 `lark_md` 前的转义：反引号（提前闭合 inline code）、`[`/`]`（组装
+ * `[text](url)` / `![](url)` 钓鱼链接/图片）、反斜杠、`<`（lark_md 白名单 HTML-like 标签）。
+ * plain_text 元素不解析 markdown，无需转义——只用于 lark_md/div content。
+ */
+export function escapeLarkMd(s: string): string {
+  return s.replace(/[`\\[\]]/g, '\\$&').replace(/</g, '&lt;');
+}
+
+/**
  * 中间省略、保头保尾 —— 用于**区分性信息常在尾部**的场景（路径的 basename、
  * 选项的结尾差异）。tail-cut 的 `truncate` 会把 basename/结尾差异截掉导致两项看着一样；
  * 这个保留头+尾，如 `/Users/zheng/ihealth-project/…/rooster2`。
@@ -2527,8 +2536,11 @@ const TAPD_BASE_LABEL: Record<string, string> = {
   develop: '从 develop 切',
 };
 
+/** repo 多选卡每页显示多少个 repo 按钮（3 行 × 3）。超过就分页，任意多 repo 都能翻到。 */
+const TAPD_REPO_PAGE_SIZE = 9;
+
 export function tapdRepoPickerCard(
-  claim: { id: string; branch: string; title: string; system: string; selectedRepos: string[]; sop?: boolean; base?: string; kind?: 'fix' | 'feature' | 'indev' },
+  claim: { id: string; branch: string; title: string; system: string; selectedRepos: string[]; sop?: boolean; base?: string; kind?: 'fix' | 'feature' | 'indev'; pickPage?: number },
   candidates: { path: string; label: string }[],
   home: string,
 ) {
@@ -2540,7 +2552,15 @@ export function tapdRepoPickerCard(
   const taskKind = claim.kind ?? (claim.base === 'current' ? 'indev' : (claim.sop ? 'feature' : 'fix'));
   const taskKindLabel = TAPD_KIND_LABEL[taskKind];
 
-  const repoButtons = candidates.slice(0, 10).map((c) => ({
+  // 分页：不再截断前 10 个，任意多 repo 都能翻到（对齐 browseCard 分页）
+  const total = candidates.length;
+  const pageCount = Math.max(1, Math.ceil(total / TAPD_REPO_PAGE_SIZE));
+  const page = Math.min(Math.max(0, claim.pickPage ?? 0), pageCount - 1); // 夹到合法范围，防越界
+  const start = page * TAPD_REPO_PAGE_SIZE;
+  const end = Math.min(start + TAPD_REPO_PAGE_SIZE, total);
+  const pageSlice = candidates.slice(start, end);
+
+  const repoButtons = pageSlice.map((c) => ({
     tag: 'button',
     text: {
       tag: 'plain_text',
@@ -2556,8 +2576,15 @@ export function tapdRepoPickerCard(
     rows.push({ tag: 'action', actions: repoButtons.slice(i, i + 3) });
   }
 
+  const countLine =
+    total === 0
+      ? "<font color='grey'>（没扫到 repo，用下面「➕ 手输路径」加，或先 /pin 收藏目录）</font>"
+      : pageCount > 1
+        ? `<font color='grey'>repo ${total} 个 · 第 ${page + 1}/${pageCount} 页（本页 ${start + 1}–${end}）</font>`
+        : `<font color='grey'>repo ${total} 个</font>`;
+
   const selList = claim.selectedRepos.length
-    ? claim.selectedRepos.map((p) => `\`${homeify(p, home)}\``).join(' ')
+    ? claim.selectedRepos.map((p) => `\`${escapeLarkMd(homeify(p, home))}\``).join(' ')
     : '<font color=\'grey\'>（还没选，点下面的 repo 勾选，可多选）</font>';
 
   const elements: unknown[] = [
@@ -2569,54 +2596,70 @@ export function tapdRepoPickerCard(
       },
     },
     { tag: 'hr' },
-    { tag: 'div', text: { tag: 'lark_md', content: `已选 repo：${selList}` } },
+    { tag: 'div', text: { tag: 'lark_md', content: `已选 repo：${selList}\n${countLine}` } },
     ...rows,
-    { tag: 'hr' },
-    { tag: 'div', text: { tag: 'lark_md', content: `类型：**${taskKindLabel}**　·　模式：**${modeLabel}**　·　基准：**${baseLabel}**${taskKind === 'indev' ? '' : `\n<font color='grey'>→ 建 \`~/ihealth-work/${taskKind === 'feature' ? 'feature' : 'fix'}_${claim.branch.split('_')[1] ?? ''}/\` 隔离目录（worktree）</font>`}` } },
-    {
-      tag: 'action',
-      actions: [
-        {
-          tag: 'button',
-          text: { tag: 'plain_text', content: `🏷 类型：${taskKindLabel}` },
-          type: 'default',
-          value: { action: 'tapd-cycle-kind', id: claim.id },
-        },
-        {
-          tag: 'button',
-          text: { tag: 'plain_text', content: `🔁 基准：${baseLabel}` },
-          type: 'default',
-          value: { action: 'tapd-cycle-base', id: claim.id },
-        },
-        {
-          tag: 'button',
-          text: { tag: 'plain_text', content: claim.sop ? '切成：直接修' : '切成：SOP 编排' },
-          type: 'default',
-          value: { action: 'tapd-toggle-sop', id: claim.id },
-        },
-      ],
-    },
-    {
-      tag: 'action',
-      actions: [
-        {
-          tag: 'button',
-          text: { tag: 'plain_text', content: '🚀 建分支并开工' },
-          type: 'primary',
-          value: { action: 'tapd-claim-go', id: claim.id },
-        },
-        {
-          tag: 'button',
-          text: { tag: 'plain_text', content: '取消' },
-          type: 'default',
-          value: { action: 'tapd-ignore', id: claim.id },
-        },
-      ],
-    },
   ];
 
+  // 分页导航（仅多页时出现）：上一页 / 下一页，停在同 claim 换页
+  if (pageCount > 1) {
+    const nav: unknown[] = [];
+    if (page > 0) nav.push({ tag: 'button', text: { tag: 'plain_text', content: '◀ 上一页' }, type: 'default', value: { action: 'tapd-repo-page', id: claim.id, page: page - 1 } });
+    if (page < pageCount - 1) nav.push({ tag: 'button', text: { tag: 'plain_text', content: '下一页 ▶' }, type: 'default', value: { action: 'tapd-repo-page', id: claim.id, page: page + 1 } });
+    elements.push({ tag: 'action', actions: nav });
+  }
+
+  // 🔍 搜索添加：下拉可打字过滤（覆盖前 50 个候选），选中即勾选/取消——找 repo 比翻页快
+  if (total > 0) {
+    elements.push({
+      tag: 'action',
+      actions: [
+        {
+          tag: 'select_static',
+          placeholder: { tag: 'plain_text', content: '🔍 搜索 repo 名快速添加…' },
+          options: candidates.slice(0, 50).map((c) => ({
+            text: { tag: 'plain_text', content: truncate((selected.has(c.path) ? '✅ ' : '') + c.label, 60) },
+            value: `pick|${c.path}`,
+          })),
+          value: { action: 'tapd-repo-select', id: claim.id },
+        },
+      ],
+    });
+  }
+  // ➕ 手输路径：扫描没覆盖到的 repo（新 clone / 不在扫描根下）现场补
+  elements.push({ tag: 'action', actions: [{ tag: 'button', text: { tag: 'plain_text', content: '➕ 手输路径' }, type: 'default', value: { action: 'tapd-repo-addpath', id: claim.id } }] });
+
+  elements.push({ tag: 'hr' });
+  // 三组开关的中文说明（消除「看不懂」）
+  elements.push({
+    tag: 'div',
+    text: {
+      tag: 'lark_md',
+      content:
+        "<font color='grey'>🏷 **类型**：线上bug/新需求 → 建 `~/ihealth-work/…_<id6>/` 独立目录(worktree)，不碰你当前代码；开发中(原地改) → 各 repo 当前分支直接改。\n"
+        + '🔁 **基准**：新分支从哪切 —— HEAD=从当前提交，master/develop=先 fetch 再从主干切；「当前分支直接改」=不建新分支。\n'
+        + '🧩 **模式**：SOP=多步编排(需求→架构→编码→测试，含审批 gate)；直接修=一把梭。</font>',
+    },
+  });
+  elements.push({ tag: 'div', text: { tag: 'lark_md', content: `类型：**${taskKindLabel}**　·　模式：**${modeLabel}**　·　基准：**${baseLabel}**${taskKind === 'indev' ? '' : `\n<font color='grey'>→ 建 \`~/ihealth-work/${taskKind === 'feature' ? 'feature' : 'fix'}_${claim.branch.split('_')[1] ?? ''}/\` 隔离目录（worktree）</font>`}` } });
+  elements.push({
+    tag: 'action',
+    actions: [
+      { tag: 'button', text: { tag: 'plain_text', content: `🏷 类型：${taskKindLabel}` }, type: 'default', value: { action: 'tapd-cycle-kind', id: claim.id } },
+      { tag: 'button', text: { tag: 'plain_text', content: `🔁 基准：${baseLabel}` }, type: 'default', value: { action: 'tapd-cycle-base', id: claim.id } },
+      { tag: 'button', text: { tag: 'plain_text', content: claim.sop ? '切成：直接修' : '切成：SOP 编排' }, type: 'default', value: { action: 'tapd-toggle-sop', id: claim.id } },
+    ],
+  });
+  elements.push({
+    tag: 'action',
+    actions: [
+      { tag: 'button', text: { tag: 'plain_text', content: '🚀 建分支并开工' }, type: 'primary', value: { action: 'tapd-claim-go', id: claim.id } },
+      { tag: 'button', text: { tag: 'plain_text', content: '取消' }, type: 'default', value: { action: 'tapd-ignore', id: claim.id } },
+    ],
+  });
+
   return {
-    config: { wide_screen_mode: true },
+    // update_multi：多选 toggle / 翻页多次 patch 的交互卡必须带，否则第二次起飞书端视觉不刷新
+    config: { wide_screen_mode: true, update_multi: true },
     header: {
       template: 'turquoise',
       title: { tag: 'plain_text', content: `🌿 认领 · 选涉及的 repo（可多选）` },
@@ -2626,41 +2669,26 @@ export function tapdRepoPickerCard(
 }
 
 /**
- * 脏工作区策略卡：某些选中的 repo 当前分支有未提交改动，让用户选怎么切分支。
- * 干净的 repo 会照常 checkout -b，只对脏 repo 应用所选策略。
+ * 手输 repo 路径的表单卡（飞书 schema 2.0 form + input）：扫描没覆盖到的 repo 现场补。
+ * 提交 → tapd-repo-addpath-submit：校验是存在的目录后，加入该 claim 的候选并默认勾选。
  */
-export function tapdDirtyCard(
-  claim: { id: string; branch: string; title: string },
-  dirty: { repo: string; branch: string; changeCount: number }[],
-  home: string,
-) {
-  const list = dirty
-    .map((d) => `- \`${homeify(d.repo, home)}\`（当前 \`${d.branch || '?'}\` · ${d.changeCount} 处未提交）`)
-    .join('\n');
-  const btn = (content: string, strategy: string, type: string) => ({
-    tag: 'button',
-    text: { tag: 'plain_text', content },
-    type,
-    value: { action: 'tapd-go-strategy', id: claim.id, strategy },
-  });
+export function tapdAddPathCard(claimId: string) {
   return {
-    config: { wide_screen_mode: true },
-    header: {
-      template: 'orange',
-      title: { tag: 'plain_text', content: '⚠️ 有 repo 未提交改动 · 怎么切分支？' },
-    },
-    elements: [
-      {
-        tag: 'div',
-        text: {
-          tag: 'lark_md',
-          content: `要切到 \`${claim.branch}\`，但这些 repo 的当前分支有未提交改动：\n${list}\n\n<font color='grey'>干净的 repo 会照常切；下面的选择只作用于上面这些脏 repo。</font>`,
+    schema: '2.0',
+    header: { title: { tag: 'plain_text', content: '➕ 手输 repo 路径' }, template: 'turquoise' },
+    body: {
+      elements: [
+        { tag: 'markdown', content: '扫描没找到的 repo，在这里填**绝对路径**（支持 `~`），提交后自动勾上。' },
+        {
+          tag: 'form',
+          name: 'addpathform',
+          elements: [
+            { tag: 'input', name: 'path', label: { tag: 'plain_text', content: 'repo 目录路径' }, placeholder: { tag: 'plain_text', content: '/Users/you/code/xxx 或 ~/code/xxx' } },
+            { tag: 'button', text: { tag: 'plain_text', content: '✅ 添加' }, type: 'primary', name: 'submit', form_action_type: 'submit', behaviors: [{ type: 'callback', value: { action: 'tapd-repo-addpath-submit', id: claimId } }] },
+          ],
         },
-      },
-      { tag: 'hr' },
-      { tag: 'action', actions: [btn('📦 暂存后切(stash)', 'stash', 'primary'), btn('🌿 worktree 隔离', 'worktree', 'default'), btn('➡️ 照切带过去', 'carry', 'default')] },
-      { tag: 'action', actions: [btn('⏭ 跳过脏 repo', 'skip', 'default'), { tag: 'button', text: { tag: 'plain_text', content: '取消' }, type: 'default', value: { action: 'tapd-ignore', id: claim.id } }] },
-    ],
+      ],
+    },
   };
 }
 

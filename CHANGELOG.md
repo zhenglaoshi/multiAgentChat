@@ -6,6 +6,12 @@
 
 ## [未发布]
 
+### 2026-07-30
+
+**改动**
+- **TAPD 认领 repo 多选卡：去掉「只显示前 10 个」截断 + 分页 + 搜索/手输路径入口（A+B）**（用户反馈：repo 超过 10 个就选不到 = 「repo 不全」）。根因：认领候选是**全局列表**（`/pin 书签` + 最近 cwd + 全机 git 扫描 `dir-index`），与 TAPD 任务无关，且卡片 `slice(0,10)` 硬截断——第 11 个起在认领界面根本选不到。修：① **分页**——`tapdRepoPickerCard` 改成每页 9 个 repo 按钮（`TAPD_REPO_PAGE_SIZE=9`）+「◀ 上一页 / 下一页 ▶」（对齐 `/new` 分页），page 存 `claim.pickPage`、`Math.min/max` 夹到 `[0,pageCount-1]` 双重防越界，`tapd-repo-page` action 翻页（`Number.isInteger`+`≥0` 校验，非法回退 0）。② **搜索**——加 `select_static`「🔍 搜索 repo 名快速添加…」下拉可打字过滤（覆盖前 50，`tapd-repo-select` 选中即 toggle）。③ **手输路径**——「➕ 手输路径」按钮弹 schema-2.0 表单卡（`tapdAddPathCard`），提交 `tapd-repo-addpath-submit` 只读 `fs.stat` 校验是存在的目录后并入 `claim.extraRepos`（`candidatesForClaim` 置顶去重）+ 默认勾选，回来 patch 原 repo 卡（`claim.pickCardMessageId`）——覆盖扫描盲区里的 repo。picker 补 `update_multi:true`（多选/翻页多次 patch 视觉才刷新）。14 单测。
+- **认领卡三组开关补中文说明 + 清理死的脏工作区策略卡（D）**：① repo 卡加一段灰字说明「🏷 类型 / 🔁 基准 / 🧩 模式」各自含义（用户反馈「切分支选项没明白」）。② 删除 `tapdDirtyCard`（📦stash/🌿worktree/➡️carry/⏭skip）+ `tapd-go-strategy` action——飞书侧这套策略是**死 UI**：飞书的 `finalizeTapdClaim` 从不消费 `strategy` 参数，选哪个结果都一样。worktree 隔离本就不碰源工作区、indev 原地改脏是预期，故 `tapd-claim-go` 去掉脏检查直接开工，飞书 `finalizeTapdClaim` 签名去掉无用的 `strategy` 参数。注：`host-mac/git.ts` 的 `prepareBugBranch`/`DirtyStrategy` **不是死码**，企微认领 `runWeComTapdClaim`（`apps/daemon/src/index.ts`）仍以硬编码 `'normal'` 调用，本次不动。（`orchestrator/tapd/claims.ts` 加 `pickPage/extraRepos/pickCardMessageId` 字段 + `setPickPage/addExtraRepo` + `im-lark/lark/{cards,handlers}.ts` + `tests/tapd-repo-picker-card.test.ts`）
+
 ### 2026-07-27
 
 **改动**

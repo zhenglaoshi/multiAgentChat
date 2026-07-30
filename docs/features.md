@@ -594,7 +594,7 @@ daemon 启动时**自动**做的事，让新 PC 首次跑通只需要 3 步（�
 - **进度卡不实时 patch**：企微 template_card body 不支持任意更新；用简化"初始 ack + isFinal 摘要"模式
 - **部分 card 类 slash 命令**（`/dashboard /tabs /new`）目前只飞书能渲染成卡；企微收到 text-kind 提示"卡片去飞书看"
 - **SOP stageProgressCard** 只飞书 render（企微 render 未做，低价值）
-- **TAPD 认领**（§21）：企微支持通知 + 单 repo 简化认领；多 repo 多选 / 需求 SOP / 脏工作区策略卡只飞书
+- **TAPD 认领**（§21）：企微支持通知 + 单 repo 简化认领；多 repo 多选 / 分页 / 搜索 / 手输路径 / 需求 SOP 只飞书
 
 ### 什么时候用
 - 团队用企微不用飞书

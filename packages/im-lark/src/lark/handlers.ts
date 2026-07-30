@@ -52,7 +52,7 @@ const CLAUDE_TUI_REMINDER = [
   '⚠ 回到飞书 — 飞书看不见你的 TUI 屏幕。**先在 TUI 完整回答用户，然后再** `agent lark send-text "<同样一份摘要>"` 推到飞书（两个渠道并行，不能只推不答）。要用户从选项里选（单/多选）或填文本，**用 `agent lark ask single|multi|input`**（stdout 拿答案 JSON），不要用 AskUserQuestion 或在 TUI 里 wait 键盘。',
 ].join('\n');
 import { patchCard, sendCardReturnId, sendImage } from './api.js';
-import { ackCard, askCard, bareShellNoAgentCard, batchProgressCard, browseCard, careyclawKeyCard, careyclawKeyFormCard, chainProgressCard, closeIdleConfirmCard, closeTabConfirmCard, connectConfirmCard, connectFormCard, connectStatusCard, permLevelCard, planCard, progressCard, receiptCard, tapdClaimCard, type BatchTaskItem, type ChainStepItem } from './cards.js';
+import { ackCard, askCard, bareShellNoAgentCard, batchProgressCard, browseCard, careyclawKeyCard, careyclawKeyFormCard, chainProgressCard, closeIdleConfirmCard, closeTabConfirmCard, connectConfirmCard, connectFormCard, connectStatusCard, escapeLarkMd, permLevelCard, planCard, progressCard, receiptCard, tapdClaimCard, type BatchTaskItem, type ChainStepItem } from './cards.js';
 import { getCareyclawKeyStatus, setCareyclawKey } from 'multiagent-orchestrator';
 import { generatePlan, getPlan } from 'multiagent-orchestrator';
 import { getPerfItem, savePerfItem, markPerfSnoozed, markPerfIgnoredForever, createPerfStory } from 'multiagent-orchestrator';
@@ -1470,13 +1470,37 @@ async function tapdRepoCandidates(
   return out;
 }
 
+/** 把 claim 手输补充的 repo（extraRepos）并到候选最前面，去重，供 repo 多选卡渲染。 */
+function candidatesForClaim(
+  base: { path: string; label: string }[],
+  claim: { extraRepos?: string[] },
+): { path: string; label: string }[] {
+  const extra = (claim.extraRepos ?? []).map((p) => ({ path: p, label: `📌 ${p.split('/').filter(Boolean).pop() || p}` }));
+  const seen = new Set(extra.map((e) => e.path));
+  return [...extra, ...base.filter((c) => !seen.has(c.path))];
+}
 
-/** 按脏工作区策略切各 repo 分支 → 开一个 claude tab → 注入 bug 上下文 → 回结果卡。 */
+/**
+ * repo 多选卡的原地刷新：patch 用户当前点的这张卡（而不是再发一张新卡）。
+ * 通用 card dispatcher 对返回的 `{card}` 是 `sendCard`=发新消息，会刷屏且让 pickCardMessageId 失真；
+ * 这里显式 patch 被点卡（配合卡上的 update_multi:true），只留一张卡、messageId 稳定。
+ * 拿不到 messageId 时退回返回 `{card}` 发新卡，至少不丢更新。
+ */
+function patchOrReply(client: Lark.Client, data: CardActionEvent, card: unknown): { card?: unknown } {
+  const mid = getMessageId(data);
+  if (mid) {
+    void patchCard(client, mid, card).catch((e) => logger.warn('picker patch failed', { err: (e as Error).message }));
+    return {};
+  }
+  return { card };
+}
+
+
+/** 切各 repo 分支（worktree 隔离 / indev 原地）→ 开一个 claude tab → 注入 bug 上下文 → 回结果卡。 */
 async function finalizeTapdClaim(
   client: Lark.Client,
   chatId: string,
   claim: import('multiagent-orchestrator').TapdClaim,
-  strategy: string,
 ): Promise<void> {
   const hm = await import('multiagent-host-mac');
   const orch = await import('multiagent-orchestrator');
@@ -2630,7 +2654,6 @@ end run
         const orch = await import('multiagent-orchestrator');
         const hm = await import('multiagent-host-mac');
         const { tapdRepoPickerCard } = await import('./cards.js');
-        const { sendCardMessage } = await import('./api.js');
         const cfg = orch.loadTapdConfig();
         let description: string | undefined;
         if (cfg.enabled && Number.isFinite(workspaceId)) {
@@ -2641,7 +2664,7 @@ end run
         const url = system === 'bug'
           ? `https://www.tapd.cn/${workspaceId}/bugtrace/bugs/view/${id}`
           : `https://www.tapd.cn/${workspaceId}/prong/stories/view/${id}`;
-        const claim = {
+        const claim: import('multiagent-orchestrator').TapdClaim = {
           id, system, workspaceId, title, branch, url, description,
           selectedRepos: [] as string[],
           sop: system === 'story', // 需求默认走 SOP，缺陷默认普通任务
@@ -2656,8 +2679,10 @@ end run
           claim.sop = prev.sop;
         }
         await orch.saveClaim(claim);
-        const candidates = await tapdRepoCandidates(hm);
-        await sendCardMessage(client, chatId, tapdRepoPickerCard(claim, candidates, process.env['HOME'] ?? ''));
+        const candidates = candidatesForClaim(await tapdRepoCandidates(hm), claim);
+        // 存卡 messageId：手输路径表单提交后回来 patch 这张 repo 卡
+        const mid = await sendCardReturnId(client, chatId, tapdRepoPickerCard(claim, candidates, process.env['HOME'] ?? ''));
+        if (mid) { claim.pickCardMessageId = mid; await orch.saveClaim(claim); }
       } catch (e) {
         logger.warn('tapd-claim failed', { err: (e as Error).message });
       }
@@ -2674,8 +2699,8 @@ end run
     const { tapdRepoPickerCard } = await import('./cards.js');
     const claim = await orch.toggleRepo(id, cwd);
     if (!claim) return { toast: { type: 'error', content: '认领已失效' } };
-    const candidates = await tapdRepoCandidates(hm);
-    return { card: tapdRepoPickerCard(claim, candidates, process.env['HOME'] ?? '') };
+    const candidates = candidatesForClaim(await tapdRepoCandidates(hm), claim);
+    return patchOrReply(client, data, tapdRepoPickerCard(claim, candidates, process.env['HOME'] ?? ''));
   }
 
   if (action === 'tapd-toggle-sop') {
@@ -2688,8 +2713,8 @@ end run
     if (!claim) return { toast: { type: 'error', content: '认领已失效' } };
     claim.sop = !claim.sop;
     await orch.saveClaim(claim);
-    const candidates = await tapdRepoCandidates(hm);
-    return { card: tapdRepoPickerCard(claim, candidates, process.env['HOME'] ?? '') };
+    const candidates = candidatesForClaim(await tapdRepoCandidates(hm), claim);
+    return patchOrReply(client, data, tapdRepoPickerCard(claim, candidates, process.env['HOME'] ?? ''));
   }
 
   if (action === 'tapd-cycle-kind') {
@@ -2708,8 +2733,8 @@ end run
     if (next === 'indev') { claim.base = 'current'; claim.sop = false; }
     else { if (claim.base === 'current') claim.base = 'head'; claim.sop = next === 'feature'; }
     await orch.saveClaim(claim);
-    const candidates = await tapdRepoCandidates(hm);
-    return { card: tapdRepoPickerCard(claim, candidates, process.env['HOME'] ?? '') };
+    const candidates = candidatesForClaim(await tapdRepoCandidates(hm), claim);
+    return patchOrReply(client, data, tapdRepoPickerCard(claim, candidates, process.env['HOME'] ?? ''));
   }
 
   if (action === 'tapd-cycle-base') {
@@ -2724,8 +2749,96 @@ end run
     const cur = order.indexOf((claim.base ?? 'head') as (typeof order)[number]);
     claim.base = order[(cur + 1) % order.length]!;
     await orch.saveClaim(claim);
-    const candidates = await tapdRepoCandidates(hm);
-    return { card: tapdRepoPickerCard(claim, candidates, process.env['HOME'] ?? '') };
+    const candidates = candidatesForClaim(await tapdRepoCandidates(hm), claim);
+    return patchOrReply(client, data, tapdRepoPickerCard(claim, candidates, process.env['HOME'] ?? ''));
+  }
+
+  if (action === 'tapd-repo-page') {
+    const id = value['id'] as string | undefined;
+    if (!id) return { toast: { type: 'error', content: '缺 id' } };
+    const p = Number(value['page']);
+    const orch = await import('multiagent-orchestrator');
+    const hm = await import('multiagent-host-mac');
+    const { tapdRepoPickerCard } = await import('./cards.js');
+    const claim = await orch.setPickPage(id, Number.isInteger(p) && p >= 0 ? p : 0);
+    if (!claim) return { toast: { type: 'error', content: '认领已失效' } };
+    const candidates = candidatesForClaim(await tapdRepoCandidates(hm), claim);
+    return patchOrReply(client, data, tapdRepoPickerCard(claim, candidates, process.env['HOME'] ?? ''));
+  }
+
+  if (action === 'tapd-repo-select') {
+    const id = value['id'] as string | undefined;
+    const option = data.action?.option; // "pick|<path>"
+    const path = option?.startsWith('pick|') ? option.slice('pick|'.length) : undefined;
+    if (!id || !path) return { toast: { type: 'error', content: '无效选择' } };
+    const orch = await import('multiagent-orchestrator');
+    const hm = await import('multiagent-host-mac');
+    const { tapdRepoPickerCard } = await import('./cards.js');
+    const claim = await orch.toggleRepo(id, path);
+    if (!claim) return { toast: { type: 'error', content: '认领已失效' } };
+    const candidates = candidatesForClaim(await tapdRepoCandidates(hm), claim);
+    return patchOrReply(client, data, tapdRepoPickerCard(claim, candidates, process.env['HOME'] ?? ''));
+  }
+
+  if (action === 'tapd-repo-addpath') {
+    // 弹一张手输路径表单卡（另发新消息，不动 repo 卡）→ 提交走 tapd-repo-addpath-submit
+    const id = value['id'] as string | undefined;
+    if (!id) return { toast: { type: 'error', content: '缺 id' } };
+    void (async () => {
+      const { tapdAddPathCard } = await import('./cards.js');
+      const { sendCardMessage } = await import('./api.js');
+      await sendCardMessage(client, chatId, tapdAddPathCard(id)).catch((e) =>
+        logger.warn('tapd-repo-addpath send failed', { err: (e as Error).message }));
+    })();
+    return { toast: { type: 'info', content: '填 repo 路径…' } };
+  }
+
+  if (action === 'tapd-repo-addpath-submit') {
+    const id = value['id'] as string | undefined;
+    const fv = (data.action?.form_value ?? {}) as Record<string, unknown>;
+    const raw = typeof fv['path'] === 'string' ? (fv['path'] as string).trim() : '';
+    if (!id) return { toast: { type: 'error', content: '缺 id' } };
+    const messageId = getMessageId(data);
+    void (async () => {
+      const orch = await import('multiagent-orchestrator');
+      const hm = await import('multiagent-host-mac');
+      const { tapdRepoPickerCard } = await import('./cards.js');
+      const home = process.env['HOME'] ?? '';
+      // 回显进 lark_md 前转义（反引号/方括号/尖括号），防用户输入注入卡片格式（钓鱼链接等）
+      const safeEcho = escapeLarkMd;
+      // 解析 ~ → 必须是绝对路径 → 校验是存在的目录（只读 stat，不执行任何命令）
+      let p = raw;
+      if (p === '~') p = home;
+      else if (p.startsWith('~/')) p = home + p.slice(1);
+      const { resolve: resolvePath, isAbsolute } = await import('node:path');
+      const { stat } = await import('node:fs/promises');
+      // 相对路径会相对 daemon 进程 cwd 解析（非用户预期）→ 直接拒绝，和卡片文案「绝对路径/~」一致
+      if (!isAbsolute(p)) {
+        if (messageId) void patchCard(client, messageId, receiptCard({ title: '❌ 请填绝对路径', detail: `\`${safeEcho(raw || '(空)')}\` 不是绝对路径（用 \`/…\` 或 \`~/…\` 开头）`, template: 'grey' })).catch(() => {});
+        return;
+      }
+      let abs = '';
+      try {
+        abs = resolvePath(p);
+        const st = await stat(abs);
+        if (!st.isDirectory()) throw new Error('not-a-dir');
+      } catch {
+        if (messageId) void patchCard(client, messageId, receiptCard({ title: '❌ 路径无效', detail: `\`${safeEcho(raw || '(空)')}\` 不是存在的目录`, template: 'grey' })).catch(() => {});
+        return;
+      }
+      const claim = await orch.addExtraRepo(id, abs);
+      if (!claim) {
+        if (messageId) void patchCard(client, messageId, receiptCard({ title: '❌ 认领已失效', template: 'grey' })).catch(() => {});
+        return;
+      }
+      // 回来 patch 原 repo 卡（如果还在），把新加的 repo 显示出来并勾上
+      if (claim.pickCardMessageId) {
+        const candidates = candidatesForClaim(await tapdRepoCandidates(hm), claim);
+        void patchCard(client, claim.pickCardMessageId, tapdRepoPickerCard(claim, candidates, home)).catch(() => {});
+      }
+      if (messageId) void patchCard(client, messageId, receiptCard({ title: '✅ 已添加并勾选', detail: `\`${safeEcho(abs)}\``, template: 'green' })).catch(() => {});
+    })();
+    return {};
   }
 
   if (action === 'tapd-ignore') {
@@ -2872,48 +2985,12 @@ end run
     const claim = await orch.loadClaim(id);
     if (!claim) return { toast: { type: 'error', content: '认领已失效' } };
     if (claim.selectedRepos.length === 0) return { toast: { type: 'error', content: '先选至少一个 repo' } };
-    void (async () => {
-      try {
-        const hm = await import('multiagent-host-mac');
-        const { sendCardMessage } = await import('./api.js');
-        const { tapdDirtyCard } = await import('./cards.js');
-        // 当前分支直接改（不建新分支）→ 无需切换，脏是预期的，直接开工
-        if (claim.base === 'current') {
-          await finalizeTapdClaim(client, chatId, claim, 'normal');
-          return;
-        }
-        // 要切新分支：切前查每个选中 repo 的脏状态
-        const states = await Promise.all(claim.selectedRepos.map((r) => hm.gitWorkingState(r)));
-        const dirty = states.filter((s) => s.isRepo && s.dirty);
-        if (dirty.length > 0) {
-          // 有脏 → 弹策略卡让用户选（C 方案）
-          await sendCardMessage(client, chatId, tapdDirtyCard(
-            claim,
-            dirty.map((d) => ({ repo: d.repo, branch: d.branch, changeCount: d.changeCount })),
-            process.env['HOME'] ?? '',
-          ));
-          return;
-        }
-        // 全干净 → 直接切开工
-        await finalizeTapdClaim(client, chatId, claim, 'normal');
-      } catch (e) {
-        logger.warn('tapd-claim-go failed', { err: (e as Error).message });
-      }
-    })();
-    return { toast: { type: 'info', content: '检查工作区…' } };
-  }
-
-  if (action === 'tapd-go-strategy') {
-    const id = value['id'] as string | undefined;
-    const strategy = (value['strategy'] as string | undefined) ?? 'stash';
-    if (!id) return { toast: { type: 'error', content: '缺 id' } };
-    const orch = await import('multiagent-orchestrator');
-    const claim = await orch.loadClaim(id);
-    if (!claim) return { toast: { type: 'error', content: '认领已失效' } };
-    void finalizeTapdClaim(client, chatId, claim, strategy).catch((e) =>
-      logger.warn('tapd-go-strategy failed', { err: (e as Error).message }),
+    // fix/feature 走 worktree 隔离（不碰源工作区，脏不脏都行）；indev 在当前分支原地改（脏是预期）。
+    // 两种都无需事先切/清工作区，直接开工。
+    void finalizeTapdClaim(client, chatId, claim).catch((e) =>
+      logger.warn('tapd-claim-go failed', { err: (e as Error).message }),
     );
-    return { toast: { type: 'success', content: `按「${strategy}」开工中…` } };
+    return { toast: { type: 'info', content: '开工中…' } };
   }
 
   if (action === 'show-approvals') {

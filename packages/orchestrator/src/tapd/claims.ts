@@ -34,6 +34,13 @@ export interface TapdClaim {
   status: 'picking' | 'working' | 'ignored';
   tty?: string;              // 开工后的 tab
   createdAt: number;
+  // ---- repo 选择卡的 UI 态（认领阶段用）----
+  /** repo 多选卡当前页（0-based），翻页时更新，让 toggle 后停在同页。 */
+  pickPage?: number;
+  /** 用户手输补充的 repo 路径（扫描没覆盖到的）；会并入候选并默认勾选。 */
+  extraRepos?: string[];
+  /** repo 多选卡的 messageId（手输路径表单提交后回来 patch 这张卡）。 */
+  pickCardMessageId?: string;
   // ---- A 生命周期（工作 claude 用 `agent tapd stage` 上报，daemon patch 卡）----
   /** 当前阶段 */
   stage?: TapdStage;
@@ -103,6 +110,26 @@ export async function toggleRepo(id: string, cwd: string): Promise<TapdClaim | n
   const i = claim.selectedRepos.indexOf(cwd);
   if (i >= 0) claim.selectedRepos.splice(i, 1);
   else claim.selectedRepos.push(cwd);
+  await saveClaim(claim);
+  return claim;
+}
+
+/** 记录 repo 多选卡的当前页（翻页用），返回更新后的 claim。 */
+export async function setPickPage(id: string, page: number): Promise<TapdClaim | null> {
+  const claim = await loadClaim(id);
+  if (!claim) return null;
+  claim.pickPage = Number.isInteger(page) && page >= 0 ? page : 0;
+  await saveClaim(claim);
+  return claim;
+}
+
+/** 手输补充一个 repo 路径：并入 extraRepos + 默认勾选（幂等去重），返回更新后的 claim。 */
+export async function addExtraRepo(id: string, path: string): Promise<TapdClaim | null> {
+  const claim = await loadClaim(id);
+  if (!claim) return null;
+  if (!claim.extraRepos) claim.extraRepos = [];
+  if (!claim.extraRepos.includes(path)) claim.extraRepos.push(path);
+  if (!claim.selectedRepos.includes(path)) claim.selectedRepos.push(path);
   await saveClaim(claim);
   return claim;
 }
