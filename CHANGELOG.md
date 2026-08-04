@@ -6,6 +6,13 @@
 
 ## [未发布]
 
+### 2026-08-04
+
+**修复**
+- **飞书新建 shell「多次没反应」+ 选择卡点选后重复收到旧问题（两个真机 bug）**：
+  ① **新建 shell 无响应**——`host-mac/terminal/applescript.ts` 的 `runScript` 对 `osascript` 子进程**没有任何超时**，Promise 只在子进程退出时 resolve。macOS 弹「自动化/辅助功能」授权框（`tell "Terminal"`/`System Events` 触发）时 osascript 会**同步阻塞到用户点授权**，`newTab` 永不返回 → 飞书 `/new` 无回卡、无报错。修：加默认 10s 超时（`MCHAT_OSASCRIPT_TIMEOUT_MS` 可调）+ 超时 SIGTERM/2s 后 SIGKILL 兜底 + `settled` flag 防三路（timer/close/error）重复 settle，超时抛明确文案（提示去授权）。放大器一并修：`card.action.trigger` 的 fire-and-forget 分支原先**丢弃 `result.toast`**，导致 create-tab 等失败也静默——现补发 `type==='error'` 的 toast 为文本让失败可见。
+  ② **选择卡重复推旧问题**——飞书 3-5s 未 ack 会重投同事件，而整个 WS 入口**零幂等**；叠加 `driveAskSelectFromCard`/`dispatchSendToTab` 消费 `askArm` 是**无锁读改写**（load→check→sendKeys→save），并发重投/双击时两份都注入方向键 → 打乱 claude 原生 AskUserQuestion 菜单 → 重新弹同一问题 → hook 又推同一张卡（刷屏）。修：`im.message.receive_v1` 按 `message_id` 幂等去重（seen-map，60s TTL + 惰性清理 + 硬上限 1000 丢最老）；`card.action.trigger` 的**非 ask 卡片操作**（建 tab / 写 .env / 建 TAPD 需求 / 重启 tab 等副作用非幂等）按回调 `token` 去重——同一回调的飞书重投 token 不变、新点击是新 token，既挡重投又不误杀 toggle/翻页这类内容相同但属不同点击的合法操作（无 token 的旧 schema 退回不去重，绝不误杀）；`askArm` 消费加进程内同步互斥 `armInFlight`（key=`chatId tty arm.at`，claim 在读 arm 后、任何 await 前，`try/finally` 释放），卡片/文本两路共用同键防交叉并发；in-flight 重复点击静默（首次点击已 patch 原卡）。补 `tests/applescript-timeout.test.ts`（超时/快脚本/禁用超时，darwin-gated）。过 code-reviewer + security-reviewer 双评审：无 high/critical。（`host-mac/terminal/applescript.ts` + `im-lark/lark/handlers.ts` + `tests/applescript-timeout.test.ts`）
+
 ### 2026-07-30
 
 **修复**

@@ -222,6 +222,9 @@ interface MessageReceiveEvent {
 
 interface CardActionEvent {
   schema?: string;
+  // 卡片回调凭证：同一次回调的飞书重试(ack 超时重投)携带**相同** token，新点击是**新** token。
+  // 用它做幂等去重既能挡重投、又不误杀 toggle/翻页这类内容相同但属于不同点击的合法操作。
+  token?: string;
   action?: {
     value?: Record<string, unknown>;
     option?: string;       // select_static 选中的 option value
@@ -238,6 +241,44 @@ interface CardActionEvent {
   };
   operator?: { open_id?: string };
 }
+
+// ── 飞书事件幂等 ──────────────────────────────────────────────────────────
+// 飞书 WS event handler 若 3-5s 内没 return，会重投同一事件（同 message_id）。整个入口
+// 此前零幂等 → 每次重投都把 side effect 再跑一遍（连锁触发 AskUserQuestion 重复刷屏等）。
+// 这里用一个短 TTL 的 seen-map 挡「同一投递的重复」。消息事件用 message_id（重投=同 id、
+// 新消息=新 id，无误伤）。卡片事件不做内容去重（同一按钮的二次点击是合法的 toggle/翻页，
+// 内容哈希会误杀）——卡片侧的重复由 askArm 原子化 + asks.answer 幂等各自兜底。
+const DEDUPE_TTL_MS = 60_000;
+const seenEvents = new Map<string, number>();
+
+/** 命中过（TTL 内）返回 true 并顺手清理过期项；否则登记后返回 false。 */
+function dedupeSeen(key: string): boolean {
+  const now = Date.now();
+  const prev = seenEvents.get(key);
+  if (prev !== undefined && now - prev < DEDUPE_TTL_MS) return true;
+  seenEvents.set(key, now);
+  // 惰性清理：map 偏大时先扫一遍过期项；若清理后仍超硬上限（高频重放/异常场景），
+  // 按插入序丢最老的，保证内存有绝对上限、不会无界增长。
+  if (seenEvents.size > 500) {
+    for (const [k, ts] of seenEvents) {
+      if (now - ts >= DEDUPE_TTL_MS) seenEvents.delete(k);
+    }
+    while (seenEvents.size > 1000) {
+      const oldest = seenEvents.keys().next().value;
+      if (oldest === undefined) break;
+      seenEvents.delete(oldest);
+    }
+  }
+  return false;
+}
+
+// ── askArm 消费的进程内互斥 ────────────────────────────────────────────────
+// driveAskSelectFromCard / dispatchSendToTab 里消费 askArm 是 load→check→sendKeys→save 的
+// 无锁读改写。并发（飞书重投 / 手抖双击）时两份都在 save 前读到 arm 存在 → 都注入方向键 →
+// claude 原生菜单被打乱 → 重新弹出同一个 AskUserQuestion → hook 又推同一张问题卡（刷屏根因）。
+// 用一个同步的 in-flight 集合做占用：key 含 arm.at（同一 arm 稳定），先到先占，占用期内后到者直接退出；
+// 消费完成后 arm 已被删除并落盘，后续再来的重投由持久化的 askArm 缺失挡掉。二者叠加即无窗口。
+const armInFlight = new Set<string>();
 
 async function buildBrowseReply(
   cwd: string,
@@ -333,38 +374,52 @@ async function driveAskSelectFromCard(
   if (!arm || arm.tty !== tty || Date.now() - arm.at > ASK_ARM_TTL_MS) {
     return { toast: { type: 'info', content: '该选择菜单已作答或已过期' } };
   }
-  const tabs = await listTabs();
-  if (!tabs.find((t) => t.tty === tty)) {
+  // 原子占用：同步 claim（arm.at 与下面文本应答路径同键），并发重投/双击时只有一份进得来，
+  // 杜绝双份方向键打乱 claude 原生菜单。claim 必须在读到 arm 之后、任何 await 之前。
+  const claimKey = `${chatId} ${tty} ${arm.at}`;
+  if (armInFlight.has(claimKey)) {
+    // 静默：这是并发重复投递/双击，首次点击正在处理并会把原卡 patch 成「✓ 已选」。
+    // 这条路径走 card.action.trigger 的 fire-and-forget 分支，只有 error toast / card 会落地，
+    // info toast 到不了用户；对重复点击而言无声正是我们要的去重效果，不再返回死 toast。
+    return {};
+  }
+  armInFlight.add(claimKey);
+  try {
+    const tabs = await listTabs();
+    if (!tabs.find((t) => t.tty === tty)) {
+      delete chat.askArm;
+      if (chat.pendingAnswerTty === tty) {
+        delete chat.pendingAnswerTty;
+        delete chat.pendingAnswerAt;
+      }
+      await saveChat(chat).catch(() => {});
+      return {
+        toast: { type: 'error', content: `tab ${tty} 不存在了` },
+        card: ackCard({ title: '❌ 发送失败', body: `tab \`${tty}\` 已经不在了`, template: 'red' }),
+      };
+    }
+    try {
+      await sendKeys(tty, buildDownEnterSeq(index));
+    } catch (e) {
+      return { toast: { type: 'error', content: (e as Error).message } };
+    }
+    // 消费 arm（本轮已作答）；pendingAnswerTty 也清（不再 one-shot 路由这条问题）
     delete chat.askArm;
     if (chat.pendingAnswerTty === tty) {
       delete chat.pendingAnswerTty;
       delete chat.pendingAnswerAt;
     }
     await saveChat(chat).catch(() => {});
-    return {
-      toast: { type: 'error', content: `tab ${tty} 不存在了` },
-      card: ackCard({ title: '❌ 发送失败', body: `tab \`${tty}\` 已经不在了`, template: 'red' }),
-    };
+    const shown = label || arm.options[index] || `选项 ${index + 1}`;
+    void patchOrigToReceipt(
+      client,
+      data,
+      `✓ 已选『${shown.length > 20 ? shown.slice(0, 20) + '…' : shown}』(↓×${index}+⏎) → ${tty}`,
+    );
+    return {};
+  } finally {
+    armInFlight.delete(claimKey);
   }
-  try {
-    await sendKeys(tty, buildDownEnterSeq(index));
-  } catch (e) {
-    return { toast: { type: 'error', content: (e as Error).message } };
-  }
-  // 消费 arm（本轮已作答）；pendingAnswerTty 也清（不再 one-shot 路由这条问题）
-  delete chat.askArm;
-  if (chat.pendingAnswerTty === tty) {
-    delete chat.pendingAnswerTty;
-    delete chat.pendingAnswerAt;
-  }
-  await saveChat(chat).catch(() => {});
-  const shown = label || arm.options[index] || `选项 ${index + 1}`;
-  void patchOrigToReceipt(
-    client,
-    data,
-    `✓ 已选『${shown.length > 20 ? shown.slice(0, 20) + '…' : shown}』(↓×${index}+⏎) → ${tty}`,
-  );
-  return {};
 }
 
 /**
@@ -1169,25 +1224,36 @@ async function dispatchSendToTab(
     if (arm && arm.tty === tab.tty && Date.now() - arm.at <= ASK_ARM_TTL_MS) {
       const idx = resolveAskAnswerIndex(text, arm.options);
       if (idx >= 0) {
-        try {
-          await sendKeys(tab.tty, buildDownEnterSeq(idx));
-        } catch (e) {
-          await replyText(client, ctx, `❌ 驱动选择菜单失败：${(e as Error).message}`).catch(() => {});
+        // 与卡片选项路径共用同一 in-flight 键（arm.at），防卡片点选 + 文本应答并发双份注入。
+        const claimKey = `${ctx.chatId} ${tab.tty} ${arm.at}`;
+        if (armInFlight.has(claimKey)) {
+          await replyText(client, ctx, '正在处理上一次选择…').catch(() => {});
           return;
         }
-        delete askChat!.askArm;
-        if (askChat!.pendingAnswerTty === tab.tty) {
-          delete askChat!.pendingAnswerTty;
-          delete askChat!.pendingAnswerAt;
+        armInFlight.add(claimKey);
+        try {
+          try {
+            await sendKeys(tab.tty, buildDownEnterSeq(idx));
+          } catch (e) {
+            await replyText(client, ctx, `❌ 驱动选择菜单失败：${(e as Error).message}`).catch(() => {});
+            return;
+          }
+          delete askChat!.askArm;
+          if (askChat!.pendingAnswerTty === tab.tty) {
+            delete askChat!.pendingAnswerTty;
+            delete askChat!.pendingAnswerAt;
+          }
+          await saveChat(askChat!).catch(() => {});
+          const label = arm.options[idx] ?? `选项 ${idx + 1}`;
+          await replyText(
+            client,
+            ctx,
+            `✓ 已选『${label.length > 24 ? label.slice(0, 24) + '…' : label}』(↓×${idx}+⏎) → ${tab.tty}`,
+          ).catch(() => {});
+          return;
+        } finally {
+          armInFlight.delete(claimKey);
         }
-        await saveChat(askChat!).catch(() => {});
-        const label = arm.options[idx] ?? `选项 ${idx + 1}`;
-        await replyText(
-          client,
-          ctx,
-          `✓ 已选『${label.length > 24 ? label.slice(0, 24) + '…' : label}』(↓×${idx}+⏎) → ${tab.tty}`,
-        ).catch(() => {});
-        return;
       }
     }
   }
@@ -3246,6 +3312,11 @@ export function buildEventDispatcher(client: Lark.Client): Lark.EventDispatcher 
     'im.message.receive_v1': async (data: MessageReceiveEvent) => {
       recordInbound();
       const { message_id, chat_id, message_type, content } = data.message;
+      // 幂等：飞书 3-5s 未 ack 会重投同 message_id → 直接丢弃重复投递，避免同条消息触发两次派发。
+      if (message_id && dedupeSeen(`msg:${message_id}`)) {
+        logger.info('duplicate message dropped', { message_id });
+        return;
+      }
       // 归一化：text / post(富文本) / image → 文字 + 内联图片 key
       let text = '';
       let inlineImageKeys: string[] = [];
@@ -3605,6 +3676,19 @@ export function buildEventDispatcher(client: Lark.Client): Lark.EventDispatcher 
         }
       }
 
+      // 幂等：非 ask 卡片操作走下面的 fire-and-forget，副作用多非天然幂等（建 tab / 写 .env /
+      // 建 TAPD 需求 / 重启 tab 等）。虽然回调本身立即 return {}，但飞书 WS 至少一次投递 / ack 帧
+      // 丢失时会**重投同一回调**（token 不变）→ 副作用被跑两遍。用 token 去重挡住重投；无 token
+      // 的旧 schema/webhook 退回原行为（不去重，绝不误杀）。
+      // 注意两套 ask 系统的边界：① `ask.*`（点号，asks 内存管理器的表单/pick）在上面同步分支已
+      // return，不会走到这、不受 token 去重影响；② `ask-select`/`answer-select`（连字符，驱动
+      // claude 原生 TUI 菜单方向键）不匹配 `ask.` 前缀，会落到这条 fire-and-forget、**受** token 去重
+      // 覆盖——但它内部本就有 `armInFlight` 兜底，token 去重只是多一层重投防护，不冲突。
+      if (data.token && dedupeSeen(`card:${data.token}`)) {
+        logger.info('duplicate card action dropped', { token: data.token });
+        return {};
+      }
+
       // fire-and-forget：立即返回空响应，重活异步。**不能返回 toast** —— 飞书收到回调 toast
       // 响应后会把卡片当"已处理、无更新"，盖掉我们另发的 patchCard（标记不刷新）。
       (async () => {
@@ -3612,6 +3696,11 @@ export function buildEventDispatcher(client: Lark.Client): Lark.EventDispatcher 
           const result = await handleCardAction(client, data);
           if (chatId && result?.card) {
             await sendCard(client, chatId, result.card);
+          } else if (chatId && result?.toast?.type === 'error') {
+            // 只有 card、没有 error toast 被吞掉的历史 bug：非 ask 卡片走 fire-and-forget 时，
+            // handler 返回的 error toast（如 create-tab / newTab 授权失败）会被丢弃 → 飞书端静默。
+            // 这里把 error toast 补发成文本让失败可见（info/success toast 仍靠 patchCard，不刷屏）。
+            await sendText(client, chatId, `❌ ${result.toast.content ?? '卡片操作失败'}`);
           } else if (chatId && !result) {
             await sendText(client, chatId, '⚠️ 未知卡片操作');
           }
