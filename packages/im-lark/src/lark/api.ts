@@ -3,6 +3,7 @@ import { basename, extname, resolve as resolvePath } from 'node:path';
 import * as Lark from '@larksuiteoapi/node-sdk';
 import { logger } from 'multiagent-orchestrator';
 import { redactMaybe, redactCardMaybe } from './redact-gate.js';
+import { appendFooterText, appendFooterCard } from './footer-gate.js';
 
 /**
  * 网络/瞬时错误自动重试：ENOTFOUND / ETIMEDOUT / ECONNRESET / 5xx / 429
@@ -80,6 +81,7 @@ export async function sendMarkdownMessage(
   client: Lark.Client,
   chatId: string,
   md: string,
+  cwd?: string,
 ): Promise<void> {
   const card = {
     config: { wide_screen_mode: true },
@@ -94,7 +96,7 @@ export async function sendMarkdownMessage(
       },
     ],
   };
-  await sendCardMessage(client, chatId, card);
+  await sendCardMessage(client, chatId, card, { cwd });
 }
 
 /**
@@ -105,14 +107,16 @@ export async function sendTextMessage(
   client: Lark.Client,
   chatId: string,
   text: string,
-  options: { plain?: boolean } = {},
+  options: { plain?: boolean; cwd?: string } = {},
 ): Promise<void> {
   // 回显脱敏：出站前把明文凭证脱掉（除非 /raw 明文模式）。见 redact-gate.ts。
   text = redactMaybe(text);
   if (!options.plain && looksLikeMarkdown(text)) {
-    await sendMarkdownMessage(client, chatId, text);
+    await sendMarkdownMessage(client, chatId, text, options.cwd);
     return;
   }
+  // 页脚：纯文本分支在 markdown 判定之后再追加（明文时间行，避免带 font 的页脚误把纯文本升级成卡片）
+  text = appendFooterText(text, options.cwd);
   await withRetry('sendText', () =>
     client.im.message.create({
       params: { receive_id_type: 'chat_id' },
@@ -129,8 +133,9 @@ export async function sendCardMessage(
   client: Lark.Client,
   chatId: string,
   card: unknown,
+  options: { cwd?: string } = {},
 ): Promise<void> {
-  card = redactCardMaybe(card);
+  card = appendFooterCard(redactCardMaybe(card), options.cwd);
   await withRetry('sendCard', () =>
     client.im.message.create({
       params: { receive_id_type: 'chat_id' },
@@ -150,8 +155,9 @@ export async function sendCardReturnId(
   client: Lark.Client,
   chatId: string,
   card: unknown,
+  options: { cwd?: string } = {},
 ): Promise<string> {
-  card = redactCardMaybe(card);
+  card = appendFooterCard(redactCardMaybe(card), options.cwd);
   const resp = await withRetry('sendCardReturnId', () =>
     client.im.message.create({
       params: { receive_id_type: 'chat_id' },
@@ -177,8 +183,9 @@ export async function patchCard(
   client: Lark.Client,
   messageId: string,
   card: unknown,
+  options: { cwd?: string } = {},
 ): Promise<void> {
-  card = redactCardMaybe(card);
+  card = appendFooterCard(redactCardMaybe(card), options.cwd);
   await withRetry('patchCard', () =>
     client.im.message.patch({
       path: { message_id: messageId },

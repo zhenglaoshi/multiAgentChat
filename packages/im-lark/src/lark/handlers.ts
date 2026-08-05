@@ -51,7 +51,7 @@ const CLAUDE_TUI_REMINDER = [
   '---',
   '⚠ 回到飞书 — 飞书看不见你的 TUI 屏幕。**先在 TUI 完整回答用户，然后再** `agent lark send-text "<同样一份摘要>"` 推到飞书（两个渠道并行，不能只推不答）。要用户从选项里选（单/多选）或填文本，**用 `agent lark ask single|multi|input`**（stdout 拿答案 JSON），不要用 AskUserQuestion 或在 TUI 里 wait 键盘。',
 ].join('\n');
-import { patchCard, sendCardReturnId, sendImage } from './api.js';
+import { patchCard, sendCardReturnId, sendImage, sendCardMessage } from './api.js';
 import { ackCard, askCard, bareShellNoAgentCard, batchProgressCard, browseCard, careyclawKeyCard, careyclawKeyFormCard, chainProgressCard, closeIdleConfirmCard, closeTabConfirmCard, connectConfirmCard, connectFormCard, connectStatusCard, escapeLarkMd, permLevelCard, planCard, progressCard, receiptCard, tapdClaimCard, type BatchTaskItem, type ChainStepItem } from './cards.js';
 import { getCareyclawKeyStatus, setCareyclawKey } from 'multiagent-orchestrator';
 import { generatePlan, getPlan } from 'multiagent-orchestrator';
@@ -486,14 +486,11 @@ async function sendCard(
   chatId: string,
   card: unknown,
 ): Promise<void> {
-  await client.im.message.create({
-    params: { receive_id_type: 'chat_id' },
-    data: {
-      receive_id: chatId,
-      msg_type: 'interactive',
-      content: JSON.stringify(card),
-    },
-  });
+  // 走 api.ts 的统一发送层 → 同时拿到脱敏(redactCardMaybe)+时间/路径页脚(appendFooterCard)。
+  // 原来直接 client.im.message.create 会双双绕过（历史遗留）。
+  // 保持抛错：多处 `await sendCard(...)` 靠它抛错触发用户可见的失败提示（/plan、/connect 等）；
+  // 崩溃风险由裸 `void sendCard(...)` 各自 `.catch()` 兜底，不在此处统一吞。
+  await sendCardMessage(client, chatId, card);
 }
 
 async function executeReply(
@@ -1364,7 +1361,7 @@ async function dispatchSendToTab(
         client,
         ctx.chatId,
         bareShellNoAgentCard({ tty: tab.tty, promptPreview: preview, token, agents }),
-      ).catch(() => {});
+      ).catch((e) => logger.warn('sendCard 失败(bare shell card)', { err: (e as Error).message }));
       logger.info('bare shell task intercepted', { tty: tab.tty, targetLabel });
       return;
     }
@@ -1845,7 +1842,9 @@ async function handleCardAction(
   }
 
   if (action === 'careyclaw-key-update') {
-    void sendCard(client, chatId, careyclawKeyFormCard());
+    void sendCard(client, chatId, careyclawKeyFormCard()).catch((e) =>
+      logger.warn('sendCard 失败', { err: (e as Error).message }),
+    );
     return { toast: { type: 'info', content: '打开更新表单' } };
   }
 
@@ -1921,13 +1920,17 @@ async function handleCardAction(
     }
     const form = connectFormCard(it);
     if (form) {
-      void sendCard(client, chatId, form);
+      void sendCard(client, chatId, form).catch((e) =>
+        logger.warn('sendCard 失败', { err: (e as Error).message }),
+      );
     } else {
       // 纯开关型（如知识提炼）：直接暂存固定值 → 确认
       const kv: Record<string, string> = {};
       for (const f of it.fields) if (f.fixedValue) kv[f.env] = f.fixedValue;
       connectStaging.set(it.key, kv);
-      void sendCard(client, chatId, connectConfirmCard(it.key, it.name, Object.entries(kv).map(([k, v]) => `· ${k} = ${v}`)));
+      void sendCard(client, chatId, connectConfirmCard(it.key, it.name, Object.entries(kv).map(([k, v]) => `· ${k} = ${v}`))).catch((e) =>
+        logger.warn('sendCard 失败', { err: (e as Error).message }),
+      );
     }
     return { toast: { type: 'info', content: '打开配置…' } };
   }
@@ -1951,7 +1954,9 @@ async function handleCardAction(
       const shown = f.secret ? (val.length <= 4 ? '****' : val.slice(0, 2) + '***' + val.slice(-2)) : val;
       return `· ${f.label}(${f.env}) = ${shown}`;
     });
-    void sendCard(client, chatId, connectConfirmCard(it.key, it.name, lines));
+    void sendCard(client, chatId, connectConfirmCard(it.key, it.name, lines)).catch((e) =>
+      logger.warn('sendCard 失败', { err: (e as Error).message }),
+    );
     return { toast: { type: 'success', content: '已收到，确认写入' } };
   }
 

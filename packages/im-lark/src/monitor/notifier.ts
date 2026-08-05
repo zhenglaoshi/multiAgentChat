@@ -6,6 +6,8 @@ import type { ApprovalRequest, AskRequest } from 'multiagent-orchestrator';
 import { listAllChats, loadChat } from '../chats/store.js';
 import { sendText } from '../lark/reply.js';
 import { patchCard, sendCardMessage, sendCardReturnId } from '../lark/api.js';
+import { appendFooterCard } from '../lark/footer-gate.js';
+import { redactCardMaybe } from '../lark/redact-gate.js';
 import {
   approvalCard,
   buildApprovalCard,
@@ -257,6 +259,8 @@ async function pushCardToAllChats(card: unknown): Promise<void> {
     logger.warn('watcher: no chats to notify');
     return;
   }
+  // 与 api.ts 发送层一致：这条 pushCardToAllChats 绕过了 api.ts，补上脱敏 + 时间页脚
+  const carded = appendFooterCard(redactCardMaybe(card));
   for (const c of chats) {
     try {
       await client.im.message.create({
@@ -264,7 +268,7 @@ async function pushCardToAllChats(card: unknown): Promise<void> {
         data: {
           receive_id: c.chatId,
           msg_type: 'interactive',
-          content: JSON.stringify(card),
+          content: JSON.stringify(carded),
         },
       });
     } catch (e) {

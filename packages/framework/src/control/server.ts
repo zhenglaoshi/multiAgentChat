@@ -478,6 +478,7 @@ async function handleLarkSendText(
     const useCard = !!origin && !req.plain && (!isActive || hasQuickAnswer);
 
     if (useCard && origin) {
+      // 卡片路径：originShellPushCard 卡里本就显示了 cwd → 页脚不再传 cwd（只加时间，不重复路径）
       const card = originShellPushCard({
         tty: origin.tty,
         ...(origin.cwd ? { cwd: origin.cwd } : {}),
@@ -492,8 +493,10 @@ async function handleLarkSendText(
     } else {
       let finalText = req.text;
       if (origin) finalText = formatOriginPrefix(origin) + finalText;
+      // 文本回传里只带了 tty 前缀、没显示 cwd → 页脚补上 origin.cwd（有就显示路径）
       await sendTextMessage(client, req.chatId, finalText, {
         ...(req.plain ? { plain: true } : {}),
+        ...(origin?.cwd ? { cwd: origin.cwd } : {}),
       });
     }
 

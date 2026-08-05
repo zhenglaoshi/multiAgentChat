@@ -1,6 +1,16 @@
 import * as Lark from '@larksuiteoapi/node-sdk';
+import { appendFooterText } from './footer-gate.js';
+import { redactMaybe } from './redact-gate.js';
 
 const MAX_CHUNK = 3000;
+
+/** 页脚只加在最后一块（长文本切多块时避免每块都带时间行）。全空则不加（不发页脚-only 消息）。 */
+function withFooterOnLast(chunks: string[]): string[] {
+  if (!chunks.length || !chunks.some((c) => c.trim())) return chunks;
+  const out = chunks.slice();
+  out[out.length - 1] = appendFooterText(out[out.length - 1]!);
+  return out;
+}
 
 function splitText(text: string, maxLen = MAX_CHUNK): string[] {
   if (text.length <= maxLen) return [text];
@@ -28,7 +38,9 @@ export async function replyText(
   ctx: ReplyContext,
   text: string,
 ): Promise<void> {
-  const chunks = splitText(text);
+  // 脱敏 → 切块 → 页脚（顺序对齐 api.ts.sendTextMessage）。reply.ts 是绕过 api.ts 的独立文本通道，
+  // 此前从不脱敏 → /report 等把 git log/memory 合成内容直发会漏审，这里补上单点闸门。
+  const chunks = withFooterOnLast(splitText(redactMaybe(text)));
   const first = chunks[0];
   if (!first) return;
 
@@ -57,7 +69,7 @@ export async function sendText(
   chatId: string,
   text: string,
 ): Promise<void> {
-  const chunks = splitText(text);
+  const chunks = withFooterOnLast(splitText(redactMaybe(text)));
   for (const chunk of chunks) {
     await client.im.message.create({
       params: { receive_id_type: 'chat_id' },
