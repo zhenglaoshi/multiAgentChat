@@ -2457,18 +2457,20 @@ export function tapdItemCard(item: TapdItem) {
     ? (item.severity === 'fatal' || item.severity === 'serious' ? 'red' : 'orange')
     : 'blue';
 
+  // TAPD 来的自由文本（标题/状态名/提出人/项目名/描述摘要）都可能含 `[ ] < ` 反引号 →
+  // 拼进 lark_md 前统一 escapeLarkMd，防有 TAPD 写权限者在标题塞 [钓鱼](url) 渲染成可点链接。
   const lines: string[] = [];
-  lines.push(`**${truncate(item.title, 80)}**`);
+  lines.push(`**${escapeLarkMd(truncate(item.title, 80))}**`);
   const meta: string[] = [`#${item.id}`, kindLabel];
-  if (sev) meta.push(`严重级:${sev}`);
-  if (item.statusLabel || item.status) meta.push(`状态:${item.statusLabel ?? item.status}`);
-  if (item.reporter) meta.push(`提出:${item.reporter}`);
+  if (sev) meta.push(`严重级:${escapeLarkMd(sev)}`);
+  if (item.statusLabel || item.status) meta.push(`状态:${escapeLarkMd(item.statusLabel ?? item.status)}`);
+  if (item.reporter) meta.push(`提出:${escapeLarkMd(item.reporter)}`);
   lines.push(`<font color='grey'>${meta.join(' · ')}</font>`);
-  if (item.workspaceName) lines.push(`<font color='grey'>项目:${item.workspaceName}</font>`);
-  if (item.modified) lines.push(`<font color='grey'>更新:${item.modified}</font>`);
+  if (item.workspaceName) lines.push(`<font color='grey'>项目:${escapeLarkMd(item.workspaceName)}</font>`);
+  if (item.modified) lines.push(`<font color='grey'>更新:${escapeLarkMd(item.modified)}</font>`);
   // 摘要：一眼看清这条是干啥的（光 id+链接看不出）
   const summary = tapdSummary(item.description, 160);
-  if (summary) lines.push(`\n${summary}`);
+  if (summary) lines.push(`\n${escapeLarkMd(summary)}`);
 
   const elements: unknown[] = [
     { tag: 'div', text: { tag: 'lark_md', content: lines.join('\n') } },
@@ -2522,6 +2524,60 @@ export function tapdItemCard(item: TapdItem) {
       title: { tag: 'plain_text', content: `${icon} 指派给你的${kindLabel}` },
     },
     elements,
+  };
+}
+
+/**
+ * 轻量提示卡：已是我的条目发生「状态变化 / 内容改动」时推，只提示、不塞认领流。
+ * 蓝色信息态；按钮只有「🔗 打开 TAPD」（认领仍走首次指派时的 tapdItemCard）。
+ *  - kind==='status' → 「状态：旧 → 新」（状态名尽量中文，回退英文 key）
+ *  - kind==='update' → 「📝 内容有改动」+ 当前状态
+ */
+export function tapdInfoCard(data: {
+  item: TapdItem;
+  kind: 'status' | 'update';
+  prevStatus?: string;
+  prevStatusLabel?: string;
+}) {
+  const { item, kind } = data;
+  const isBug = item.system === 'bug';
+  const icon = isBug ? '🐞' : '📌';
+  const kindLabel = isBug ? '缺陷' : '需求';
+  // TAPD 自由文本一律 escapeLarkMd 再拼进 lark_md（防标题/状态名注入 [钓鱼](url) 等）。
+  const newStatus = escapeLarkMd(item.statusLabel || item.status || '');
+
+  const lines: string[] = [];
+  lines.push(`**${escapeLarkMd(truncate(item.title, 80))}**`);
+  const meta: string[] = [`#${item.id}`, kindLabel];
+  if (item.workspaceName) meta.push(escapeLarkMd(item.workspaceName));
+  lines.push(`<font color='grey'>${meta.join(' · ')}</font>`);
+  if (kind === 'status') {
+    const prev = escapeLarkMd(data.prevStatusLabel || data.prevStatus || '?');
+    lines.push(`状态：${prev} → **${newStatus || '?'}**`);
+  } else {
+    lines.push(`📝 内容有改动`);
+    if (newStatus) lines.push(`<font color='grey'>当前状态：${newStatus}</font>`);
+  }
+  if (item.modified) lines.push(`<font color='grey'>更新时间：${escapeLarkMd(item.modified)}</font>`);
+
+  const title = kind === 'status' ? `${icon} ${kindLabel}状态更新` : `${icon} ${kindLabel}有更新`;
+  return {
+    config: { wide_screen_mode: true },
+    header: { template: 'blue', title: { tag: 'plain_text', content: title } },
+    elements: [
+      { tag: 'div', text: { tag: 'lark_md', content: lines.join('\n') } },
+      {
+        tag: 'action',
+        actions: [
+          {
+            tag: 'button',
+            text: { tag: 'plain_text', content: '🔗 打开 TAPD' },
+            type: 'default',
+            multi_url: { url: item.url, pc_url: item.url, ios_url: item.url, android_url: item.url },
+          },
+        ],
+      },
+    ],
   };
 }
 

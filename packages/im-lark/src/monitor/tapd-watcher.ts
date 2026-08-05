@@ -4,15 +4,32 @@ import {
   loadTapdConfig,
   TapdMcpClient,
   listActionableItems,
-  filterUnnotified,
+  classifyNotifications,
   markNotified,
   ensureTapdMcp,
   tapdCooldownLeftMs,
   type TapdItem,
+  type TapdNotification,
+  type TapdNotifyKind,
 } from 'multiagent-orchestrator';
 import { listAllChats } from '../chats/store.js';
 import { sendCardMessage } from '../lark/api.js';
-import { tapdItemCard } from '../lark/cards.js';
+import { tapdItemCard, tapdInfoCard } from '../lark/cards.js';
+
+/** TAPD_SPLIT_NOTIFY=0 → 回退旧行为（任何变动都推认领卡）；默认开（分级：认领卡 vs 提示卡）。 */
+const SPLIT_NOTIFY = process.env['TAPD_SPLIT_NOTIFY'] !== '0';
+
+/** 按分级选卡：claim → 认领卡；status/update → 轻量提示卡。 */
+function cardFor(n: TapdNotification): unknown {
+  if (!SPLIT_NOTIFY || n.kind === 'claim') return tapdItemCard(n.item);
+  const d: { item: TapdItem; kind: 'status' | 'update'; prevStatus?: string; prevStatusLabel?: string } = {
+    item: n.item,
+    kind: n.kind,
+  };
+  if (n.prevStatus) d.prevStatus = n.prevStatus;
+  if (n.prevStatusLabel) d.prevStatusLabel = n.prevStatusLabel;
+  return tapdInfoCard(d);
+}
 
 /** 启动后延迟首跑，等 lark client / WS 就绪。 */
 const FIRST_TICK_DELAY_MS = 12_000;
@@ -21,7 +38,7 @@ const FIRST_TICK_DELAY_MS = 12_000;
  * 额外通知钩子：给非飞书传输（如企微）用。返回是否成功推送。
  * 放 daemon 注入（daemon 能引 framework CardSpec + wecom transport，避免 im-lark↔framework 循环依赖）。
  */
-export type TapdExtraNotify = (item: TapdItem) => Promise<boolean>;
+export type TapdExtraNotify = (item: TapdItem, kind: TapdNotifyKind) => Promise<boolean>;
 
 /**
  * TAPD 监听：每 pollMs 拉一次"指派给我、当天更新、未结束"的缺陷/需求，
@@ -40,21 +57,23 @@ export function startTapdWatcher(client: Lark.Client, onExtraNotify?: TapdExtraN
   // 幂等把 TAPD MCP 注册给 Claude Code（工作 tab 里的 claude 能读/改 TAPD）
   void ensureTapdMcp(cfg);
 
-  const pushOne = async (item: TapdItem): Promise<boolean> => {
+  const pushOne = async (n: TapdNotification): Promise<boolean> => {
     let ok = false;
-    // 飞书：所有已知 chat，用丰富卡（toggle/patch 认领流）
+    const item = n.item;
+    const card = cardFor(n);
+    // 飞书：所有已知 chat。claim → 认领卡（toggle/patch 认领流）；status/update → 轻量提示卡。
     for (const chat of await listAllChats()) {
       try {
-        await sendCardMessage(client, chat.chatId, tapdItemCard(item));
+        await sendCardMessage(client, chat.chatId, card);
         ok = true;
       } catch (e) {
         logger.warn('tapd 卡片单 chat 推送失败(lark)', { chatId: chat.chatId, id: item.id, err: (e as Error).message });
       }
     }
-    // 其它传输（企微等）：daemon 注入的钩子
+    // 其它传输（企微等）：daemon 注入的钩子（带上 kind，供其决定推认领卡还是提示）
     if (onExtraNotify) {
       try {
-        if (await onExtraNotify(item)) ok = true;
+        if (await onExtraNotify(item, n.kind)) ok = true;
       } catch (e) {
         logger.warn('tapd extra-notify 失败', { id: item.id, err: (e as Error).message });
       }
@@ -71,12 +90,17 @@ export function startTapdWatcher(client: Lark.Client, onExtraNotify?: TapdExtraN
     }
     try {
       const items = await listActionableItems(mcp, cfg, { systems: cfg.systems });
-      const fresh = await filterUnnotified(items);
-      if (fresh.length === 0) return;
-      logger.info('tapd watcher 发现待通知', { total: items.length, fresh: fresh.length });
+      const notes = await classifyNotifications(items);
+      if (notes.length === 0) return;
+      logger.info('tapd watcher 发现待通知', {
+        total: items.length,
+        claim: notes.filter((n) => n.kind === 'claim').length,
+        status: notes.filter((n) => n.kind === 'status').length,
+        update: notes.filter((n) => n.kind === 'update').length,
+      });
       const pushed: TapdItem[] = [];
-      for (const it of fresh) {
-        if (await pushOne(it)) pushed.push(it);
+      for (const n of notes) {
+        if (await pushOne(n)) pushed.push(n.item);
       }
       await markNotified(pushed);
       logger.info('tapd watcher 已推送', { pushed: pushed.length });

@@ -16,6 +16,7 @@ interface WorkspaceRef {
 let wsCache: { at: number; data: WorkspaceRef[] } | null = null;
 const WS_TTL_MS = 30 * 60_000; // 30min
 const endStatesCache = new Map<string, Set<string>>(); // key: `${ws}:${system}`
+const statusMapCache = new Map<string, Record<string, string>>(); // key: `${ws}:${system}` → {statusKey: 中文名}
 
 /** 发现"我"参与的项目（workspace），带 30min 缓存。 */
 export async function discoverWorkspaces(
@@ -53,6 +54,39 @@ async function endStates(
   } catch (e) {
     logger.warn('tapd endStates failed', { workspaceId, system, err: (e as Error).message });
     return new Set(); // 拿不到终态 → 不排除任何状态（宁可多推不漏）；不缓存失败结果
+  }
+}
+
+/**
+ * 某项目某类型的「状态英文 key → 中文名」映射（进程内缓存）。
+ * 给提示卡渲染可读的「状态：待开发 → 处理中」；拿不到就回退显示英文 key（不缓存失败）。
+ */
+async function statusMap(
+  client: TapdMcpClient,
+  workspaceId: number,
+  system: TapdSystem,
+): Promise<Record<string, string>> {
+  const key = `${workspaceId}:${system}`;
+  const cached = statusMapCache.get(key);
+  if (cached) return cached;
+  try {
+    const data = await client.callTool<unknown>('tapd-get-workflows-status-map', {
+      workspace_id: workspaceId,
+      options: { system },
+    });
+    // 泛型只是 TS 标注、非运行期校验：只收 value 真是 string 的项，防网关返异常结构
+    // （嵌套对象/数组）被当状态名落 seen.json 或拼进卡片成 [object Object]。
+    const map: Record<string, string> = {};
+    if (data && typeof data === 'object') {
+      for (const [k, v] of Object.entries(data as Record<string, unknown>)) {
+        if (typeof v === 'string') map[k] = v;
+      }
+    }
+    statusMapCache.set(key, map);
+    return map;
+  } catch (e) {
+    logger.warn('tapd statusMap failed', { workspaceId, system, err: (e as Error).message });
+    return {}; // 拿不到中文名 → 回退英文 key；不缓存失败结果
   }
 }
 
@@ -207,11 +241,15 @@ export async function listActionableItems(
     for (const system of systems) {
       try {
         const ends = await endStates(client, ws.id, system);
+        const smap = await statusMap(client, ws.id, system);
         const rows = await fetchItems(client, ws.id, system, cfg.nick, date);
         for (const e of rows) {
           const status = String(e['status'] ?? '');
           if (ends.has(status)) continue; // 已结束 → 跳过
-          out.push(normalize(e, system, ws));
+          const item = normalize(e, system, ws);
+          const label = smap[item.status];
+          if (label) item.statusLabel = label;
+          out.push(item);
         }
       } catch (e) {
         logger.warn('tapd list failed', {

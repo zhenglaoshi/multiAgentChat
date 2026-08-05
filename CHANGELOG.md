@@ -6,6 +6,11 @@
 
 ## [未发布]
 
+### 2026-08-05
+
+**改动**
+- **TAPD 通知分级：认领卡 vs 轻量提示卡（不再每次改动都弹认领卡）**（用户反馈：只要涉及我的任何改动都推认领卡，太吵）。根因：`filterUnnotified` 只要 `modified` 变就重新放行，`tapd-watcher` 又一律推**完整认领卡**（`tapdItemCard`），于是每次状态流转/评论/字段编辑都弹一张可操作认领卡。改：把「重通知」拆成分级——① 首次成为我的（`seen.json` 里没记录，≈被指派/加入）→ 推认领卡；② 已知项状态变了 → 推轻量提示卡「状态：旧 → 新」；③ 已知项其它内容变了（描述/字段/评论）→ 推提示卡「📝 内容有改动」+ 链接。提示卡 `tapdInfoCard` 蓝色信息态、按钮只有「🔗 打开 TAPD」（认领仍只在首次指派时给）。现实约束：实测 TAPD MCP 网关 43 个工具**无变更历史/字段 diff/操作者 API**（只有 comments），故「谁加了我 / 改了什么」只能靠快照分级，不做逐字段 diff（按用户选择：内容改动只提示+链接、状态变化先不细分提测/上线）。新增 `tapd-get-workflows-status-map` 缓存拉取给状态转中文名（拿不到回退英文 key）。分级核心抽成纯函数 `classifyNotificationsPure`（10 单测）。`TAPD_SPLIT_NOTIFY=0` 可回退旧行为。企微侧同步分级（daemon `onExtraNotify` 消费 `kind`：claim 推认领卡、status/update 推轻量文本）。过 code-reviewer + security-reviewer 双评审：无 high/critical；按建议修了 medium/low——`tapdItemCard`/`tapdInfoCard` 的 TAPD 自由文本（标题/状态名/摘要等）统一走 `escapeLarkMd` 防 lark_md 注入 [钓鱼](url)、`statusMap` 只收 string value 防脏数据落盘、补 docs/tapd.md 分级链路与「首次=被指派」边界说明。（`orchestrator/tapd/{store,query}.ts` + `im-lark/lark/cards.ts` + `im-lark/monitor/tapd-watcher.ts` + `apps/daemon/src/index.ts` + `docs/tapd.md` + `tests/tapd-notify-classify.test.ts`）
+
 ### 2026-08-04
 
 **修复**
