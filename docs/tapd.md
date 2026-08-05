@@ -145,10 +145,19 @@ claude 在工作 tab 里通过 MCP 自取（P3 已把 MCP 配好）。
 - 运行时数据：`data/tapd/seen.json`（去重）、`data/tapd/claims/<id>.json`（认领进行态）
 - 代码：
   - `packages/orchestrator/src/tapd/` — `client.ts`(HTTP MCP 客户端,429 退避) / `config.ts` /
-    `query.ts`(拉取+过滤+归一化,缓存项目&终态) / `store.ts`(seen) / `claims.ts`(认领态) /
+    `query.ts`(拉取+过滤+归一化,缓存项目&终态&状态中文名 statusMap) / `store.ts`(seen +
+    **通知分级** `classifyNotificationsPure`) / `claims.ts`(认领态) /
     `mcp-setup.ts`(注册 claude MCP) / `types.ts`
-  - `packages/im-lark/src/monitor/tapd-watcher.ts` — 轮询循环 + 推卡
-  - `packages/im-lark/src/lark/cards.ts` — `tapdItemCard` / `tapdRepoPickerCard` / `tapdDirtyCard`
+  - `packages/im-lark/src/monitor/tapd-watcher.ts` — 轮询循环 + 按分级推卡（`TAPD_SPLIT_NOTIFY=0` 回退旧行为）
+  - `packages/im-lark/src/lark/cards.ts` — `tapdItemCard`(认领卡) / `tapdInfoCard`(轻量提示卡) / `tapdRepoPickerCard` / `tapdDirtyCard`
+
+  **通知分级（降噪）**：`classifyNotifications` 按 `seen.json` 把每条待推分成三级——
+  `claim`(首次成为我的≈被指派→认领卡) / `status`(已知项状态变→提示卡「旧→新」) /
+  `update`(已知项其它内容变→提示卡「内容有改动」)。
+  ⚠️ 边界：「首次=被指派」是**近似**（网关无变更历史/操作者 API，见下）——`seen.json` 被删/损坏
+  （`loadSeen` catch 静默返回 `{}`）或某条老任务第一次被「当天更新」窗口捞到，都会误判为 `claim`
+  弹一次认领卡。可接受折衷；排查「老任务怎么又弹认领卡」时看这里。企微侧同样分级（daemon
+  `onExtraNotify` 消费 `kind`：claim 推认领卡、status/update 推轻量文本）。
   - `packages/im-lark/src/lark/handlers.ts` — card actions：`tapd-claim` / `tapd-pick-repo` /
     `tapd-cycle-kind`(🏷类型三选一 fix/feature/indev) / `tapd-toggle-sop` / `tapd-cycle-base` /
     `tapd-claim-go` / `tapd-go-strategy`(脏策略，worktree 模式下 no-op) / `tapd-snooze` / `tapd-not-mine` / `tapd-ignore`；

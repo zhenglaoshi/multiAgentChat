@@ -9,7 +9,7 @@ import { startLarkBot } from 'multiagent-im-lark';
 import { loadWeComConfig, WeComTransport, renderWeComCard } from 'multiagent-im-wecom';
 import { loadWebDashboardConfig } from './web-dashboard/config.js';
 import { WebDashboardServer } from './web-dashboard/server.js';
-import { approvals, asks, knowledgeQueue, type ApprovalRequest, type AskRequest, type TapdItem } from 'multiagent-orchestrator';
+import { approvals, asks, knowledgeQueue, type ApprovalRequest, type AskRequest, type TapdItem, type TapdNotifyKind } from 'multiagent-orchestrator';
 import {
   loadClaim, saveClaim, buildTapdPrompt, tapdSummary, loadTapdConfig, TapdMcpClient, getItemDetail,
   markSnoozed, markIgnoredForever, getRepoMap, saveRepoMap,
@@ -1408,13 +1408,26 @@ async function main() {
   startTapdWatcher(
     lark.client,
     wecom
-      ? async (item: TapdItem): Promise<boolean> => {
+      ? async (item: TapdItem, kind: TapdNotifyKind): Promise<boolean> => {
           try {
             // '' → WeComTransport.resolveTarget 兜底到 WECOM_DEFAULT_TO_USER
-            await wecom!.sendCard('', tapdItemCardSpec(item));
+            // 分级与飞书对齐：claim(首次=被指派) 才推完整认领卡；status/update 只推轻量文本提示，
+            // 避免已认领条目每次变动都在企微弹「认领并建分支」按钮（否则手滑重复认领）。
+            if (kind === 'claim') {
+              await wecom!.sendCard('', tapdItemCardSpec(item));
+            } else {
+              const kindLabel = item.system === 'bug' ? '缺陷' : '需求';
+              const status = item.statusLabel ?? item.status ?? '';
+              const head = kind === 'status' ? `🔔 TAPD ${kindLabel}状态更新` : `🔔 TAPD ${kindLabel}有更新`;
+              const body = kind === 'update' ? '内容有改动' : (status ? `状态：${status}` : '');
+              const text = [`${head}  #${item.id}`, item.title, body, item.url]
+                .filter(Boolean)
+                .join('\n');
+              await wecom!.sendText('', text);
+            }
             return true;
           } catch (e) {
-            logger.warn('tapd wecom 推送失败', { id: item.id, err: (e as Error).message });
+            logger.warn('tapd wecom 推送失败', { id: item.id, kind, err: (e as Error).message });
             return false;
           }
         }
