@@ -6,6 +6,11 @@
 
 ## [未发布]
 
+### 2026-09-01
+
+**修复**
+- **日报/周报统计不到「不经飞书、直接在 PC 控制台输入的任务」**（用户诉求：本地 tab 里直接敲的任务没进报告）。根因：报告数据源是 `memoryStore`（`data/memories`，`collectWorkData` 只按时间窗过滤、不看 source），而本地任务落 memory 的唯一路径是 `localTaskDetected → 建 pending → isFinal → persistTaskMemory`；`notifier.ts` 的 `localTaskDetected` 在**没有任何 chat 开 `/watch on`（`watchAllTabs`）时直接 `return`**，pending 根本不建 → 永不落盘 → 报告统计不到（默认没开 watch 时本地任务全丢）。修复：无 watcher（或未连 lark）时仍创建一个 **chatId='' 的「幽灵 pending」**（`source:'local'`），只为让本地任务照走 `persistTaskMemory` 落进 `data/memories`，**不发任何飞书卡**（`taskOutput` 单卡分支改 `else if (pending.chatId)`，空 chatId 跳过发卡、仍在 `isFinal` 落盘）；有 watcher 时行为不变。附带修本地任务 memory 内容空洞的问题：本地任务 prompt 只有「🏠 本地 @dir」占位，`persistTaskMemory` 给 `source==='local'` 补一段清洗后的 `summary`（取**尾部** `cleanTail.slice(-200)`——本地 pending 的 `beforeCharLen` 是 tail 片段长度、偏小，`taskOnlyTail` 会混入旧 scrollback，头部片段文不对题；尾部才是当前真实输出，且 `collectWorkData` 只读 `mem.summary`）。过 code-reviewer + security-reviewer 双评审：security 指出这改动隐式收紧隐私边界（`/watch off` 不再等于「本地终端对本工具完全不可见」，本地任务会无条件落盘并可能被自动报告广播、脱敏不覆盖 AK 类、memory 无删除命令）→ 按建议加**默认开、可关的闸门 `MCHAT_LOCAL_TASK_CAPTURE=0`**（回退旧行为）+ `.env.example` 标注隐私说明；code-reviewer 指出 `summary` 原用头部会截到旧 scrollback → 改尾部（已并入上文）。复审后两者均无 high+，可交付。遗留 backlog（非本次阻塞）：① 报告推送 `report-scheduler.fireOne()` 是 `listAllChats()` 全量广播、不按 `watchAllTabs` 过滤——`MCHAT_LOCAL_TASK_CAPTURE` 只控采集不控发给谁，多 chat 场景可后续按 chat 粒度收窄；② memory 无删除/撤回命令（误录敏感内容无产品内补救），可加 `agent memory forget <id>`。（`im-lark/monitor/notifier.ts` + `.env.example`）
+
 ### 2026-08-05
 
 **新增**

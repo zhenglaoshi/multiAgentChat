@@ -230,6 +230,14 @@ async function persistTaskMemory(
     cwd,
     prompt,
     outputPreview: cleanTail.slice(-500),
+    // 本地任务的 prompt 只有「🏠 本地 @dir」占位、没有真实任务描述；补一段清洗后的输出摘要，
+    // 让报告(collectWorkData 读 mem.summary)对本地任务也有可用内容，而非一条空条目。
+    // 取「尾部」而非头部：本地 pending 的 beforeCharLen 是 tail 片段长度、系统性偏小，
+    // taskOnlyTail 会混入任务开始前的旧 scrollback，头部片段大概率文不对题；尾部才是当前真实输出
+    // （与 outputPreview: cleanTail.slice(-500) 同区，报告只读 summary 不读 outputPreview）。
+    ...(pending.source === 'local' && cleanTail.trim()
+      ? { summary: cleanTail.trim().slice(-200) }
+      : {}),
     ...(filesProduced.length ? { filesProduced } : {}),
     tags,
     startedAt: pending.sentAt,
@@ -365,8 +373,10 @@ export function attachWatcherToLark(larkClient: Lark.Client): void {
           batchStatus,
           sanitizeTerminalOutput(taskOnlyTail || ''),
         );
-      } else {
+      } else if (pending.chatId) {
         // 单任务/独立卡路径
+        // 注：pending.chatId 为空串 = 本地任务的「幽灵 pending」（无 watchAllTabs），
+        // 不发任何飞书卡，直接落到下方 isFinal→persistTaskMemory 供报告统计。
         // 企微 pending 由 daemon 侧另一个 taskOutput 监听器处理（wecom transport
         // 发文本收尾卡，简化模式：不 patch 只在 isFinal 发一份最终摘要）。
         // 这里直接短路避免调 lark api 报错。
@@ -443,16 +453,44 @@ export function attachWatcherToLark(larkClient: Lark.Client): void {
       currentLen: number;
       outputTail: string;
     }) => {
-      if (!client) return;
-      // 找所有开启了 watchAllTabs 的 chat
-      const chats = await listAllChats();
-      const watchers = chats.filter((c) => c.watchAllTabs === true);
-      if (watchers.length === 0) return;
-
       const dirName = tab.cwd ? basename(tab.cwd) : '';
       const taskDescription = `🏠 本地${dirName ? ` @${dirName}` : ''}`;
-      const home = homedir();
 
+      // 找所有开启了 watchAllTabs 的 chat
+      const chats = client ? await listAllChats() : [];
+      const watchers = chats.filter((c) => c.watchAllTabs === true);
+
+      // 没有任何 chat 开 watchAllTabs（或未连 lark）→ 不发飞书卡，但仍建一个「幽灵 pending」：
+      // 让本地任务照走 pending→isFinal→persistTaskMemory 落进 data/memories。
+      // 报告(collectWorkData)的数据源就是 memoryStore，不看 source、也不看是否推过飞书；
+      // 旧逻辑在此直接 return，导致「不经飞书、直接在 PC 控制台输入的任务」永不落盘 →
+      // 日报/周报统计不到（本次修复点）。幽灵 pending 的 chatId='' 会在 taskOutput 里跳过发卡。
+      //
+      // 隐私边界说明：开此路径后，「/watch off」不再等于「本地终端对本工具完全不可见」——
+      // 本地任务会落进 data/memories（长期留存 + recall 时可能回显飞书 + 被日/周报采纳）。
+      // 脱敏引擎不覆盖 AK 类且 memory 无删除命令，故给一个默认开、可关的闸门：
+      // MCHAT_LOCAL_TASK_CAPTURE=0 → 回退旧行为（无 watcher 时本地任务不落盘、不统计）。
+      if (watchers.length === 0 || !client) {
+        if (process.env['MCHAT_LOCAL_TASK_CAPTURE'] === '0') return;
+        pendingTracker.add({
+          tty: tab.tty,
+          ...(tab.cwd ? { cwd: tab.cwd } : {}),
+          chatId: '',
+          sentAt: Date.now(),
+          beforeLen,
+          lastPushedLen: beforeLen,
+          beforeCharLen: outputTail.length,
+          lastSeenCharLen: outputTail.length,
+          taskDescription,
+          source: 'local',
+        });
+        logger.info('local task → ghost pending (memory-only, 无 watchAllTabs)', {
+          tty: tab.tty,
+        });
+        return;
+      }
+
+      const home = homedir();
       const cleanTail = sanitizeTerminalOutput(outputTail);
       for (const chat of watchers) {
         try {
