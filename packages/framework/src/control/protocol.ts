@@ -1,6 +1,8 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { ApprovalRequest, ApprovalStatus, AskFormQuestion, AskRequest, AskType, KnowledgeEntry } from 'multiagent-orchestrator';
+import type { HandoffStatus, HandoffTask } from 'multiagent-orchestrator';
+import type { RelayContact } from '../relay/client.js';
 import type { ChatState } from 'multiagent-im-lark';
 import type { LoopRule } from 'multiagent-orchestrator';
 import type { TaskState, TaskStatus } from 'multiagent-orchestrator';
@@ -451,6 +453,96 @@ export interface SubagentGenSubmitOp {
   overwrite?: boolean;
 }
 
+// ---- Report ops ----
+
+/** 手动补记一条工作台账（非编码/未提交/线下工作），落进 memory 供日/周报采纳。 */
+export interface ReportNoteOp {
+  op: 'report.note';
+  /** 一句话工作记录 */
+  text: string;
+  /** 记录发生的工作目录（CLI 用 process.cwd() 带上，仅作展示归属） */
+  cwd?: string;
+}
+
+export interface ReportNoteData {
+  id: string;
+}
+
+// ---- Handoff ops（同事任务甩单，经 relay 中转）----
+
+export interface HandoffSendOp {
+  op: 'handoff.send';
+  /** 收件人：@别名 或 邮箱身份 */
+  to: string;
+  title: string;
+  /** markdown 正文；daemon 发送前会过脱敏 */
+  summaryMd?: string;
+  /** 要作为附件上传的本地文件路径 */
+  attachPaths?: string[];
+  /** 可选上下文 */
+  cwd?: string;
+  shell?: string;
+  agent?: string;
+}
+
+export interface HandoffSendData {
+  taskId: string;
+  to: string;
+  deduped: boolean;
+  attachments: number;
+}
+
+export interface HandoffStatusOp {
+  op: 'handoff.status';
+  taskId: string;
+  status: HandoffStatus;
+  note?: string;
+}
+
+export interface HandoffStatusData {
+  taskId: string;
+  status: HandoffStatus;
+}
+
+export interface HandoffListOp {
+  op: 'handoff.list';
+  limit?: number;
+}
+
+export interface HandoffListData {
+  tasks: HandoffTask[];
+  identity: string;
+}
+
+export interface HandoffReplyOp {
+  op: 'handoff.reply';
+  taskId: string;
+  text: string;
+}
+
+export interface HandoffReplyData {
+  taskId: string;
+}
+
+export interface HandoffPullOp {
+  op: 'handoff.pull';
+  taskId: string;
+  /** 落盘目录；默认 ./data/handoff-inbound/<taskId 前 8 位>/ */
+  dir?: string;
+}
+
+export interface HandoffPullData {
+  saved: string[];
+}
+
+export interface ContactsListOp {
+  op: 'contacts.list';
+}
+
+export interface ContactsListData {
+  contacts: RelayContact[];
+}
+
 export type Request =
   | TabListRequest
   | TabGetRequest
@@ -497,6 +589,13 @@ export type Request =
   | SubagentAddOp
   | SubagentDeleteOp
   | SubagentGenSubmitOp
+  | HandoffSendOp
+  | HandoffStatusOp
+  | HandoffReplyOp
+  | HandoffPullOp
+  | HandoffListOp
+  | ContactsListOp
+  | ReportNoteOp
 
 export type Response<T = unknown> =
   | { ok: true; data: T }

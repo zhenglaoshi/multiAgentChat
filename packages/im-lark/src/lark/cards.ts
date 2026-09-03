@@ -1,5 +1,5 @@
-import type { ApprovalRequest, AskRequest, PerfItem, Plan, TapdItem, IntegrationStatus, Integration, WorkTask } from 'multiagent-orchestrator';
-import { tapdSummary, TAPD_KIND_LABEL } from 'multiagent-orchestrator';
+import type { ApprovalRequest, AskRequest, PerfItem, Plan, TapdItem, IntegrationStatus, Integration, WorkTask, HandoffTask, HandoffStatus } from 'multiagent-orchestrator';
+import { tapdSummary, TAPD_KIND_LABEL, HANDOFF_STATUS_LABEL, allowedNextForRole } from 'multiagent-orchestrator';
 import { inferTabStatus, getHostPermissionSpec, type TabStatusInfo, type HostPermissionStatus } from 'multiagent-host-mac';
 import type { TerminalTab } from 'multiagent-host-mac';
 import { homedir } from 'node:os';
@@ -60,6 +60,81 @@ function optionsNeedFullList(options: string[], limit = 18): boolean {
  *  rejected : 红色 + "已拒绝 by ..."
  *  timeout  : 灰色 + "已超时（自动拒绝）"
  */
+/**
+ * 同事任务甩单卡（P2）。requester（发单方）/ assignee（收单方）各看一张，状态双向同步。
+ * ⚠ 对端可控字段（title/summaryMd/peer/note）一律用 `plain_text` 元素渲染——不解析 lark_md，
+ *    从根上杜绝 `[text](url)` 钓鱼链接注入（含下游 redactMaybe 二次插入 `[REDACTED-*]`）。
+ * 交互多次 patch → 必须 update_multi:true。
+ */
+export function handoffTaskCard(t: HandoffTask) {
+  // 防御性兜底：字段本应经 validateIncoming 保证类型，这里再兜一层防脏数据 render 崩
+  const S = (v: unknown, n: number): string => truncate(typeof v === 'string' ? v : String(v ?? ''), n);
+  const label = HANDOFF_STATUS_LABEL[t.status] ?? String(t.status);
+  const template =
+    t.status === 'done' ? 'green' :
+    t.status === 'declined' || t.status === 'canceled' ? 'grey' :
+    t.role === 'assignee' && t.status === 'sent' ? 'yellow' :  // 待我处理
+    'blue';
+  const dir = t.role === 'assignee' ? `来自 ${S(t.peer, 80)}` : `发给 ${S(t.peer, 80)}`;
+
+  const elements: unknown[] = [];
+  elements.push({ tag: 'div', text: { tag: 'plain_text', content: `${dir}　·　${label}` } });
+  if (t.summaryMd) {
+    elements.push({ tag: 'hr' });
+    elements.push({ tag: 'div', text: { tag: 'plain_text', content: S(t.summaryMd, 2000) } });
+  }
+  if (Array.isArray(t.attachments) && t.attachments.length) {
+    elements.push({
+      tag: 'div',
+      text: { tag: 'plain_text', content: `📎 附件：${t.attachments.map((a) => S(a?.name, 60)).join('、')}` },
+    });
+  }
+  // 状态历史尾巴（最近 3 条带备注的）——也用 plain_text
+  const notes = (Array.isArray(t.statusHistory) ? t.statusHistory : []).filter((h) => h.note).slice(-3);
+  for (const h of notes) {
+    elements.push({
+      tag: 'note',
+      elements: [{ tag: 'plain_text', content: `📝 ${S(h.by, 80)}（${HANDOFF_STATUS_LABEL[h.status] ?? h.status}）：${S(h.note, 200)}` }],
+    });
+  }
+
+  const buttons = handoffButtons(t);
+  if (buttons.length > 0) {
+    elements.push({ tag: 'action', actions: buttons });
+  } else {
+    elements.push({ tag: 'note', elements: [{ tag: 'plain_text', content: `任务 ${t.id.slice(0, 8)}` }] });
+  }
+
+  return {
+    config: { wide_screen_mode: true, update_multi: true },
+    header: { template, title: { tag: 'plain_text', content: `👥 ${S(t.title, 40)}` } },
+    elements,
+  };
+}
+
+/** 目标状态 → 按钮文案/样式。 */
+const HANDOFF_BTN: Record<HandoffStatus, { label: string; type: 'primary' | 'danger' | 'default' }> = {
+  accepted: { label: '🤝 接收', type: 'primary' },
+  in_progress: { label: '🚧 开始', type: 'primary' },
+  done: { label: '✅ 完成', type: 'primary' },
+  declined: { label: '🙅 拒绝', type: 'danger' },
+  canceled: { label: '↩️ 撤回', type: 'danger' },
+  sent: { label: '', type: 'default' }, // 不会作为按钮目标
+};
+
+/**
+ * 依角色+当前状态给出可点的下一步按钮。规则来自 orchestrator/handoff/state.ts 的
+ * allowedNextForRole（单一事实源，CLI/sendHandoffStatus 走同一份），避免按钮与状态机漂移。
+ */
+function handoffButtons(t: HandoffTask): unknown[] {
+  return allowedNextForRole(t.role, t.status).map((status) => ({
+    tag: 'button',
+    text: { tag: 'plain_text', content: HANDOFF_BTN[status].label },
+    type: HANDOFF_BTN[status].type,
+    value: { action: 'handoff-status', taskId: t.id, status },
+  }));
+}
+
 export function approvalCard(req: ApprovalRequest) {
   const template =
     req.status === 'pending' ? 'yellow' :        // pending 强调"需操作"用 yellow

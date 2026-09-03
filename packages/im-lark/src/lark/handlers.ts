@@ -11,6 +11,7 @@ import { healIfWedged } from '../monitor/stuck-shell.js';
 import { recordInbound } from '../monitor/ws-watchdog.js';
 import { captureScreen, closeTabGracefully, detectSelfTty, forceEnter, getHistory, getUserFocus, launchAgentInTab, launchClaudeInTab, listTabs, newTab, openPermissionPane, send, sendKeys, sendKeysRaw } from 'multiagent-host-mac';
 import { detectAgentFromProcs, listAgentAdapters, looksLikeAgentTask } from 'multiagent-orchestrator';
+import type { HandoffStatus } from 'multiagent-orchestrator';
 
 // SYSTEM_GUIDANCE 的去重 — per-tab，每 tty 6h 内最多注入一次
 // 这是 module-level 内存状态，dev 重启会清空（重启后第一次注入是合理的）
@@ -2023,6 +2024,25 @@ async function handleCardAction(
     return {}; // 靠卡刷新 + sendText 反馈，不 return toast（会盖 patchCard）
   }
 
+  if (action === 'handoff-status') {
+    const taskId = String(value['taskId'] ?? '');
+    const status = String(value['status'] ?? '') as HandoffStatus;
+    if (!taskId || !status) return { toast: { type: 'error', content: '缺 taskId/status' } };
+    const { getHandoffStatusSender } = await import('./handoff-bridge.js');
+    const sender = getHandoffStatusSender();
+    if (!sender) {
+      if (chatId) void sendText(client, chatId, '❌ handoff 未启用（relay 未配置）');
+      return {};
+    }
+    const r = await sender(taskId, status);
+    if (!r.ok || !r.task) {
+      if (chatId) void sendText(client, chatId, `❌ 状态更新失败：${r.error ?? '未知'}`);
+      return {};
+    }
+    const { handoffTaskCard } = await import('./cards.js');
+    return patchOrReply(client, data, handoffTaskCard(r.task)); // 就地 patch 被点的卡
+  }
+
   if (action === 'perf-claim') {
     const id = value['id'] as string | undefined;
     if (!id) return { toast: { type: 'error', content: '缺 id' } };
@@ -3530,8 +3550,8 @@ export function buildEventDispatcher(client: Lark.Client): Lark.EventDispatcher 
               const wLabel = { day: '日报', week: '周报', month: '月报', year: '年报' }[window];
               const hm = await import('multiagent-host-mac');
               const orch = await import('multiagent-orchestrator');
-              const index = await hm.getDirIndex().catch(() => ({ dirs: [] as { path: string; isGitRepo: boolean }[] }));
-              const repos = index.dirs.filter((d) => d.isGitRepo).map((d) => d.path);
+              // 报告候选仓库（dir-index 全量 ∪ tab/最近/worktasks）；下游按时间窗+mtime 过滤只留今天有活动的。
+              const repos = await hm.activeReportRepos().catch(() => [] as string[]);
               const collect = () => orch.collectWorkData({ window, repos });
               const asPptx = (window === 'month' || window === 'year') && !brief;
               void sendText(client, chat_id, `📊 ${wLabel}${asPptx ? '(PPT)' : '简报'}生成中…（采集 git+任务记忆 → claude 合成，约 30-60s）`);

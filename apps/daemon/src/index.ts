@@ -4,8 +4,9 @@ import { copyFile, mkdir, readFile, symlink, unlink, writeFile } from 'node:fs/p
 import { homedir, platform } from 'node:os';
 import { delimiter, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { startControlServer } from 'multiagent-framework';
-import { startLarkBot } from 'multiagent-im-lark';
+import { startControlServer, initRelay, loadRelayConfig, startRelayPoller, sendHandoffStatus } from 'multiagent-framework';
+import { startLarkBot, listAllChats, sendCardReturnId, patchCard, handoffTaskCard, setHandoffStatusSender } from 'multiagent-im-lark';
+import { updateHandoffTask, type ApplyResult, type HandoffEnvelope } from 'multiagent-orchestrator';
 import { loadWeComConfig, WeComTransport, renderWeComCard } from 'multiagent-im-wecom';
 import { loadWebDashboardConfig } from './web-dashboard/config.js';
 import { WebDashboardServer } from './web-dashboard/server.js';
@@ -245,7 +246,7 @@ async function installCodexNotify(): Promise<void> {
 }
 
 /** 项目自带、随 daemon 幂等安装到 ~/.claude/skills/ 的 skill 名（= skills/<name>/SKILL.md）。 */
-const BUNDLED_SKILLS = ['multiagent-lark', 'multiagent-secret-guard'];
+const BUNDLED_SKILLS = ['multiagent-lark', 'multiagent-secret-guard', 'multiagent-handoff'];
 
 /**
  * 幂等把 skills/<name>/SKILL.md upsert 到 ~/.claude/skills/<name>/。
@@ -1316,6 +1317,49 @@ function attachWeComApprovalListener(wecom: WeComTransport): void {
   });
 }
 
+type LarkClient = Parameters<typeof sendCardReturnId>[0];
+
+/**
+ * 收到 handoff envelope 后投递到飞书（P2：富交互「👥 同事任务卡」+ 状态按钮）。
+ * 对端可控内容全在卡片的 plain_text 元素里渲染（见 cards.ts handoffTaskCard），不解析 lark_md
+ * → 天然免 `[text](url)` 钓鱼注入。created=发新卡并记 larkMessageId；status/reply=就地 patch 原卡。
+ */
+async function deliverHandoff(
+  client: LarkClient,
+  result: ApplyResult,
+  env: HandoffEnvelope,
+): Promise<void> {
+  const t = result.task;
+  if (!t || (result.kind !== 'created' && result.kind !== 'status' && result.kind !== 'reply')) {
+    return; // ignored（重复 / 未知任务 / 非法跃迁 / 非对端）
+  }
+  if (result.kind === 'reply' && !result.changed) return; // 空留言不动卡
+
+  // 已有卡 → 就地 patch（状态/留言更新）
+  if (t.larkMessageId) {
+    try {
+      await patchCard(client, t.larkMessageId, handoffTaskCard(t));
+      return;
+    } catch (e) {
+      logger.warn('handoff 卡 patch 失败，改发新卡', { err: (e as Error).message });
+    }
+  }
+
+  // 没有卡（首次 create，或 patch 失败兜底）→ 发新卡到最近 chat 并记 larkMessageId
+  const chats = await listAllChats();
+  if (chats.length === 0) {
+    logger.warn('handoff 收到但无飞书 chat 可投递', { id: env.id });
+    return;
+  }
+  const chatId = t.chatId ?? [...chats].sort((a, b) => b.lastActiveAt - a.lastActiveAt)[0]!.chatId;
+  const mid = await sendCardReturnId(client, chatId, handoffTaskCard(t));
+  await updateHandoffTask(t.id, (task) => {
+    task.larkMessageId = mid;
+    task.chatId = chatId;
+    return true;
+  });
+}
+
 async function main() {
   // ---- Preflight（都是幂等 / 快速，早失败 hint 给用户） ----
   assertNodeVersion();
@@ -1400,6 +1444,19 @@ async function main() {
 
   await startControlServer(lark.client, wecom ?? undefined);
   attachWatcherToLark(lark.client);
+
+  // ---- Handoff relay（同事任务甩单）：配了 RELAY_URL/TOKEN/IDENTITY 才启用 ----
+  const relayCfg = loadRelayConfig();
+  if (relayCfg) {
+    // initRelay 设全局单例，server handler 通过 getRelayClient() 复用同一实例
+    const relayClient = initRelay(relayCfg);
+    startRelayPoller(relayClient, (result, env) => deliverHandoff(lark.client, result, env));
+    // 桥接：飞书卡片按钮点击（im-lark）→ 发状态信封 + 回写 store（framework relay）
+    setHandoffStatusSender((taskId, status, note) => sendHandoffStatus(taskId, status, note));
+    logger.info('handoff relay 已启用', { identity: relayCfg.identity, url: relayCfg.url });
+  } else {
+    logger.info('handoff relay 未启用（缺 RELAY_URL/RELAY_TOKEN/RELAY_IDENTITY）');
+  }
   attachStageMemoryListener();
   attachKnowledgeExtractor();
   startHealthCheck(lark.client);

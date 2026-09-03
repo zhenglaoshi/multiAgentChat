@@ -1,8 +1,8 @@
 import { createServer, type Socket } from 'node:net';
 import { execFile } from 'node:child_process';
-import { mkdir, unlink } from 'node:fs/promises';
+import { mkdir, unlink, readFile } from 'node:fs/promises';
 import { existsSync, unlinkSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, hostname } from 'node:os';
 import { basename, dirname, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import * as Lark from '@larksuiteoapi/node-sdk';
@@ -10,7 +10,7 @@ import { approvals, asks, knowledgeQueue, listEntries, statsSummary } from 'mult
 import { isHighRiskCommand, isLearnedAllowed, learnedProgress, recordDecision } from 'multiagent-orchestrator';
 import { shouldGate, getPermLevel, PERM_LEVEL_LABELS } from 'multiagent-orchestrator';
 import { listAllChats, loadChat, saveChat } from 'multiagent-im-lark';
-import { originShellPushCard, sendCardMessage, sendFile, sendImage, sendTextMessage, patchCard, tapdClaimCard } from 'multiagent-im-lark';
+import { originShellPushCard, sendCardMessage, sendCardReturnId, sendFile, sendImage, sendTextMessage, patchCard, tapdClaimCard, handoffTaskCard } from 'multiagent-im-lark';
 import { loadClaim, saveClaim, TAPD_STAGE_LABEL, type TapdStage } from 'multiagent-orchestrator';
 import { logger } from 'multiagent-orchestrator';
 import { pendingTracker } from 'multiagent-im-lark';
@@ -85,8 +85,30 @@ import type {
   SubagentShowData,
   SubagentGenSubmitData,
   SubagentSummary,
+  HandoffSendData,
+  HandoffStatusData,
+  HandoffReplyData,
+  HandoffPullData,
+  HandoffListData,
+  ContactsListData,
+  ReportNoteData,
 } from './protocol.js';
 import { SOCKET_PATH } from './protocol.js';
+import { getRelayClient, sendHandoffStatus, sendHandoffReply } from '../relay/index.js';
+import {
+  buildCreateEnvelope,
+  saveHandoffTask,
+  getHandoffTask,
+  listHandoffTasks,
+  updateHandoffTask,
+  redactText,
+  recordHookSummary,
+  persistHookMemory,
+  appendWorkNote,
+  type HandoffAttachment,
+  type HandoffContext,
+  type HandoffTask,
+} from 'multiagent-orchestrator';
 import type { IMTransport } from '../im/index.js';
 
 const ABS_SOCKET = resolve(SOCKET_PATH);
@@ -387,6 +409,26 @@ async function resolveOriginTab(
 }
 
 /**
+ * 轻量 pid→tty 反查（只跑 `ps -o tty=`，不枚举 Terminal tab）。
+ * 供 Stop hook 的 summary 缓存用：它只需要 tty 作 key，不需要 tab cwd/标题。
+ * 避免在 gate 之前对每一次全局 Claude Code 应答都跑一遍 listTabs（AppleScript，重且
+ * 叠加 watcher 自身的 2s 轮询会加剧 System Events 负载）。查不到返回 null。
+ */
+async function resolveOriginTtyFast(originPid?: number): Promise<string | null> {
+  if (!originPid || !Number.isFinite(originPid)) return null;
+  try {
+    const { stdout } = await execFileAsync('ps', ['-o', 'tty=', '-p', String(originPid)]);
+    const raw = stdout.trim();
+    if (raw && raw !== '?' && raw !== '??') {
+      return raw.startsWith('/dev/') ? raw : `/dev/${raw}`;
+    }
+  } catch {
+    /* 进程没了 / ps 失败 → 放弃缓存本条 */
+  }
+  return null;
+}
+
+/**
  * 拼「[ttys004 · project-name]\n」前缀。cwd 空则只显示 tty。
  * home 目录会替换成 `~/…`。tty 去掉 /dev/ 前缀更省字符。
  */
@@ -435,6 +477,25 @@ async function handleLarkSendText(
   try {
     const chat = await loadChat(req.chatId);
 
+    // Stop hook（--auto）的 assistant 真实回答按 tty 缓存 → persistTaskMemory 落本地任务
+    // memory 时用它作 summary（替代 alt-screen 下只截得到的 TUI 噪音尾巴）。
+    // 无论是否被下面 gate（gate 只管推不推飞书，不该影响报告数据采集）都要记；
+    // 用轻量 ps 反查 tty（不调 listTabs/AppleScript），避免每次全局 hook 白跑重活。
+    if (req.auto && req.text.trim()) {
+      const hookTty = await resolveOriginTtyFast(req.originPid);
+      if (hookTty) {
+        recordHookSummary(hookTty, req.text);
+        // 留底：任务做完随手关窗口/杀进程时，watcher 来不及把 pending 走到 isFinal 落盘 →
+        // 报告漏掉。Stop hook 是「响应完成」的可靠信号，这里按 tty upsert 一条 source='hook'
+        // 的 memory（窗口关不关都留得住），报告采集期与 watcher 的同源条目去重。
+        // 与本地任务落盘同一条隐私边界：MCHAT_LOCAL_TASK_CAPTURE=0 时一并关闭。
+        if (process.env['MCHAT_LOCAL_TASK_CAPTURE'] !== '0') {
+          void persistHookMemory({ tty: hookTty, cwd: req.originCwd, text: req.text })
+            .catch((e) => logger.warn('persistHookMemory failed', { err: (e as Error).message }));
+        }
+      }
+    }
+
     // --auto 推送（如 Claude Code Stop hook 触发）：仅当目标 chat 的 watchAllTabs=true 才放行
     if (req.auto) {
       if (!chat.watchAllTabs) {
@@ -449,7 +510,8 @@ async function handleLarkSendText(
       }
     }
 
-    // origin tab 反查。仅当有 originPid 或 originCwd 时才尝试；反查失败静默降级。
+    // origin tab 反查（完整版，含 cwd/标题，用于卡片前缀）。仅在**未被 gate** 的路径才跑，
+    // 避免对默认关着 watchAllTabs 的绝大多数 hook 白跑 listTabs（AppleScript）。
     let origin: Awaited<ReturnType<typeof resolveOriginTab>> = null;
     if (req.originPid !== undefined || req.originCwd !== undefined) {
       origin = await resolveOriginTab(req.originPid, req.originCwd);
@@ -812,6 +874,26 @@ function resolveWeComTarget(reqChatId: string | undefined): string {
   const def = process.env['WECOM_DEFAULT_TO_USER'];
   if (def) return `wecom:user:${def}`;
   throw new Error('无法反查企微 chat —— 明示 --chat 或设置 WECOM_DEFAULT_TO_USER');
+}
+
+async function handleReportNote(
+  sock: Socket,
+  req: Extract<Request, { op: 'report.note' }>,
+) {
+  const text = (req.text ?? '').trim();
+  if (!text) {
+    sendErr(sock, 'report.note 需要非空 text');
+    sock.end();
+    return;
+  }
+  try {
+    const id = await appendWorkNote(text, req.cwd);
+    logger.info('work note appended', { id, len: text.length });
+    sendOk<ReportNoteData>(sock, { id });
+  } catch (e) {
+    sendErr(sock, `report.note 落盘失败: ${(e as Error).message}`);
+  }
+  sock.end();
 }
 
 async function handleWeComSendText(
@@ -1727,6 +1809,190 @@ function templateSaged(arr: string[]): string {
 }
 
 
+// ---- Handoff ops（同事任务甩单）----
+
+/** 粗判二进制：前 8KB 内出现 NUL 字节即认为是二进制（无法做文本脱敏）。 */
+function looksBinary(buf: Buffer): boolean {
+  const n = Math.min(buf.length, 8000);
+  for (let i = 0; i < n; i++) if (buf[i] === 0) return true;
+  return false;
+}
+
+function requireRelay(sock: Socket): ReturnType<typeof getRelayClient> {
+  const client = getRelayClient();
+  if (!client) {
+    sendErr(sock, 'relay 未配置（缺 RELAY_URL/RELAY_TOKEN/RELAY_IDENTITY），handoff 功能未启用');
+    sock.end();
+    return null;
+  }
+  return client;
+}
+
+async function handleHandoffSend(sock: Socket, req: Extract<Request, { op: 'handoff.send' }>) {
+  const client = requireRelay(sock);
+  if (!client) return;
+  const to = client.resolveTarget(req.to);
+  if (!to.includes('@')) {
+    sendErr(sock, `收件人无法解析成身份（邮箱）：${req.to}（可在 HANDOFF_ALIASES 里配别名）`);
+    sock.end();
+    return;
+  }
+  if (to === client.identity) {
+    sendErr(sock, '不能给自己甩单');
+    sock.end();
+    return;
+  }
+  // 发送前脱敏（跨人发不给 /raw 后门）
+  const title = redactText(req.title);
+  const summaryMd = req.summaryMd ? redactText(req.summaryMd) : undefined;
+
+  // 附件也过脱敏：文本类文件先 redactText 再上传（防 .env/日志里的密码/token 明文外泄）；
+  // 二进制无法脱敏，原样上传但日志告警。跨人发不给 /raw 后门。
+  const attachments: HandoffAttachment[] = [];
+  for (const p of req.attachPaths ?? []) {
+    const bytes = await readFile(p);
+    const name = basename(p);
+    if (looksBinary(bytes)) {
+      logger.warn('handoff 附件是二进制，无法脱敏，原样上传', { name });
+      attachments.push(await client.uploadBytes(name, bytes));
+    } else {
+      const redacted = Buffer.from(redactText(bytes.toString('utf8')), 'utf8');
+      attachments.push(await client.uploadBytes(name, redacted));
+    }
+  }
+
+  const context: HandoffContext = { host: hostname() };
+  if (req.cwd) context.cwd = req.cwd;
+  if (req.shell) context.shell = req.shell;
+  if (req.agent) context.agent = req.agent;
+
+  const env = buildCreateEnvelope({ to, from: client.identity, title, attachments, context, ...(summaryMd ? { summaryMd } : {}) });
+  const receipt = await client.send(env);
+
+  const now = Date.now();
+  const task: HandoffTask = {
+    id: env.id,
+    role: 'requester',
+    self: client.identity,
+    peer: to,
+    title,
+    attachments,
+    context,
+    status: 'sent',
+    statusHistory: [{ status: 'sent', at: now, by: client.identity }],
+    createdAt: now,
+    updatedAt: now,
+  };
+  if (summaryMd) task.summaryMd = summaryMd;
+  await saveHandoffTask(task);
+
+  // A 侧发一张 requester 卡到最近的飞书 chat（P2：可视 + 带撤回按钮，后续对端状态变来 patch 它）
+  if (larkClient) {
+    try {
+      const chats = await listAllChats();
+      if (chats.length > 0) {
+        const chatId = [...chats].sort((a, b) => b.lastActiveAt - a.lastActiveAt)[0]!.chatId;
+        const mid = await sendCardReturnId(larkClient, chatId, handoffTaskCard(task));
+        await updateHandoffTask(task.id, (t) => {
+          t.larkMessageId = mid;
+          t.chatId = chatId;
+          return true;
+        });
+      }
+    } catch (e) {
+      logger.warn('handoff requester 卡发送失败（任务已落盘）', { err: (e as Error).message });
+    }
+  }
+
+  sendOk<HandoffSendData>(sock, {
+    taskId: env.id,
+    to,
+    deduped: receipt.deduped ?? false,
+    attachments: attachments.length,
+  });
+  sock.end();
+}
+
+async function handleHandoffStatus(sock: Socket, req: Extract<Request, { op: 'handoff.status' }>) {
+  if (!requireRelay(sock)) return;
+  // 发信封 + 锁内回写（与飞书卡片按钮共用同一条 sendHandoffStatus）
+  const r = await sendHandoffStatus(req.taskId, req.status, req.note);
+  if (!r.ok || !r.task) {
+    sendErr(sock, r.error ?? '状态更新失败');
+    sock.end();
+    return;
+  }
+  // 本地卡就地 patch（若之前发过卡）
+  if (larkClient && r.task.larkMessageId) {
+    try {
+      await patchCard(larkClient, r.task.larkMessageId, handoffTaskCard(r.task));
+    } catch (e) {
+      logger.warn('handoff 卡 patch 失败', { err: (e as Error).message });
+    }
+  }
+  sendOk<HandoffStatusData>(sock, { taskId: r.task.id, status: r.task.status });
+  sock.end();
+}
+
+async function handleHandoffReply(sock: Socket, req: Extract<Request, { op: 'handoff.reply' }>) {
+  if (!requireRelay(sock)) return;
+  const r = await sendHandoffReply(req.taskId, req.text);
+  if (!r.ok || !r.task) {
+    sendErr(sock, r.error ?? '留言失败');
+    sock.end();
+    return;
+  }
+  if (larkClient && r.task.larkMessageId) {
+    try {
+      await patchCard(larkClient, r.task.larkMessageId, handoffTaskCard(r.task));
+    } catch (e) {
+      logger.warn('handoff 留言卡 patch 失败', { err: (e as Error).message });
+    }
+  }
+  sendOk<HandoffReplyData>(sock, { taskId: r.task.id });
+  sock.end();
+}
+
+async function handleHandoffPull(sock: Socket, req: Extract<Request, { op: 'handoff.pull' }>) {
+  const client = requireRelay(sock);
+  if (!client) return;
+  const task = await getHandoffTask(req.taskId);
+  if (!task) {
+    sendErr(sock, `找不到 handoff 任务：${req.taskId}`);
+    sock.end();
+    return;
+  }
+  const dir = req.dir ?? resolve(`./data/handoff-inbound/${task.id.slice(0, 8)}`);
+  const saved: string[] = [];
+  for (const att of task.attachments) {
+    try {
+      saved.push(await client.downloadBlob(att, dir));
+    } catch (e) {
+      logger.warn('handoff 附件下载失败', { name: att.name, err: (e as Error).message });
+    }
+  }
+  sendOk<HandoffPullData>(sock, { saved });
+  sock.end();
+}
+
+async function handleHandoffList(sock: Socket, req: Extract<Request, { op: 'handoff.list' }>) {
+  const client = getRelayClient();
+  const tasks = await listHandoffTasks(req.limit ?? 50);
+  sendOk<HandoffListData>(sock, {
+    tasks,
+    identity: client?.identity ?? process.env['RELAY_IDENTITY'] ?? '',
+  });
+  sock.end();
+}
+
+async function handleContactsList(sock: Socket, _req: Extract<Request, { op: 'contacts.list' }>) {
+  const client = requireRelay(sock);
+  if (!client) return;
+  const contacts = await client.contacts();
+  sendOk<ContactsListData>(sock, { contacts });
+  sock.end();
+}
+
 // ---- dispatch ----
 
 async function dispatch(sock: Socket, req: Request): Promise<void> {
@@ -1759,6 +2025,8 @@ async function dispatch(sock: Socket, req: Request): Promise<void> {
       return handleChatSetActive(sock, req);
     case 'lark.send-text':
       return handleLarkSendText(sock, req);
+    case 'report.note':
+      return handleReportNote(sock, req);
     case 'ask.disarm':
       return handleAskDisarm(sock, req);
     case 'permission.gate':
@@ -1821,6 +2089,18 @@ async function dispatch(sock: Socket, req: Request): Promise<void> {
       return handleSubagentDelete(sock, req);
     case 'subagent.gen-submit':
       return handleSubagentGenSubmit(sock, req);
+    case 'handoff.send':
+      return handleHandoffSend(sock, req);
+    case 'handoff.status':
+      return handleHandoffStatus(sock, req);
+    case 'handoff.reply':
+      return handleHandoffReply(sock, req);
+    case 'handoff.pull':
+      return handleHandoffPull(sock, req);
+    case 'handoff.list':
+      return handleHandoffList(sock, req);
+    case 'contacts.list':
+      return handleContactsList(sock, req);
     default: {
       const exhaustive: never = req;
       sendErr(sock, `unknown op: ${JSON.stringify(exhaustive)}`);

@@ -15,6 +15,9 @@ describe('redact — 高置信度 token', () => {
     expect(redactText('ghp_' + 'a'.repeat(36))).toBe('[REDACTED-GH-TOKEN]');
     expect(redactText('github_pat_' + 'b'.repeat(50))).toBe('[REDACTED-GH-PAT]');
   });
+  it('relay 接入 token mrt_', () => {
+    expect(redactText('RELAY_TOKEN=mrt_' + 'a'.repeat(48))).toBe('RELAY_TOKEN=[REDACTED-RELAY-TOKEN]');
+  });
   it('careyclaw oct_ / JWT', () => {
     expect(redactText('oct_' + 'x'.repeat(40))).toBe('[REDACTED-CAREYCLAW-TOKEN]');
     expect(

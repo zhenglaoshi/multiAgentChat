@@ -11,14 +11,21 @@
 
 ## 📖 我在日常用
 - **[commands.md](commands.md)** — 完整命令速查（飞书 / 企微 + Mac CLI，按任务分类）
+- **[feishu-commands.md](feishu-commands.md)** — 飞书 slash 命令清单（自动生成的命令菜单 manifest）
 - **[sop.md](sop.md)** — SOP 工作流（多 stage / gate / loop / subagent）
 - **[web-dashboard.md](web-dashboard.md)** — 手机浏览器直控 Mac 的 setup + 用法
 - **[knowledge.md](knowledge.md)** — 自动提炼 shell 交互为个人知识库（Phase 1）
+- **[team-knowledge-base.md](team-knowledge-base.md)** — 团队知识库（设计草案，跨人共享 knowledge 的方案）
 - **[tapd.md](tapd.md)** — TAPD Bug 自动监听：推卡→认领→多选 repo→切分支→开 claude tab 修复→回写状态
+- **[perf-integration.md](perf-integration.md)** — performance-platform 性能建议对接方案（P1 只读监听 + P2 认领并建需求已落地）
+- **[handoff-deployment.md](handoff-deployment.md)** — 同事任务甩单：**部署与使用指南**（环境变量总表 / 上线三步 / 排障），要落地看这篇
+- **[handoff-integration.md](handoff-integration.md)** — 同事任务甩单：设计/协议/分期（中转 relay + OIDC 门户，配套独立项目 `../multiagent-relay/`）
+- **[permissions.md](permissions.md)** — 授权与权限清单（macOS TCC 授权 + 高危命令审批等级），首次安装必读
 - **[troubleshooting.md](troubleshooting.md)** — 遇到问题查这里
 
 ## 🛠 我想改代码
 - **[architecture.md](architecture.md)** — 内部架构（monorepo 布局、依赖 DAG、数据流、IMTransport 抽象）
+- **[codex-integration.md](codex-integration.md)** — 多 agent · Codex CLI 集成方案（AgentAdapter 抽象 + 回传通道）
 - **[../CONTRIBUTING.md](../CONTRIBUTING.md)** — 开发环境 setup、贡献流程
 
 ## 🎨 我想为特定域造一套 subagent

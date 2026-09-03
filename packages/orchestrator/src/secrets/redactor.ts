@@ -51,6 +51,7 @@ const HIGH_RULES: HighRule[] = [
   { kind: 'GOOGLE-KEY', re: /\bAIza[0-9A-Za-z\-_]{35}/g },
   { kind: 'GITLAB-PAT', re: /\bglpat-[A-Za-z0-9\-_]{20}/g },
   { kind: 'CAREYCLAW-TOKEN', re: /\boct_[A-Za-z0-9\-_]{40,}/g },
+  { kind: 'RELAY-TOKEN', re: /\bmrt_[a-f0-9]{32,}/g }, // 同事甩单 relay 接入 token（自助门户签发）
   { kind: 'JWT', re: /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g },
 ];
 

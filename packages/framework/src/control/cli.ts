@@ -8,6 +8,8 @@ import { argv, cwd as procCwd, exit, stderr, stdin, stdout } from 'node:process'
 import { fileURLToPath } from 'node:url';
 import type { ApprovalRequest } from 'multiagent-orchestrator';
 import { scrubSecrets, summarizeScrub } from 'multiagent-orchestrator';
+import { HANDOFF_STATUS_LABEL } from 'multiagent-orchestrator';
+import type { HandoffStatus, HandoffTask } from 'multiagent-orchestrator';
 import type { TaskState, TaskStatus } from 'multiagent-orchestrator';
 import type { TerminalTab } from 'multiagent-host-mac';
 import { SOCKET_PATH } from './protocol.js';
@@ -46,6 +48,13 @@ import type {
   SubagentDeleteData,
   SubagentListData,
   SubagentShowData,
+  HandoffSendData,
+  HandoffStatusData,
+  HandoffReplyData,
+  HandoffPullData,
+  HandoffListData,
+  ContactsListData,
+  ReportNoteData,
 } from './protocol.js';
 
 const STATE_FILE = join(homedir(), '.multiagent-chat', 'cli-state.json');
@@ -105,6 +114,11 @@ interface Flags {
   options?: string;       // agent lark ask --options "a,b,c" (逗号分隔简写)
   specJson?: string;      // agent lark ask form --spec-json '{"questions":[...]}'（多问题表单）
   timeoutMs?: number;     // agent lark ask --timeout <ms>
+  to?: string;            // agent handoff send --to @bob（别名或邮箱）
+  summaryFile?: string;   // agent handoff send --summary-file <path>（markdown 正文）
+  dir?: string;           // agent handoff pull --dir <path>（附件落盘目录）
+  attach: string[];       // agent handoff send --attach <path>（可重复）
+  limit?: number;         // agent handoff list --limit <n>
   positional: string[];
 }
 
@@ -127,6 +141,7 @@ function parseArgs(args: string[]): Flags {
     plain: false,
     auto: false,
     question: false,
+    attach: [],
     positional: [],
   };
   for (let i = 0; i < args.length; i++) {
@@ -209,6 +224,19 @@ function parseArgs(args: string[]): Flags {
       const n = Number(v);
       if (!Number.isFinite(n) || n <= 0) die(`--timeout 非法：${v}`);
       flags.timeoutMs = n;
+    } else if (a === '--to') {
+      flags.to = args[++i] ?? die('--to 需要收件人（@别名 或 邮箱）');
+    } else if (a === '--summary-file') {
+      flags.summaryFile = args[++i] ?? die('--summary-file 需要路径');
+    } else if (a === '--dir') {
+      flags.dir = args[++i] ?? die('--dir 需要路径');
+    } else if (a === '--attach') {
+      flags.attach.push(args[++i] ?? die('--attach 需要文件路径'));
+    } else if (a === '--limit') {
+      const v = args[++i] ?? die('--limit 需要数字');
+      const n = Number(v);
+      if (!Number.isFinite(n) || n <= 0) die(`--limit 非法：${v}`);
+      flags.limit = n;
     } else if (a === '--reason') {
       flags.reason = args[++i] ?? die('--reason 需要值');
     } else if (a === '--status') {
@@ -1856,6 +1884,15 @@ function printHelp() {
       '  agent stage-recall [--name <stage>] [--cwd <dir>] [-n N] [kw1 kw2 ...]',
       '       查跨任务的 stage memory（"上次 architect 在这个 cwd 做了啥"）',
       '',
+      '同事任务甩单（Handoff，经 relay 中转；需 .env 里 RELAY_URL/TOKEN/IDENTITY + HANDOFF_ALLOW）：',
+      '  agent handoff send --to @bob --title "..." [--summary-file f.md | --summary "..." | stdin] [--attach path]...',
+      '       把问题+建议+文件甩给同事（发送前强制脱敏）；--attach 可多次；--to 支持 @别名 或邮箱',
+      '  agent handoff status <taskId> <sent|accepted|in_progress|done|declined|canceled> [--note "..."]',
+      '  agent handoff reply <taskId> <留言...>   给对端留言（跨人对话，双向可见）',
+      '  agent handoff pull <taskId> [--dir <path>]   把该任务的附件下载到本地',
+      '  agent handoff list [--limit N]        看我发出/收到的甩单任务',
+      '  agent contacts                        列联系人 + 在线状态',
+      '',
       '诊断：',
       '  agent doctor                 全项目健康检查（Node/env/socket/AppleScript/skill/subagent...）',
       '',
@@ -1963,6 +2000,139 @@ async function cmdPermissionGate(flags: Flags): Promise<void> {
   }
 }
 
+// ---- Handoff / Contacts ----
+
+const HANDOFF_STATUSES: HandoffStatus[] = [
+  'sent',
+  'accepted',
+  'in_progress',
+  'done',
+  'declined',
+  'canceled',
+];
+
+async function cmdHandoff(flags: Flags): Promise<void> {
+  const sub = flags.positional[0] ?? 'send';
+  switch (sub) {
+    case 'send':
+      return await handoffSend(flags);
+    case 'status':
+      return await handoffStatus(flags);
+    case 'reply':
+      return await handoffReply(flags);
+    case 'pull':
+      return await handoffPull(flags);
+    case 'list':
+      return await handoffList(flags);
+    default:
+      die(`未知 handoff 子命令：${sub}（可用：send / status / reply / pull / list）`);
+  }
+}
+
+async function handoffSend(flags: Flags): Promise<void> {
+  const to = flags.to ?? die('handoff send 需要 --to <@别名|邮箱>');
+  const title = flags.title ?? die('handoff send 需要 --title <标题>');
+  let summaryMd = flags.summary;
+  if (!summaryMd && flags.summaryFile) {
+    summaryMd = await readFile(resolvePath(flags.summaryFile), 'utf8');
+  }
+  if (!summaryMd) {
+    const piped = await readStdinIfPiped();
+    if (piped) summaryMd = piped;
+  }
+  const req: Extract<Request, { op: 'handoff.send' }> = { op: 'handoff.send', to, title };
+  if (summaryMd) req.summaryMd = summaryMd;
+  // 在 CLI 进程（用户 tab 的 cwd）把相对路径解析成绝对路径——daemon 的 cwd 通常是仓库根，不是用户所在目录
+  if (flags.attach.length) req.attachPaths = flags.attach.map((p) => resolvePath(p));
+  if (flags.cwd) req.cwd = flags.cwd;
+  const data = await sendOnce<HandoffSendData>(req);
+  stdout.write(
+    `✅ 已甩单给 ${data.to}\n   taskId: ${data.taskId}\n   附件: ${data.attachments}` +
+      `${data.deduped ? '   ⚠ relay 去重（此前已发过同一条）' : ''}\n`,
+  );
+}
+
+async function handoffStatus(flags: Flags): Promise<void> {
+  const taskId = flags.positional[1] ?? die('handoff status 需要 <taskId>');
+  const status = flags.positional[2] as HandoffStatus | undefined;
+  if (!status || !HANDOFF_STATUSES.includes(status)) {
+    die(`handoff status 需要合法状态：${HANDOFF_STATUSES.join(' / ')}`);
+  }
+  const req: Extract<Request, { op: 'handoff.status' }> = { op: 'handoff.status', taskId, status };
+  if (flags.note) req.note = flags.note;
+  const data = await sendOnce<HandoffStatusData>(req);
+  stdout.write(`✅ ${data.taskId} → ${HANDOFF_STATUS_LABEL[data.status]}\n`);
+}
+
+async function handoffReply(flags: Flags): Promise<void> {
+  const taskId = flags.positional[1] ?? die('handoff reply 需要 <taskId>');
+  const text = flags.positional.slice(2).join(' ') || flags.body || (await readStdinIfPiped()) || '';
+  if (!text.trim()) die('handoff reply 需要留言内容（位置参数 / --body / stdin）');
+  const data = await sendOnce<HandoffReplyData>({ op: 'handoff.reply', taskId, text });
+  stdout.write(`✅ 已留言到任务 ${data.taskId}\n`);
+}
+
+async function handoffPull(flags: Flags): Promise<void> {
+  const taskId = flags.positional[1] ?? die('handoff pull 需要 <taskId>');
+  const req: Extract<Request, { op: 'handoff.pull' }> = { op: 'handoff.pull', taskId };
+  if (flags.dir) req.dir = resolvePath(flags.dir);
+  const data = await sendOnce<HandoffPullData>(req);
+  if (data.saved.length === 0) {
+    stdout.write('（该任务无附件，或下载失败）\n');
+    return;
+  }
+  stdout.write(`✅ 已下载 ${data.saved.length} 个附件：\n${data.saved.map((p) => '  ' + p).join('\n')}\n`);
+}
+
+async function handoffList(flags: Flags): Promise<void> {
+  const req: Extract<Request, { op: 'handoff.list' }> = { op: 'handoff.list' };
+  if (flags.limit) req.limit = flags.limit;
+  const data = await sendOnce<HandoffListData>(req);
+  if (data.tasks.length === 0) {
+    stdout.write('（暂无 handoff 任务）\n');
+    return;
+  }
+  stdout.write(`我：${data.identity || '?'}\n`);
+  for (const t of data.tasks as HandoffTask[]) {
+    const arrow = t.role === 'requester' ? `→ ${t.peer}` : `← ${t.peer}`;
+    stdout.write(
+      `${HANDOFF_STATUS_LABEL[t.status]}  ${arrow}  ${truncate(t.title, 40)}\n` +
+        `   ${t.id}  (${t.role})\n`,
+    );
+  }
+}
+
+async function cmdReport(flags: Flags): Promise<void> {
+  const sub = flags.positional[0];
+  if (sub !== 'note') {
+    die('用法：agent report note "<一句话工作记录>"（补记非编码/未提交/线下工作，日报会纳入）');
+  }
+  let text = flags.positional.slice(1).join(' ').trim();
+  if (!text) {
+    const piped = await readStdinIfPiped();
+    if (piped) text = piped.trim();
+  }
+  if (!text) die('需要备注文本，如：agent report note "得助账号开通"');
+  const data = await sendOnce<ReportNoteData>({
+    op: 'report.note',
+    text,
+    cwd: procCwd(),
+  });
+  stderr.write(`✓ 已记入工作台账（日/周报会纳入）：${truncate(text, 60)}  [${data.id}]\n`);
+}
+
+async function cmdContacts(): Promise<void> {
+  const data = await sendOnce<ContactsListData>({ op: 'contacts.list' });
+  if (data.contacts.length === 0) {
+    stdout.write('（无联系人）\n');
+    return;
+  }
+  for (const c of data.contacts) {
+    const dot = c.online ? '🟢' : '⚪️';
+    stdout.write(`${dot} ${c.identity}${c.self ? ' (我)' : ''}\n`);
+  }
+}
+
 async function main(): Promise<void> {
   const [, , cmd = 'help', ...rest] = argv;
   const flags = parseArgs(rest);
@@ -2035,6 +2205,12 @@ async function main(): Promise<void> {
       case 'knowledge':
       case 'kb':
         return await cmdKnowledge(flags);
+      case 'handoff':
+        return await cmdHandoff(flags);
+      case 'contacts':
+        return await cmdContacts();
+      case 'report':
+        return await cmdReport(flags);
       case 'help':
       case '--help':
       case '-h':

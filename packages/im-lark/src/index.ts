@@ -5,6 +5,7 @@ export * from './lark/client.js';
 export * from './lark/commands.js';
 export * from './lark/handlers.js';
 export * from './lark/reply.js';
+export * from './lark/handoff-bridge.js';
 export * from './lark/resource.js';
 export * from './lark/target.js';
 export * from './lark/task-render.js';
