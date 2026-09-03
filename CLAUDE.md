@@ -50,7 +50,8 @@ packages/
 │       │   ├─ cli.ts       `agent` CLI 实现（tabs/use/which/send/open/show/lark/approvals/doctor ...）
 │       │   ├─ doctor.ts    环境自检（权限 / 依赖 / socket）
 │       │   └─ protocol.ts  Request/Response 类型 + SOCKET_PATH
-│       └─ im/              IMTransport 抽象接口（lark/wecom 都 implement；chatId 带 'lark:'/'wecom:' 前缀）
+│       ├─ im/              IMTransport 抽象接口（lark/wecom 都 implement；chatId 带 'lark:'/'wecom:' 前缀）
+│       └─ relay/            同事甩单 relay 客户端：client(RelayClient HTTP)/poller(startRelayPoller：poll→白名单闸门→去重→applyIncoming→投递飞书→ack)/config(RELAY_*/HANDOFF_*)；中转服务是独立项目 ../multiagent-relay/
 │
 ├─ host-mac/                Mac 宿主能力（AppleScript 控制 Terminal.app）
 │   └─ src/
@@ -62,6 +63,7 @@ packages/
 │       │   ├─ screen.ts    captureScreen（截 tab 可视区域）
 │       │   ├─ status.ts    inferTabStatus（走 AgentAdapter 识别 claude/codex；idle/busy/login/waiting/TUI）
 │       │   ├─ restart.ts   restart-all-claude-tabs（isClaudeTab + adapter.launchCommand，过 trust 弹窗）
+│       │   ├─ permissions.ts TCC 授权单一事实源：HOST_PERMISSION_SPECS + detectHostPermissions（无害探针）+ openPermissionPane
 │       │   └─ types.ts     TerminalTab 类型
 │       ├─ git.ts           gitWorkingState/useCurrentBranch/prepareBugBranch（旧脏策略，worktree 模式下停用）
 │       ├─ task-workspace.ts prepareTaskWorkspace（fix_/feature_<id6>/ worktree 隔离目录）+ taskWorkroot/taskDirName/taskBranchName
@@ -75,12 +77,16 @@ packages/
 │       ├─ lark/
 │       │   ├─ client.ts    startLarkBot：建 SDK Client + WSClient 长连接
 │       │   ├─ handlers.ts  事件入口（im.message.receive_v1 / card.action.trigger）→ dispatch/command/cardAction
-│       │   ├─ commands.ts  斜杠命令路由（/dashboard /shells /history /new /use /preset /recall /approvals /watch ...）
+│       │   ├─ commands.ts  斜杠命令路由（/dashboard /shells /history /new /use /preset /recall /approvals /watch /connect /perm-level /perm-reset /raw /reload /selfaudit /tapd /plan /worktasks ...）
 │       │   ├─ cards.ts     所有交互卡片 schema（progress / batch / dashboard / approval / chooseDir / ack ...）
 │       │   ├─ api.ts       withRetry 包裹的 lark API（sendCardReturnId / patchCard / sendFile / sendImage）
 │       │   ├─ target.ts    @target 解析（tty 全/短匹配 → title → cwd basename → fuzzy）
 │       │   ├─ task-render.ts 任务进度/结果卡的渲染
-│       │   ├─ reply.ts     replyText / sendText 工具
+│       │   ├─ reply.ts     replyText / sendText 工具（发送层已内建脱敏 redactMaybe + 页脚）
+│       │   ├─ redact-gate.ts 发送层回显脱敏闸门（织入 api.ts，卡片深度遍历脱敏；配 /raw 明文开关）
+│       │   ├─ footer-gate.ts 发送层「🕐 时间 + 📁 路径」页脚闸门（appendFooterCard/appendFooterText，LARK_MSG_FOOTER=0 关）
+│       │   ├─ ask-drive.ts  AskUserQuestion 方向键驱动应答（armed → (index)↓+回车，替代文本注入）
+│       │   ├─ tapd-flow.ts  /tapd 建需求向导（选项目 → 选需求类别 workitem_type → 表单）
 │       │   └─ resource.ts  飞书图文入站：下载 image/post 图片到 data/inbound + post 解析 + 24h 清理 + imgPrefix 拼接
 │       ├─ monitor/
 │       │   ├─ watcher.ts   tab poll（2s tick）+ pending 字符长度稳定性检测 + cache
@@ -92,9 +98,14 @@ packages/
 │       │   ├─ health-check.ts  30s 调 lark token endpoint，失败 3 次自杀
 │       │   ├─ ws-watchdog.ts   monkey-patch console.log 截获 SDK [ws] 状态，判定 WS 死
 │       │   ├─ system-events-probe.ts  每 2min 跑 probeSystemEvents，状态翻转时推飞书告警
-│       │   ├─ tapd-watcher.ts  轮询 TAPD 指派/开发给我的缺陷需求 → 推认领卡
+│       │   ├─ host-permission-probe.ts  启动+每 2min 探 TCC 授权，缺失集合翻转推「缺哪项+废哪些功能」交互卡
+│       │   ├─ stuck-shell.ts  裸 shell 卡在续行提示（dquote>/quote>）自愈：确认稳定卡住 → Ctrl-C 解卡 + 告警（MCHAT_AUTO_UNWEDGE=0 关）
+│       │   ├─ fleet-monitor.ts  主动盯舰队（卡住哨兵 + 闲置提议 + 每早摘要，纯读 watcher 缓存；FLEET_MONITOR_ENABLED=0 关）+ fleet-monitor-logic.ts（纯判定）
+│       │   ├─ tapd-watcher.ts  轮询 TAPD 指派/开发给我的缺陷需求 → 分级推送（首次=认领卡 / 状态变=轻量提示卡 / 内容变=信息卡；TAPD_SPLIT_NOTIFY=0 回退）
 │       │   ├─ perf-watcher.ts  轮询 performance 建议 → 推性能卡（配 PERF_* 启用）
 │       │   ├─ report-scheduler.ts 定时生成日/周/月报（配 REPORT_*_AT 启用）
+│       │   ├─ dogfood-scheduler.ts  每周定时自审（文档 vs 实现漂移，opt-in DOGFOOD_ENABLED=1）+ /selfaudit 手动
+│       │   ├─ secret-scrub-scheduler.ts  定期扫 claude/codex 历史脱敏（opt-in SECRET_SCRUB_ENABLED=1，默认只报告）
 │       │   └─ careyclaw-key-reminder.ts  CareyClaw 调试密钥到期提醒
 │       └─ chats/           per-chat 状态（activeTty / watchAllTabs）store + types
 │
@@ -117,7 +128,12 @@ packages/
         ├─ subagents/       subagent 注册表（registry / types）
         ├─ knowledge/       shell 交互流自动提炼知识条目（extractor / heuristics / store / sanitize；缺 KNOWLEDGE_EXTRACT_ENABLED 不启用）
         ├─ worktasks/       任务工作目录记录（目录↔分支↔干啥，可搜；/worktasks 用）
-        └─ agents/          AgentAdapter 抽象（claude/codex：进程识别/登录文案/启动命令/slash白名单/回传通道规格）；多 agent 解耦，见 docs/codex-integration.md
+        ├─ guard/           高危命令审批 gate：high-risk(riskTier 4 档 + stripDataLiterals 防误报) + perm-level(L0-L4 阈值) + learned-allow(学习型放行，连续批准 ≥阈值自动放行)
+        ├─ secrets/         明文凭证脱敏单一事实源：redactor(redact/hasSecrets 回显脱敏) + scrub(claude/codex 历史文件脱敏 CLI)
+        ├─ shell-safety/    裸 shell 保护纯逻辑：looksLikeAgentTask / hasUnbalancedQuotes / detectWedge（拦任务型 prompt 打进裸 zsh）
+        ├─ dogfood/         自审 loop：runSelfAudit（claude -p 只读比对 CHANGELOG/docs/git，报文档 vs 实现漂移；/selfaudit）
+        ├─ agents/          AgentAdapter 抽象（claude/codex：进程识别/登录文案/启动命令/slash白名单/回传通道规格）；多 agent 解耦，见 docs/codex-integration.md
+        └─ handoff/         同事任务甩单纯逻辑：types(HandoffEnvelope wire 协议)/state(状态机 canTransition)/envelope(build/validateIncoming)/store(requester+assignee 双视角 task + applyIncoming 幂等 + markProcessed 去重)；传输经 framework/relay + 独立 ../multiagent-relay/，见 docs/handoff-integration.md
 
 skills/multiagent-lark/SKILL.md    →  会 symlink/copy 到 ~/.claude/skills/
 bin/agent                          →  CLI 入口（npx tsx packages/framework/src/control/cli.ts）
@@ -298,22 +314,37 @@ npm run typecheck
 7. 加平台（如企微已在 `im-wecom/`）→ implement `framework/im` 的 `IMTransport`，daemon 里 attach，chatId 带平台前缀
 8. **每次功能/修复/文档改动 → 在 `CHANGELOG.md` 顶部「未发布」区对应日期追加一条**（新增/修复/文档/改动）。这是硬约定，commit 前顺手补。
 
-## 当前阶段（2026-07）
+## 当前阶段（2026-08）
 
-已完成：
+已完成（基础设施 / 平台）：
 - v3.x 基础链路 + TUI 适配 + memory + approval + WS watchdog
 - monorepo 拆分（framework / host-mac / im-lark / im-wecom / orchestrator）—— 三层解耦，为多平台铺路
 - 企微 transport（im-wecom，`IMTransport` 抽象，配 WECOM_* 才启用）
 - Web Dashboard（apps/daemon/web-dashboard，配 WEB_DASHBOARD_TOKEN 启用）
 - Knowledge Extraction（orchestrator/knowledge，shell 交互流自动提炼；KNOWLEDGE_EXTRACT_ENABLED=1 启用）
-- System Events 术语故障自检告警（见上「关键约定」）
+- 多 agent 支持 · Codex CLI（`AgentAdapter` 抽象 + `mchat-codex-notify` 回传 + `/connect` codex 项。见 docs/codex-integration.md / features §25）
 - 任务工作目录隔离（worktree + `/worktasks` + perf 认领并建需求；`orchestrator/worktasks` + `host-mac/task-workspace.ts`，见 features §24）
-- 多 agent 支持 · Codex CLI（`AgentAdapter` 抽象 + `mchat-codex-notify` 回传 + `/connect` codex 项；C1+C2+C3 ✅，剩 codex 登录后验 notify payload。见 docs/codex-integration.md / features §25）
-
-进行中 / 待办：
 - A 路线 · 编排：A1 任务模板（/template + /run ✅）、A2 任务链（chains.ts ✅）、A3 Planner（v1·方案丙 ✅ `/plan`；甲多tab自动串/乙单tab SOP 待叠加）
 - 图文入站（飞书✅ + 企微✅）；待补：先文后图配对、富文本(A) 真机验证
-- performance-platform 对接：P1 只读监听 ✅（`orchestrator/perf` + perf-watcher，配 PERF_* 启用）；P2 认领开 tab 修（已含 lite 版）；P3 回写+校验闭环待 perf 侧加 CAS。设计见 docs/perf-integration.md
-- v52 `restart-all-claude-tabs --except`（✅ 已做）
 
-下一会话从 `agent tabs` 开始看现状，然后 `cat MEMORY.md` 看 memory 上下文。
+已完成（2026-07~08 稳健性 / 安全 / 自治）：
+- **macOS TCC 授权自检**：单一事实源 `host-mac/terminal/permissions.ts` + 启动/周期探针推交互卡（缺哪项+废哪些功能+一键开面板），doctor 三条精确权限项。见 docs/permissions.md
+- **System Events 术语故障自检告警** + **`forceEnter` 前台守卫**（弹框/锁屏不盲按回车）
+- **明文凭证脱敏**：统一引擎 `orchestrator/secrets`（回显脱敏 redact-on-echo 织入发送层 + `/raw` 明文开关 + claude/codex 历史文件 scrub + 定期任务 opt-in）；打包成 `multiagent-secret-guard` skill。⚠ AK 类已按用户要求不再自动脱敏
+- **高危命令 → 飞书审批 gate**：`orchestrator/guard`（PreToolUse Bash hook）+ **5 档权限等级 L0-L4**（`/perm-level`，默认 L1 仅致命）+ **学习型放行**（连续批准 ≥阈值自动放行，最灾难命令永不学习）
+- **裸 shell 保护**：任务型 prompt 打进裸 zsh 会卡死 → 拦截 + 一键起 agent + watcher 自愈解卡（`orchestrator/shell-safety` + `stuck-shell.ts`）
+- **跨会话 RAG 召回（RAG-lite）**：BM25 + 中文 bigram + cwd/时间加权，语料含 memories + knowledge（`orchestrator/memory/rag.ts`），零依赖
+- **Fleet 主动监控**：卡住哨兵 + 闲置提议 + 每早摘要（`fleet-monitor.ts`，纯读 watcher 缓存，opt-in）
+- **Dogfood 自审 loop**：`claude -p` 定期比对文档 vs 实现漂移（`/selfaudit` + 每周定时，opt-in），v1 只报告
+- **代码评审门**：改产品代码交付前强制 `code-reviewer` + `security-reviewer` 双审；做成 `/connect` 「claudeMd 块型」开关（对接=写全局 CLAUDE.md 规则块，断开=按 sentinel 删除）
+- **飞书消息统一页脚**（🕐 时间 + 📁 路径）+ **TAPD 通知分级**（首次认领卡 / 状态变轻量提示卡 / 内容变信息卡）
+- **同事任务甩单（Handoff，P1+P2 ✅）**：跨人协作——A 一句话把问题+AI建议+文件甩给同事 B，经独立中转 relay（`../multiagent-relay/`，零依赖纯 http，部署云服务器）路由到 B 的飞书。每人只跟自己的飞书 bot 说话（两边应用/租户解耦）；`from` relay 盖章防冒充、`HANDOFF_ALLOW` 收件白名单 fail-closed、收件人离线落盘排队重连补投、发送前强制脱敏。**P2**：富交互「👥 同事任务卡」（`im-lark` `handoffTaskCard`，对端内容走 plain_text 免注入）+ [接收/开始/完成/拒绝/撤回] 按钮 → 经桥接（`handoff-bridge.ts` setter → daemon 注入 `framework/relay/actions.ts sendHandoffStatus`）就地 patch，**两侧状态双向同步**；一句话 skill `skills/multiagent-handoff/`。CLI：`agent handoff send/status/list` + `agent contacts`。**P3a**：relay 升级成自助接入门户（独立项目内 `accounts.ts` 动态 token 库 + `portal.ts` 单页 + `/enroll/:code` 一键装机把凭证写进 .env + 邀请码占位登录 + 黑名单）；收件闸门语义变更——`HANDOFF_ALLOW` 空=收所有已登记同事（非空=严格 opt-in）；token 前缀 `mrt_` 已进脱敏引擎。见 docs/handoff-integration.md + ../multiagent-relay/README.md。**P3b**：门户接 OIDC 单点登录（`../multiagent-relay/src/oidc.ts`，零依赖 node:crypto 验 RS256+JWKS，配 `OIDC_*` 即启用，state/nonce 防 CSRF/重放；假 IdP 端到端冒烟 `tests/oidc-smoke.ts`）；邀请码保留作 bootstrap。**P3c**：凭证管理（门户轮换/撤销其它设备 + `/api/logout`）· 审计日志（relay `audit.ts` JSONL + `/admin/audit`）· 附件下载（`agent handoff pull`）· reply 跨人对话（`agent handoff reply`）。Handoff P1~P3c 全 ✅，待办仅同租户 open_id 直投捷径 + 过期记录清理
+- **飞书交互健壮性**：AskUserQuestion 方向键驱动应答、卡片选项完整编号防截断、message_id/token 幂等去重、osascript 超时兜底、ask 卡超时放宽 30min、`/reload` 一键重启
+
+进行中 / 待办：
+- performance-platform 对接：P1 只读监听 ✅（`orchestrator/perf` + perf-watcher，配 PERF_* 启用）；P2 认领开 tab 修（已含 lite 版）；P3 回写+校验闭环待 perf 侧加 CAS。设计见 docs/perf-integration.md
+- A3 Planner 甲（多 tab 自动串）/乙（单 tab SOP）方案待叠加
+- Dogfood 自审 phase 2（自动改 + 开 PR，需 worktree 隔离）
+- TAPD 逐字段 diff（受限于 MCP 网关无变更历史 API，暂只做快照分级）
+
+下一会话从 `agent tabs` 开始看现状，然后 `cat MEMORY.md` 看 memory 上下文。CHANGELOG.md 顶部「未发布」区是最新交付的权威流水。

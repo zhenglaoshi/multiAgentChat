@@ -25,6 +25,7 @@ import { dispatchChainStep, flushGatedQueue } from '../lark/handlers.js';
 import { logger } from 'multiagent-orchestrator';
 import { memoryStore } from 'multiagent-orchestrator';
 import { tokenize } from 'multiagent-orchestrator';
+import { getHookSummary } from 'multiagent-orchestrator';
 import type { TaskMemory } from 'multiagent-orchestrator';
 import type { TerminalTab } from 'multiagent-host-mac';
 import { chainManager, type ChainState } from './chains.js';
@@ -39,6 +40,9 @@ import { buildStageProgressCardFromTask } from '../lark/task-render.js';
 // 净化后（ANSI/TUI 重绘剥离）冗余内容少了很多，因此可以给更宽的窗口
 const CARD_TAIL_MAX_LINES = 30;
 const CARD_TAIL_MAX_CHARS = 3000;
+// 取本地任务 hook 摘要时，since 相对 pending.sentAt 往前留的缓冲（容忍 detectLocalTask 滞后于
+// hook 完成的时序竞态）。取一次 watcher tick 量级、远小于 LOCAL_COOLDOWN_MS(30s)。
+const HOOK_SINCE_SLACK_MS = 5000;
 
 /**
  * 把任务输出截到适合卡片显示的尺寸：
@@ -223,6 +227,26 @@ async function persistTaskMemory(
   const id = `mem-${pending.sentAt.toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
   // 优先用 pending.cwd（任务发起时记录）；缺省 fallback tab.cwd（watcher 可能没拿到）
   const cwd = pending.cwd ?? tab.cwd ?? '';
+  // 本地任务的 prompt 只有「🏠 本地 @dir」占位、没有真实任务描述；给它补一段 summary，
+  // 让报告(collectWorkData 读 mem.summary)对本地任务也有可用内容。来源优先级：
+  //   1) Stop hook 抓到的 assistant 真实回答（getHookSummary，alt-screen 下唯一干净文本）——治本；
+  //   2) 退化到清洗后的输出尾巴（cleanTail）——多半是 TUI 菜单噪音，会在报告采集期被过滤掉，
+  //      但仍保留以防某些非 claude 的本地任务尾巴其实有内容。
+  // 取尾部而非头部：本地 pending 的 taskOnlyTail 会混入任务开始前旧 scrollback，头部大概率文不对题。
+  let localSummary: string | undefined;
+  if (pending.source === 'local') {
+    // 取本任务期间产生的 hook 回答，读后即删（consume）防同 tty 串台。
+    // since 用 sentAt 往前留 HOOK_SINCE_SLACK_MS 缓冲：detectLocalTask 是滞后型（2s tick 才发现
+    // 增长），极快任务可能「完成→hook 写缓存」发生在「检测→建 pending.sentAt」之前，硬用 sentAt
+    // 会把本任务的合法 hook 误判成残留拒掉、静默退回噪音尾巴。缓冲取一次 tick 量级（5s），
+    // 远小于 LOCAL_COOLDOWN_MS(30s)，容忍这条时序竞态又不放进真正的上一个任务残留。
+    const hookText = getHookSummary(tab.tty, {
+      since: pending.sentAt - HOOK_SINCE_SLACK_MS,
+      consume: true,
+    });
+    if (hookText) localSummary = redactText(hookText).trim().slice(0, 600);
+    else if (cleanTail.trim()) localSummary = cleanTail.trim().slice(-200);
+  }
   const memory: TaskMemory = {
     id,
     chatId: pending.chatId,
@@ -230,14 +254,7 @@ async function persistTaskMemory(
     cwd,
     prompt,
     outputPreview: cleanTail.slice(-500),
-    // 本地任务的 prompt 只有「🏠 本地 @dir」占位、没有真实任务描述；补一段清洗后的输出摘要，
-    // 让报告(collectWorkData 读 mem.summary)对本地任务也有可用内容，而非一条空条目。
-    // 取「尾部」而非头部：本地 pending 的 beforeCharLen 是 tail 片段长度、系统性偏小，
-    // taskOnlyTail 会混入任务开始前的旧 scrollback，头部片段大概率文不对题；尾部才是当前真实输出
-    // （与 outputPreview: cleanTail.slice(-500) 同区，报告只读 summary 不读 outputPreview）。
-    ...(pending.source === 'local' && cleanTail.trim()
-      ? { summary: cleanTail.trim().slice(-200) }
-      : {}),
+    ...(localSummary ? { summary: localSummary } : {}),
     ...(filesProduced.length ? { filesProduced } : {}),
     tags,
     startedAt: pending.sentAt,

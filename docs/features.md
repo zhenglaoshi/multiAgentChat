@@ -34,6 +34,11 @@
 | `/dashboard` / `/tabs` 等 card 命令 | ✅ | ⚠️ 企微仅 text-kind，提示"卡片去飞书看" | |
 | Web dashboard（手机浏览器直控）| ✅ | ✅ | 无关 IM，daemon 内嵌 HTTP :3940，`/wd` 拿访问 URL |
 | Knowledge extraction 自动知识库 | ✅ | ✅ | 无关 IM，spawn `claude -p` 本地提炼，5 类 KnowledgeEntry |
+| 明文凭证脱敏（回显 + `/raw`） | ✅ | ⚠️ 未接线 | 脱敏织入 `im-lark/lark/api.ts`+`reply.ts`；企微 transport 独立发送路径未过脱敏，明文可能外泄，待补 |
+| 高危命令审批 gate（PreToolUse hook） | ✅ | ✅ | gate 复用 `approvals.create`，企微原生支持批准/拒绝卡 |
+| `/perm-level` 5 档权限调整 | ✅ | ⚠️ 仅 `/perm-level 0-4` 文本设档 | 无参弹选择卡是 `card` kind，企微通用 dispatch 只认 text-kind，报错；带数字参数走 text-kind 正常 |
+| TAPD 通知分级（认领卡/轻量提示卡） | ✅ | ✅ | daemon `onExtraNotify` 按 `kind` 分流：claim 推认领卡，status/update 推轻量文本 |
+| 飞书消息统一页脚（时间+路径） | ✅ | ⚠️ 无关此设计 | `footer-gate.ts` 只织入 im-lark 发送层，企微文本/卡片不带页脚 |
 
 **核心 IM 桥接能力（99%）在企微都对齐**，只有几个卡片渲染类的 UX 项因企微 API 硬限制走了降级方案。
 
@@ -166,7 +171,7 @@ agent lark send-file ./output.xlsx
 ### 能力
 - **Task memory**：每个 task 完成时落盘（`data/memories/*.json`），含 prompt / outputPreview / filesProduced / tags / cwd / duration
 - **Stage memory**：SOP 里每个 stage 完成时落盘（`data/stage-memories/*.json`），按 stageName + cwd + 关键词召回
-- **自动 recall 注入**：派任务时框架检索相关历史，注入到 prompt 顶部（cwd 精确匹配优先 + 关键词 token 匹配 + 时间衰减）
+- **自动 recall 注入**：派任务时框架检索相关历史，注入到 prompt 顶部——**BM25**（rare 词 idf 加权 + 文档长度归一）+ cwd 加权 + 时间衰减，语料 = task memories + knowledge，中文按 bigram 分词（`orchestrator/memory/rag.ts`）
 
 ### 什么时候用
 - 反复做类似任务 → framework 记得你上次怎么做，主 claude 看历史不用摸索
@@ -194,6 +199,7 @@ agent lark send-file ./output.xlsx
 - Framework 生成飞书卡片 + 5min 默认超时
 - 用户点批准 / 拒绝 → CLI 返回 exit 0/1，主 claude 继续或中止
 - SOP gate 用同一底子（timeout 30min，卡片含 stage summary + artifact 预览）
+- 除显式 `request-approval` 外，claude 跑高危 shell 命令时也会被**自动 gate**（PreToolUse hook，按风险分级 + 5 档权限），详见 **§28**
 
 ### 什么时候用
 - 主 claude 要跑高风险命令（DB 写 / git push --force / rm -rf 大量文件）
@@ -383,7 +389,7 @@ answer=$(agent lark ask form --title "确认几个选项" --spec-json '{
 ### 退出码
 - 0 = `answered`
 - 1 = `cancelled`
-- 2 = `timeout`（默认 5min，可 `--timeout <ms>`）
+- 2 = `timeout`（默认 30min，可 `--timeout <ms>` 或 env `MCHAT_ASK_TIMEOUT_MS` 覆盖）
 
 ### 什么时候用
 - 主 claude 想让用户"从 N 个选项里挑"或"填一段文本"
@@ -685,8 +691,9 @@ body: 4 步 workflow（脚本 → 汇总 → 打包 → OBS 签名地址）+ 26 
 
 ### 未做（Phase 2/3）
 - `/kb <关键词>` 飞书搜 + `agent knowledge search` CLI
-- 自动 recall 注入新 task 的 prompt（跟 memory recall 融合）
 - 周报 launchd → 飞书推 markdown
+
+> 已做：自动 recall 注入新 task 的 prompt 已跟 memory recall 融合（RAG-lite，见 §6）。
 
 **详见 [docs/knowledge.md](knowledge.md)** —— 完整架构、脱敏 pattern、CLI 用法、常见问题。
 
@@ -702,7 +709,7 @@ TAPD MCP 网关**（不经 LLM/CLI，5min 一轮）；工作 tab 里的 claude �
 
 ### 流程（点一次卡走完）
 1. **监听**：每 5min 拉「我的·当天·未结束」缺陷+需求，去重后推**差异化卡**（缺陷橙/红、需求蓝）
-2. **认领**：点卡 → 弹 **repo 多选卡**（候选=`/pin` 书签 + 最近 cwd），可勾多个（一个 bug 涉及多 repo）
+2. **认领**：点卡 → 弹 **repo 多选卡**（候选=`/pin` 书签 + 最近 cwd + 全机 git 扫描 `dir-index`，每页 9 个 + 翻页、下拉搜索 repo 名、「➕ 手输路径」表单兜底扫描盲区），可勾多个（一个 bug 涉及多 repo）
 3. **选类型 / 模式 / 基准**（卡上按钮切换）：
    - **🏷 类型**（三选一，定工作目录策略）：🐞 线上bug(fix) / ✨ 新需求(feature) → 建 worktree 隔离目录；🔧 开发中(indev) → 原地改。与模式正交。详见 **§24**
    - 模式：**需求→SOP 编排**（Explore→需求分析→架构→审批gate→编码→测试→回归）/ **缺陷→普通任务**（直接修）
@@ -722,7 +729,7 @@ TAPD MCP 网关**（不经 LLM/CLI，5min 一轮）；工作 tab 里的 claude �
 ### 企业微信也支持
 - **通知**：bug/需求卡同样推企微（发 `WECOM_DEFAULT_TO_USER`）
 - **认领（简化流）**：企微卡无 patch/toggle → 单 repo（最近目录）+ 按钮选基准 + 普通任务直接修
-- **富交互仍走飞书**：多 repo 多选 / 需求 SOP / 脏工作区策略卡（企微 UI 做不了）
+- **富交互仍走飞书**：多 repo 多选 / 分页 / 搜索 / 手输路径 / 需求 SOP（企微 UI 做不了）
 
 ### 配置
 ```env
@@ -856,6 +863,142 @@ C1（抽象）+ C2（回传通道）+ C3（/connect 引导）已完成，claude 
 
 ### 底层
 `host-mac/terminal/restart.ts`（`exitAgentInTab` / `closeTabGracefully` / `detectSelfTty`）+ `tabs.ts`（`closeTab` 改成关单 tab）；控制协议 `tab.close`（`TabCloseData` 带 `hadAgent`/`agentExited`/`reason`）；`im-lark`（`tabsCard` 加按钮 + `closeTabConfirmCard`/`closeIdleConfirmCard` + `close-tab-*`/`close-idle-*` handlers）。
+
+---
+
+## 27. 明文凭证脱敏 · 回显脱敏 + `/raw` 明文开关 + 静态文件扫描
+
+> 终端输出/助手回复会推飞书、落盘 `data/`，claude/codex 又把整段会话明文落盘——`cat .env` / 连库 / 看 API 返回的 AK/SK/密码/token 不小心就明文外泄到手机 & 磁盘。
+
+### 能力
+- **统一脱敏引擎** `orchestrator/secrets/redactor.ts`（`redact()`/`hasSecrets()`）：全项目单一事实源——连接串密码、`sk-`/`sk-ant-`、`ghp_`/`github_pat_`、slack/google/gitlab/careyclaw `oct_`、JWT、`password=`/`api_key:` 上下文赋值；占位符（`YOUR_*`/`example_*`/`process.env.*`）不脱。**⚠ AK（access key，AWS/阿里云/华为云）已按用户要求移除脱敏规则**（前缀过短易误伤）——遇 AK 明文自己掩码，别指望系统兜底。
+- **回显脱敏**：织入 `im-lark/lark/api.ts` 的 `sendTextMessage`/`sendCardMessage`/`sendCardReturnId`/`patchCard`（卡片深度遍历所有 string 值）+ `reply.ts` 的 `sendText`/`replyText`——Stop hook 推 last_assistant_message、watcher 推终端 scrollback 这类**自动推送**是最大泄露口，只有发送层单点闸门才挡得住。
+- **`/raw on|off`**：单用户全局开关（`data/secret-guard.json`），默认脱敏；`on` 后进明文模式，**10 分钟自动恢复**脱敏（到期时间戳，重启也会恢复）。`MCHAT_REDACT_SECRETS=0` 整体停用。
+- **静态文件扫描**：`agent secrets scan|scrub` 扫 claude（projects/history/backups）+ codex（sessions/history）的 `.jsonl` 逐行脱敏；dry-run 默认、`--apply` 就地写、`skipRecentMin` 保护活跃会话，不碰 `~/.codex/auth.json` 和 codex sqlite 库。
+- **memories 落盘脱敏**：`persistTaskMemory` 存 prompt/outputPreview 前先过 `redactText`。
+- **定期任务**（opt-in `SECRET_SCRUB_ENABLED=1`）：默认只报告发现数；`SECRET_SCRUB_APPLY=1` 才就地脱敏，恒跳过近 24h 活跃会话。
+- 打包成 `skills/multiagent-secret-guard/SKILL.md`（daemon 幂等自动装），顶部有给 agent 的行为准则：遇凭证默认绝不明文回显。
+
+### 什么时候用
+- 默认全程生效，不用管
+- 需要看真实密钥调试 → 飞书发 `/raw on`（10min 后自动收）
+- 怀疑历史会话里有漏网明文 → `agent secrets scan`（dry-run 报数）
+
+### 配置
+```env
+MCHAT_REDACT_SECRETS=0          # 整体关闭回显脱敏（不建议）
+SECRET_SCRUB_ENABLED=1          # 定期扫描 claude/codex 历史文件（默认关，只报告）
+SECRET_SCRUB_APPLY=1            # 定期任务就地脱敏（默认只报告）
+```
+
+---
+
+## 28. 高危命令审批 gate · 5 档权限等级 + 学习型放行
+
+### 能力
+- **PreToolUse Bash hook**（`bin/mchat-permission-hook` 廉价预筛 → daemon `orchestrator/guard/high-risk.ts` `riskTier`）：claude 要跑高危 shell 命令时，抢在原生 "Allow this tool?" 提示前推飞书审批卡，手机点批准=执行/拒绝=拦下；复用 `approvals.create` 同一套审批底子。
+- **5 档权限等级**：命令按风险分 4 tier（catastrophic 致命/high 高危/medium 中危/none）。L0 全自动（不拦）/ **L1 仅致命（默认）**/ L2 标准（=原高危全拦）/ L3 严格（+中危：push/rm/publish/kill/chmod）/ L4 偏执（每条都问）。
+- **`/perm-level`**：飞书弹 5 档选择卡点即切；或 `/perm-level 0-4` 速设。运行时覆盖优先级 `data/guard/perm-level.json` > `PERM_LEVEL` env > 默认 1。
+- **学习型放行**：同一**归一化命令**（只折叠空白，不泛化路径）连续批准 ≥ `PERM_LEARN_THRESHOLD`（默认 3）且从未被拒 → 自动放行、不再弹卡；最灾难命令（`rm -rf /`、`~`、`mkfs`、`dd of=/dev`、fork bomb）永不学习，任何一次拒绝即永久 denied；`/perm-reset` 一键清空学习库。
+- **fail-safe**：非高危 / 反查不到 chat / 5min 超时 / daemon 不可达 / 任何异常 → passthrough 回退 claude 原生权限提示，**绝不自动放行**。
+
+### 什么时候用
+- 默认 L1 生效，只有真正致命命令（`rm -rf /`、`git push --force`、`DROP TABLE` 之类）会拦
+- 想更严格审 → `/perm-level 2` 或 3
+- 常跑同一条本该安全但被拦的命令 → 连批 3 次自动放行，省得每次点
+
+### 底层
+`orchestrator/guard/{high-risk,perm-level,learned-allow}.ts` + `framework/control/server.ts` `handlePermissionGate` + `im-lark/lark/{cards,handlers,commands}.ts`。详见 **[permissions.md](permissions.md)「命令审批等级」**。
+
+---
+
+## 29. 裸 shell 任务型 prompt 拦截 + 一键起 agent + 自愈解卡
+
+### 能力
+飞书发消息到 tab 走 `do script`（= 在 shell 里逐行敲命令）。若目标 tab 还没起 claude/codex（裸 zsh），一条自然语言任务被当命令跑，引号不配对时 zsh 卡进 `dquote>`/`quote>` 续行，这个 tab 就报废了。三层修法：
+- **拦截**：裸 shell 收到「任务型」内容（含 CJK / 多行 / 引号不配对，`looksLikeAgentTask` 判定）不再注入，改弹交互卡「🤖 起 claude 并执行 / 🐿 起 codex 并执行 / ⌨️ 仍按 shell 命令发送」；正经单行命令（`npm test` 等）照常放行。
+- **一键起 agent**：点卡上按钮会起对应 CLI、轮询就绪+核实状态后**自动补发**这条 prompt。
+- **自愈解卡**：watcher 每 10s 查最近写过的裸 shell，确认稳定卡在续行提示就自动 `Ctrl-C` 解卡 + 推飞书告警（`MCHAT_AUTO_UNWEDGE=0` 关）；也能救已卡死的旧 tab。
+- 批量/任务链步骤打到裸 shell 不再静默挂死——链直接终止该步、批量把该项标 failed 补进聚合卡。
+
+### 什么时候用
+- 新开的 tab 还没来得及起 claude/codex 就被飞书派了任务
+- 手机上不确定某个 tab 是不是裸 shell，想让系统自动判断该不该弹卡
+
+### 底层
+`orchestrator/shell-safety/`（`looksLikeAgentTask`/`hasUnbalancedQuotes`/`detectWedge`，传输/宿主无关）+ `im-lark/monitor/{watcher,notifier,pending,stuck-shell}.ts`。
+
+---
+
+## 30. Fleet 主动监控
+
+### 能力
+daemon 从"遥控器"进化成"副驾"——不只被动转发，还主动发现问题/机会并推飞书。**零额外 AppleScript**（全读 watcher 单例缓存），三件事：
+- **卡住哨兵**：`claude-active` 忙碌但 history 字符数连续 M 分钟（默认 8）无变化 → 推 🟠 告警（每次停滞只报一次）
+- **闲置提议**：tab 非 busy + 无 active pending + 最近 done ≥ N 分钟（默认 10）→ 推 💡 建议卡
+- **每早摘要**：到点（默认 09:00）推「🌅 昨夜舰队摘要」（过去 24h done + 当前在跑）
+
+只推给 `watchAllTabs===true` 的 chat（没在看的不打扰）。
+
+### 什么时候用
+- 长任务后台跑，想被主动告知卡住了而不是自己去查
+- tab 闲了想被提醒收尾/关掉
+
+### 配置
+```env
+FLEET_MONITOR_ENABLED=0   # 整体关（默认开）
+# 阈值/时间 env 可调，见 .env.example
+```
+
+底层：`im-lark/monitor/fleet-monitor{,-logic}.ts`。
+
+---
+
+## 31. Dogfood 自审 loop · `/selfaudit`
+
+### 能力
+让项目用自己的 `claude -p` 定期审自己「文档和实现有没有出入」。**安全的单轮只读采集**（CHANGELOG 未发布段 + `git log` + `daemon.err.log` 尾 + TODO/FIXME grep + docs 清单&mtime）喂给 `claude -p --max-turns 1` → JSON 发现，不给工具、不改仓库。发现分 `high/medium/low` × `drift/error/todo/improve`。
+
+### 触发
+- 手动：飞书 `/selfaudit`（别名 `/dogfood`）→ 跑完推「🔧 自审报告」卡
+- 定时：opt-in `DOGFOOD_ENABLED=1`，`DOGFOOD_AT` 默认周一 09:00，仅推 `watchAllTabs` 的 chat
+
+### 什么时候用
+- 怀疑文档跟实现脱节了，想要个自动体检
+- 周期性巡检代码里的遗留 TODO / 报错模式
+
+v1 只报告；自动改+开 PR 留 phase2。底层：`orchestrator/dogfood/audit.ts` + `im-lark/monitor/dogfood-scheduler.ts`。
+
+---
+
+## 32. 代码评审门 · `/connect` 可对接/断开 + `code-reviewer`/`security-reviewer`
+
+### 能力
+任意 shell 写完/改完产品代码，交付前**必须**用 Task 并行派 `code-reviewer`（质量：正确性/可维护/一致性/可测试性/架构耦合/健壮性/性能/依赖/可观测性/文档）+ `security-reviewer`（安全：注入/越权/密钥硬编码/危险命令/SSRF/反序列化/依赖漏洞/敏感数据/加密误用）审 `git diff`，有 high/critical 就按建议改、再复审到通过（纯文档/配置豁免）。
+
+`/connect` 第 4 种对接类型「claudeMd 块型」：
+- **对接**（📥写入规则）→ 往用户全局 `~/.claude/CLAUDE.md` 追加带 sentinel 标记的规则块，覆盖任意 shell 的每个 claude session，**即刻生效无需重启**
+- **断开**（🗑移除规则）→ 按 sentinel 整段真删除（区别于 env 型的软停用）
+- 飞书 `/connect` 点按钮，或 CLI `agent connect review-gate [remove]`
+
+daemon 启动幂等把两个 subagent 装到 `~/.claude/agents/`。
+
+### 什么时候用
+- 想让"改代码必过评审"这条规则对所有项目/所有 session 生效 → 对接一次
+- 不想要这条硬约束了 → 断开，全局规则块被删掉
+
+### 底层
+`orchestrator/integrations/claudemd.ts`（`applyClaudeMdBlock`/`stripClaudeMdBlock` + 文件锁防并发丢更新 + 原子写）+ `im-lark/lark/{handlers,cards}.ts` + `framework/control/cli.ts`。
+
+---
+
+## 33. 飞书消息统一页脚（🕐 时间 + 📁 路径）
+
+所有推到飞书的消息在发送层统一加一行灰字页脚：**时间**（发送时刻北京时间 `MM-DD HH:MM`，永远加）+ **路径**（按需——大多数卡片已经显示 cwd，只给"有 cwd 但文本没显示"的场景补路径），解决并发多任务时消息分不清是哪个 tab/何时发的。
+
+- 底层单点闸门 `im-lark/lark/footer-gate.ts`：`appendFooterCard`（卡片末尾加 `note` 元素，浅拷贝防同卡发多 chat 时页脚累加）+ `appendFooterText`（纯文本追加明文行）
+- 织入 `api.ts` 的 `sendCardMessage`/`sendCardReturnId`/`patchCard`/`sendTextMessage`、`reply.ts` 的 `sendText`/`replyText`、`notifier.ts` 的 `pushCardToAllChats`
+- `LARK_MSG_FOOTER=0` 可关；文件/图片消息体无文字位，不带页脚
 
 ---
 

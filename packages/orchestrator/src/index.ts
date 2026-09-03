@@ -17,3 +17,4 @@ export * from './tapd/index.js';
 export * from './report/index.js';
 export * from './dogfood/index.js';
 export * from './shell-safety/index.js';
+export * from './handoff/index.js';

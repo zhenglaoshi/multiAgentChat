@@ -6,24 +6,23 @@
 
 ## 能力总览
 
-- **监听**：每 5min 拉「我的·当天更新·未结束」缺陷+需求，去重推卡；差异化卡（缺陷橙/红·需求蓝）+ 描述摘要
+- **监听**：每 15min 拉「我的·当天更新·未结束」缺陷+需求，去重推卡；差异化卡（缺陷橙/红·需求蓝）+ 描述摘要
 - **卡动作**：认领并建分支 / 打开 TAPD / 🕐稍后(snooze 3h) / 🙈不是我的(永久)
 - **主动查询**：飞书 `/tapd` 列我全部未结束项
-- **认领**：多选涉及的 repo（候选 = /pin 书签 + 最近 cwd + 全机 git 仓库索引，新人装完即有）
+- **认领**：多选涉及的 repo（候选 = /pin 书签 + 最近 cwd + 全机 git 仓库索引(dir-index)，新人装完即有；支持分页/搜索/手输路径，见下）
 - **一键认领**：记住每个项目上次的 repo/基准/模式，下次自动预选
 - **分支基准**：当前分支直接改（测试 bug）/ 从 HEAD / 从 master / 从 develop（线上 bug）
-- **脏工作区策略卡**：stash / worktree 隔离 / 照切 / 跳过（⚠ **已成遗留展示**：worktree 隔离模式下共享 repo 不被触碰，`tapd-go-strategy` 选项不影响结果，一律走 `prepareTaskWorkspace`）
 - **执行模式**：需求→SOP 编排（含 after-architect 审批 gate）/ 缺陷→普通任务，可互切
 - **一个 tab 多 repo**：跨 repo bug 一个 claude 会话协调，分支名一致
 - **上下文注入**：标题 + TAPD 链接 + 各 repo 工作分支 + 描述(保留图片标记) + 指引用 MCP 看评论/图片
 - **修复约束**：本地验证、严禁连线上库/生产、不确定弹 `agent lark ask`、状态改动经审批
 - **回写**：审批后用 MCP 把状态流转到已解决 + 评论回填 commit/PR
 - **生命周期卡**：认领→修复中→验证中→待审批→已解决，claude 用 `agent tapd stage` 上报，卡随进度更新
-- **企业微信**：通知 + 单 repo 简化认领（多 repo/SOP/脏策略富交互走飞书）
+- **企业微信**：通知 + 单 repo 简化认领（多 repo/SOP 富交互走飞书）
 
 ## 一句话架构
 
-- **检测（监听）**：daemon 每 5min 直连公司 **TAPD MCP 网关**（streamable-http + Bearer token）拉数据 —— 纯 HTTP，**不经 claude/LLM/CLI**，确定、快、可高频。
+- **检测（监听）**：daemon 每 15min 直连公司 **TAPD MCP 网关**（streamable-http + Bearer token）拉数据 —— 纯 HTTP，**不经 claude/LLM/CLI**，确定、快、可高频。
 - **交互（修复时）**：认领开的工作 tab 里的 claude 配了同一个 MCP（`mcp__tapd__*`），能读详情 / 改状态 / 加评论。
 - 两者共用一个 API token。
 
@@ -37,7 +36,7 @@ TAPD_NICK=你的TAPD昵称                                # 如「郑纪泉」�
 # 可选：
 TAPD_WORKSPACE_IDS=111,222   # 只监听这些项目；空=自动发现我参与的全部
 TAPD_SYSTEMS=bug,story       # 监听类型，默认 bug+需求；只要 bug 设 =bug
-TAPD_POLL_MS=300000          # 轮询间隔，默认 5min，最小 1min
+TAPD_POLL_MS=900000          # 轮询间隔，默认 15min，最小 1min
 ```
 
 缺 `TAPD_MCP_URL / TOKEN / NICK` 任一 → 不启用（daemon 日志 `tapd watcher 未启用`）。
@@ -54,7 +53,7 @@ claude mcp get tapd     # 应 ✔ Connected
 ## 完整流程
 
 ```
-1. 检测   daemon tapd-watcher 每 5min：
+1. 检测   daemon tapd-watcher 每 15min：
           对每个项目 × 每类型(bug/story)：
             - 拉 current_owner(bug)/owner(story)=我、modified=今天~今天(北京)的项
             - 用 workflows-last-steps 拿"结束状态"，status 在其中的跳过（只留未结束）
@@ -62,7 +61,9 @@ claude mcp get tapd     # 应 ✔ Connected
 2. 通知   推飞书差异化卡：缺陷=橙(致命/严重升红)，需求=蓝
           按钮：[🌿 认领并建分支] [🔗 打开 TAPD] [🕐 稍后] [🙈 不是我的]
 3. 认领   点认领 → 拉 bug 详情 → 弹 repo 多选卡
-          候选 repo = /pin 书签 + 最近用过的 cwd + 全机 git 仓库索引(dir-index，自带后台刷新，新人装完即有)；点按钮打勾(可多选，卡片原地 patch)
+          候选 repo = /pin 书签 + 最近用过的 cwd + 全机 git 仓库索引(dir-index，自带后台刷新，新人装完即有)；
+          点按钮打勾(可多选，卡片原地 patch)；**分页**（每页 9 个，`TAPD_REPO_PAGE_SIZE=9`，◀上一页/下一页▶）；
+          **搜索**（🔍 搜索 repo 名快速添加，下拉过滤前 50）；**手输路径**（➕ 手输路径 → 表单卡校验存在目录后并入候选并默认勾选）
           卡上还有 [🏷 类型]（三选一，见下）/ [🔁 基准]（HEAD/master/develop/当前分支）/ [切成 SOP/直接修]
 3b.类型   [🏷 类型] 三选一（决定工作目录策略，与 SOP/直接修 正交）：
             🐞 线上bug(fix)  → 建 ~/ihealth-work/fix_<id6>/ 隔离目录（worktree）
@@ -74,7 +75,7 @@ claude mcp get tapd     # 应 ✔ Connected
                           每个选中 repo 用 **git worktree**（本地有源，秒建省盘，**共享 repo 纹丝不动**）
                           或 clone（本地无源）拉进子目录，切 fix_/feat_<id6> 分支
             indev       → 各 repo 当前分支原地改（不建目录，分支报告准确）
-          ★ worktree 模式下共享 repo 不被触碰 → 不再需要脏工作区 stash/carry 策略
+          ★ worktree 模式下共享 repo 不被触碰，无需脏工作区处理；`tapd-claim-go` 直接开工
 5. 记录   saveWorkTask 落一条 目录↔分支↔干啥↔来源 记录 → `/worktasks`（`/wt`）可列/搜/[📂 打开]
 6. 开工   开【一个】claude tab（cwd=worktree 主 repo 目录，或 indev 的原 repo），自动过 trust 弹窗，
           注入上下文：标题 / TAPD 链接 / 涉及的所有 repo(都在同名分支) / 描述(去 HTML)
@@ -98,11 +99,9 @@ claude mcp get tapd     # 应 ✔ Connected
 认领卡上「🔁 基准」按钮循环切换（作用于所有选中 repo）：
 
 - **当前分支直接改（不建新分支）** — 测试阶段提的 bug：基于被测的功能分支直接改，不切新分支
-  （脏工作区是预期的，跳过脏策略卡）。
+  （脏工作区是预期的）。
 - **从当前 HEAD 切**（默认）— 从各 repo 当前分支切 `fix_<id>`/`feat_<id>`。
 - **从 master 切** / **从 develop 切** — 线上 bug hotfix：从主干切新分支（本地没有则自动退 `origin/<base>`）。
-
-（这几种和上面的脏工作区策略正交：只有"切新分支"时才会走脏策略卡。）
 
 ## 生命周期进度卡（A）
 
@@ -149,7 +148,7 @@ claude 在工作 tab 里通过 MCP 自取（P3 已把 MCP 配好）。
     **通知分级** `classifyNotificationsPure`) / `claims.ts`(认领态) /
     `mcp-setup.ts`(注册 claude MCP) / `types.ts`
   - `packages/im-lark/src/monitor/tapd-watcher.ts` — 轮询循环 + 按分级推卡（`TAPD_SPLIT_NOTIFY=0` 回退旧行为）
-  - `packages/im-lark/src/lark/cards.ts` — `tapdItemCard`(认领卡) / `tapdInfoCard`(轻量提示卡) / `tapdRepoPickerCard` / `tapdDirtyCard`
+  - `packages/im-lark/src/lark/cards.ts` — `tapdItemCard`(认领卡) / `tapdInfoCard`(轻量提示卡) / `tapdRepoPickerCard`(分页+搜索+手输路径) / `tapdAddPathCard`(手输路径表单)
 
   **通知分级（降噪）**：`classifyNotifications` 按 `seen.json` 把每条待推分成三级——
   `claim`(首次成为我的≈被指派→认领卡) / `status`(已知项状态变→提示卡「旧→新」) /
@@ -159,11 +158,12 @@ claude 在工作 tab 里通过 MCP 自取（P3 已把 MCP 配好）。
   弹一次认领卡。可接受折衷；排查「老任务怎么又弹认领卡」时看这里。企微侧同样分级（daemon
   `onExtraNotify` 消费 `kind`：claim 推认领卡、status/update 推轻量文本）。
   - `packages/im-lark/src/lark/handlers.ts` — card actions：`tapd-claim` / `tapd-pick-repo` /
+    `tapd-repo-page`(翻页) / `tapd-repo-select`(搜索下拉选中) / `tapd-repo-addpath`+`tapd-repo-addpath-submit`(手输路径) /
     `tapd-cycle-kind`(🏷类型三选一 fix/feature/indev) / `tapd-toggle-sop` / `tapd-cycle-base` /
-    `tapd-claim-go` / `tapd-go-strategy`(脏策略，worktree 模式下 no-op) / `tapd-snooze` / `tapd-not-mine` / `tapd-ignore`；
-    `finalizeTapdClaim` 开工
+    `tapd-claim-go` / `tapd-snooze` / `tapd-not-mine` / `tapd-ignore`；
+    `finalizeTapdClaim` 开工（已去掉无用的 `strategy` 参数）
   - `packages/host-mac/src/task-workspace.ts` — **主机制**：`prepareTaskWorkspace`(建 worktree 隔离目录) / `taskWorkroot` / `taskDirName` / `taskBranchName`
-  - `packages/host-mac/src/git.ts` — `gitWorkingState` / `useCurrentBranch`(indev 原地改) / `prepareBugBranch`(**旧脏策略路径，worktree 模式下已停用、无调用方**)
+  - `packages/host-mac/src/git.ts` — `gitWorkingState` / `useCurrentBranch`(indev 原地改) / `prepareBugBranch`+`DirtyStrategy`(**飞书侧不再调用**——飞书 `finalizeTapdClaim` 已去掉 strategy 参数、直接走 `prepareTaskWorkspace`；企微认领 `runWeComTapdClaim`（`apps/daemon/src/index.ts`）仍以硬编码 `'normal'` 调用，未删)
 
 ## MCP 工具（网关暴露 43 个，常用）
 
@@ -212,7 +212,7 @@ TAPD 对接同时支持企微（配了 WECOM_* 才生效）：
   企微卡为 CardSpec（button_interaction），TAPD 链接在正文（企微按钮不支持 url）。
 - **认领（简化流）**：企微卡没有原地 patch / checkbox toggle，故认领是**单 repo（最近使用目录）
   + 按钮选基准（当前分支/HEAD/develop/master）+ 普通任务直接修**。
-  **多 repo / 需求 SOP / 脏工作区策略** 这些富交互 → 请用飞书认领。
+  **多 repo（分页/搜索/手输路径）/ 需求 SOP** 这些富交互 → 请用飞书认领。
 - 修复时工作 tab 里的 claude 用 `agent wecom send-text / ask` 回推企微（`buildTapdPrompt` 的 `im` 参数）。
 
 企微侧 card-action 走 daemon 的 `attachWeComCardActionRouter`（`tapd-claim` / `tapd-go-wecom` / `tapd-ignore`）。

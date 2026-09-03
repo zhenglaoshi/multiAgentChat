@@ -62,6 +62,14 @@
 - ✅ `/screen` 抓 alt-screen 截图 · `/keys` 按键遥控 · `//foo` 显式转发
 - ✅ Stop hook 双 IM 通吃（Claude turn 完成自动推给源 chat）
 - ✅ 首次启动自动化 5 项（Node ≥22 assert · .env 自动 cp · skill/hooks upsert · agent CLI symlink · macOS 权限提示）
+- ✅ 高危命令审批 gate：5 档权限等级（`/perm-level` L0~L4，默认 L1 仅致命）+ 学习放行（连续批准同一命令 N 次后自动放行）
+- ✅ 明文凭证脱敏（回显 + 落盘）+ `/raw on/off` 临时明文模式
+- ✅ TAPD 缺陷/需求自动监听 → 认领/轻量提示卡分级（不再每次改动都打扰）
+- ✅ 任务工作目录隔离（`fix_/feature_<id6>` git worktree，`/worktasks` 可搜可打开）
+- ✅ 多 agent · Codex CLI 对接（`AgentAdapter` 抽象，`@target` 派发同样能打到 codex tab）
+- ✅ Dogfood 自审（`/selfaudit`：`claude -p` 定期审自己 CHANGELOG↔docs↔日志有没有出入）
+- ✅ Fleet 主动监控（卡住哨兵 · 闲置提议 · 每早摘要，主动推飞书不用你问）
+- ✅ 出站飞书消息统一加「🕐 时间 + 📁 路径」页脚
 
 ---
 
@@ -200,6 +208,8 @@ answer=$(agent lark ask single --title "选一个方案" --options "A. 快,B. �
 agent request-approval --title "DROP TABLE prod.users" --body "..."
 # 阻塞，飞书弹卡片；批准 → exit 0，拒绝 → exit 1，5min 超时 → exit 2
 ```
+- 除了显式调用，**任何 tab 里跑高危 Bash 命令都会被自动拦下**（PreToolUse gate）弹飞书审批卡
+- 5 档权限等级（`/perm-level`，默认 **L1 仅致命**）自选拦截松紧：L0 全自动 → L4 每条都问；同一命令连续批准 N 次后**自动放行**（`/perm-reset` 清空放行记录）
 
 ### 🤖 Subagent 系统
 - Claude Code 内置 subagent 直接可用（Explore / Plan / 等）
@@ -235,9 +245,12 @@ agent knowledge stats/list/show/extract-last
 |---|---|
 | 概览 | `/d /dashboard` `/s /shells` `/w /where` |
 | Tab | `/n /new [path\|@alias\|kw]` `/u /use <tty>` `/h /history` `/pin` `/dirindex refresh` |
-| 编排 | `/t /template` `/run [--sop] ...` `/task` `/tk` `/c /chain` `/sa /subagent` |
+| 编排 | `/t /template` `/run [--sop] ...` `/task` `/tk` `/c /chain` `/sa /subagent` `/plan` |
 | 交互 | `/screen` `/keys '<seq>'` `//foo`（强制转发） |
-| 观测 | `/a /approvals` `/audit` `/r /recall` `/watch on/off` `/quiet on/off` |
+| 观测 | `/a /approvals` `/audit` `/r /recall` `/watch on/off` `/quiet on/off` `/raw on/off` |
+| 权限/审批 | `/perm-level [0-4]` `/perm-reset` |
+| 对接 | `/connect` `/tapd` `/worktasks /wt` `/webdash /wd` |
+| 运维/报告 | `/reload`（重启 daemon） `/selfaudit /dogfood`（自审） `/report day\|week\|month\|year` |
 | 派发 | `@target text` · `@a X >> @b Y` · 多行批量 |
 
 **shell 侧**（`agent` CLI，Claude tab / 你自己都能用）：
@@ -344,8 +357,11 @@ pnpm typecheck    # tsc -b --pretty
 - ✅ Phase 2: orchestrator 包独立
 - ✅ Phase 3: IMTransport 抽象接口
 - ✅ Phase 4: 企业微信 transport（99% 对齐飞书）
-- 🚧 Phase 5: 钉钉 / Slack / Telegram transport（IMTransport 已就位）
-- 🚧 Phase 6: DAG 编排 / token usage tracking / cost dashboard
+- ✅ Phase 5: 多 agent · Codex CLI 对接（`AgentAdapter` 抽象；C1+C2+C3 已完成）
+- 🚧 Phase 6: 钉钉 / Slack / Telegram transport（IMTransport 已就位）
+- 🚧 Phase 7: DAG 编排 / token usage tracking / cost dashboard
+
+**近期已交付**（原 roadmap 之外，按用户反馈迭代出来的）：TAPD 缺陷/需求自动监听 + 通知分级、performance-platform P1 只读监听 + P2 认领并建需求、Knowledge Extraction 个人知识库、权限审批分级(`/perm-level`) + 学习放行、Dogfood 自审(`/selfaudit`)、明文凭证脱敏(`/raw`)、任务工作目录隔离(worktree + `/worktasks`)、Fleet 主动监控。
 
 ---
 

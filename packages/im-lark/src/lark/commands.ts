@@ -326,6 +326,7 @@ const HELP_TEXT = [
   '  **/tapd**                     我的 TAPD 列表卡（指派给我的未结束缺陷/需求；每条带「🔄 改状态」）',
   '       /tapd new [标题]          建 TAPD 需求：①选项目 → ②表单填主题+内容 → 建（标题可选）',
   '  **/report** day|week|month|year [--brief]  工作总结：日/周=简报md，月/年=PPT(加 --brief 出简报)',
+  '  **/note** <一句话>            补记非编码/未提交/线下工作（开账号、对接沟通…），日报会纳入',
   '  **/r**  /recall [关键词]      搜任务历史；不带关键词 = 最近 10 条',
   '  **/wt** /worktasks [关键词]   列/搜任务工作目录（目录↔分支↔干啥；TAPD/perf 认领时自动落记录）',
   '       /watch on/off            本地任务监听（你在 Mac 直接发的命令也推送到飞书）',
@@ -1344,6 +1345,21 @@ export async function handleCommand(
   const { name, rest } = parseCommand(text);
 
   if (name === 'help' || name === '?') return { kind: 'text', text: HELP_TEXT };
+
+  // /note <一句话> —— 手动补记非编码/未提交/线下工作，落 memory 供日/周报纳入
+  if (name === 'note' || name === 'log') {
+    const noteText = rest.trim();
+    if (!noteText) {
+      return { kind: 'text', text: '用法：/note <一句话工作记录>\n例：/note 得助账号开通、AOM 数据对接\n补记非编码/未提交/线下工作，日报会纳入。' };
+    }
+    try {
+      const orch = await import('multiagent-orchestrator');
+      const id = await orch.appendWorkNote(noteText);
+      return { kind: 'text', text: `📝 已记入工作台账（日/周报会纳入）：${noteText}\n[${id}]` };
+    } catch (e) {
+      return { kind: 'text', text: `❌ 补记失败：${(e as Error).message}` };
+    }
+  }
 
   if (name === 'tapd') {
     const orch = await import('multiagent-orchestrator');

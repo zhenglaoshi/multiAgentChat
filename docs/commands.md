@@ -9,6 +9,9 @@
 - [飞书审批](#飞书审批)
 - [飞书 Subagent 管理](#飞书-subagent-管理)
 - [飞书查询](#飞书查询)
+- [飞书维护](#飞书维护)
+- [对接与集成](#对接与集成)
+- [交互兜底通道](#交互兜底通道)
 - [Mac CLI 基本](#mac-cli-基本)
 - [Mac CLI 派消息给飞书](#mac-cli-派消息给飞书)
 - [Mac CLI SOP 内部协议](#mac-cli-sop-内部协议)
@@ -40,6 +43,12 @@ target 可以是 tty 全名（`/dev/ttys001`）、短名（`ttys001`）、tab �
 **链式串行**（一行内 `>>`）：
 ```
 @a 改 X >> @b 跑测试 >> @c commit
+```
+
+**查看 / 管理链路**：
+```
+/chain 或 /c 或 /chains       # 列运行中链路 + 最近完成
+/chain cancel <chainId>       # 中止运行中链路（别名 /chain stop <id>）
 ```
 
 ---
@@ -75,6 +84,17 @@ target 可以是 tty 全名（`/dev/ttys001`）、短名（`ttys001`）、tab �
 /template delete <name>
 ```
 
+**Presets**（静态 JSON 模板，放 `~/.multiagent-chat/presets/<name>.json`，跟上面 `/template` 动态存储是两套系统）：
+```
+/presets 或 /p              # 列所有 preset
+/preset <name> [key=value ...]  # 触发（跟 /run <preset> 等价，preset 里配了 stages 就会走 SOP）
+```
+
+**A3 Planner —— 自动分解目标**：
+```
+/plan <目标>            # claude -p 把目标分解成可逐步派发的计划卡（约 30-90s，会带上现有 tab/仓库信息）
+```
+
 ---
 
 ## 飞书任务管理
@@ -98,6 +118,13 @@ target 可以是 tty 全名（`/dev/ttys001`）、短名（`ttys001`）、tab �
 ```
 
 审批卡上有 ✅ 批准 / ❌ 拒绝按钮，直接点。
+
+**授权等级** —— 决定高危 shell 命令拦到哪一档（L0 全自动 / L1 仅致命（默认）/ L2 标准 / L3 严格 / L4 偏执）：
+```
+/perm-level 或 /permlevel        # 弹 5 档等级选择卡，点按钮即切
+/perm-level <0-4>                # 速设（例：/perm-level 2）
+/perm-reset                      # 清空「学习放行库」（同一命令连续批准 N 次会自动放行，这条清空重来）
+```
 
 ---
 
@@ -139,13 +166,61 @@ Framework 会派任务到 active tab 的主 claude，让它生成结构化 JSON�
 /where 或 /w            # 当前 active tab 信息
 /history 或 /h [-n N]   # active tab 屏幕历史 tail
 /new [path]             # Mac 上开新 tab（不带路径弹选目录卡）
+/pin <alias> [path]     # 收藏目录（省 path 用 active tab 的 cwd）；之后 /new @<alias> 秒开 tab
+/pin 或 /pins 或 /bookmark(s)  # 列所有收藏（/pin 不带参数）
+/pin del <alias>        # 删收藏（别名：/unpin <alias>）
 /watch on / off         # 本地任务监听（非飞书发起的 shell 活动也推飞书）
+/quiet on / off         # 静默模式：开启后长任务中途不刷进度卡，只发首次 + 完成卡
+/raw on / off           # 明文/脱敏开关：默认脱敏（AK/SK/密码/token 脱成 [REDACTED-X]）；on 后 10 分钟自动恢复脱敏
 /recall <关键词>         # 搜 task memory；不带关键词 = 最近 10 条
 /worktasks 或 /wt [关键词] # 任务工作目录卡：列/搜（标题/分支/repo/目录），每条带 [📂 打开] 开历史需求目录 + [🔗 TAPD]
 /tapd                   # 列指派给我的未结束 TAPD 缺陷/需求（见 tapd.md）
+/tapd new [标题]        # 建 TAPD 需求向导：①选项目 → ②表单填主题+内容（标题可选，预填表单）
 /report day|week|month|year [--brief]  # 工作总结：日/周=简报md，月/年=PPT(--brief 出简报)
 /help 或 /?             # 帮助
 ```
+
+---
+
+## 飞书维护
+
+```
+/dirindex               # 看全机 git 目录索引条数 + 更新时间（供 /new 模糊匹配用）
+/dirindex refresh       # 手动刷新目录索引
+/reload 或 /restart     # 一键重启 daemon（launchd kickstart，约 5 秒后加载最新代码 + 重装 hooks）
+/selfaudit 或 /dogfood  # 项目自审报告卡（claude -p 审 CHANGELOG↔docs 漂移 / 报错日志 / TODO，约 1-2 分钟，完成后推卡）
+```
+
+> `/reload` 靠 launchd 托管才生效；dev 模式（`pnpm dev` / tsx watch）改文件本来就自动 reload，命令会静默忽略。
+
+---
+
+## 对接与集成
+
+```
+/connect 或 /对接        # 对接管理卡：飞书(核心)/TAPD/性能平台/知识提炼/Codex/代码评审门/企微/Web 面板/
+                        #   CareyClaw/高危命令审批/明文凭证脱敏/定时报告——每项带启用/停用/去配置按钮
+/careyclaw 或 /龙虾      # CareyClaw（bot.ihealthcn.com）调试密钥状态/更新卡
+/webdash 或 /wd 或 /web  # 拿 Web Dashboard 访问 URL（需先 /connect 里配 WEB_DASHBOARD_TOKEN）
+```
+
+Mac 端对应有 `agent connect` / `agent connect lark` / `agent connect codex`（见 [Mac CLI 诊断 + 维护](#mac-cli-诊断--维护)），socket-free、不需要先起 daemon。
+
+---
+
+## 交互兜底通道
+
+watcher 读不到内容（登录提示 / alt-screen TUI 菜单等）时，用这两条直接远程操作 tab：
+
+```
+/screen 或 /scr          # 抓一张当前 tab 屏幕截图推回飞书（含 alt-screen TUI 内容）
+/keys 或 /k <按键序列>    # 按键遥控，发送后 300ms 自动回一张确认截图
+```
+
+`/keys` 键位：`d/u/l/r`=↓↑←→ · `.`=空格 · `⏎`=回车 · `t`=tab · `x`=esc；重复用 `3d` 或 `d*3`；打字用引号 `'text'`。
+例：`/keys 2d . ⏎`（下下、空格、回车）、`/keys ctrl+c`。
+
+两条命令的目标 tab：优先「最近一次收到回复的 tty」（TTL 内），否则退到 active tab；都没有则提示先 `/use @xxx`。
 
 ---
 

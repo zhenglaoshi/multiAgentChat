@@ -5,7 +5,7 @@ import {
   logger, reportWindow, collectWorkData, generateBrief, generatePptxReport,
   type ReportWindow,
 } from 'multiagent-orchestrator';
-import { getDirIndex } from 'multiagent-host-mac';
+import { activeReportRepos } from 'multiagent-host-mac';
 import { listAllChats } from '../chats/store.js';
 import { sendTextMessage, sendFile } from '../lark/api.js';
 
@@ -75,8 +75,8 @@ export function startReportScheduler(client: Lark.Client): void {
   const fireOne = async (s: Sched, key: string): Promise<void> => {
     const chats = await listAllChats();
     if (chats.length === 0) { logger.warn('report scheduler 无 chat 可推'); return; }
-    const index = await getDirIndex().catch(() => ({ dirs: [] as { path: string; isGitRepo: boolean }[] }));
-    const repos = index.dirs.filter((d) => d.isGitRepo).map((d) => d.path);
+    // 报告候选仓库（dir-index 全量 ∪ tab/最近/worktasks）；下游按时间窗+mtime 过滤只留今天有活动的。
+    const repos = await activeReportRepos().catch(() => [] as string[]);
     const collect = () => collectWorkData({ window: s.kind, repos, prev: s.prev });
     if (s.format === 'pptx') {
       const out = `/tmp/mchat-report-${key.replace(/[:\s]/g, '_')}.pptx`;

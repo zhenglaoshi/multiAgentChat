@@ -7,6 +7,17 @@ const CLAUDE_TIMEOUT_MS = 180_000; // claude -p 冷启动可能慢
 
 const WINDOW_LABEL: Record<ReportWindow, string> = { day: '日报', week: '周报', month: '月报', year: '年报' };
 
+/** 把未提交改动拼成给 claude 的文本块。 */
+function uncommittedBlockOf(data: CollectedWork): string {
+  if (!data.uncommitted.length) return '（无未提交改动）';
+  return data.uncommitted
+    .map((u) => {
+      const sample = u.files.slice(0, 8).join(', ');
+      return `【${u.repo}@${u.branch || '?'}】未提交 ${u.count} 处：${sample}${u.count > 8 ? ' …' : ''}`;
+    })
+    .join('\n');
+}
+
 /** 把采集数据拼成给 claude 的合成 prompt（要求输出 markdown 简报）。 */
 export function buildBriefPrompt(data: CollectedWork): string {
   const label = WINDOW_LABEL[data.window];
@@ -21,8 +32,9 @@ export function buildBriefPrompt(data: CollectedWork): string {
     ? [...byRepo.entries()].map(([repo, cs]) => `【${repo}】(${cs.length})\n${cs.map((s) => '  - ' + s).join('\n')}`).join('\n')
     : '（无 git 提交）';
   const taskBlock = data.tasks.length
-    ? data.tasks.slice(0, 40).map((t) => `  - ${t.prompt.slice(0, 80)}${t.summary ? ` → ${t.summary.slice(0, 80)}` : ''}`).join('\n')
+    ? data.tasks.slice(0, 40).map((t) => `  - ${t.prompt.slice(0, 80)}${t.summary ? ` → ${t.summary.slice(0, 200)}` : ''}`).join('\n')
     : '（无）';
+  const uncommittedBlock = uncommittedBlockOf(data);
 
   return [
     `你是我的工作总结助手。基于下面「${data.sinceLabel} ~ ${data.untilLabel}」我的真实工作数据，写一份**${label}简报**。`,
@@ -30,14 +42,19 @@ export function buildBriefPrompt(data: CollectedWork): string {
     `# git 提交（按仓库分组，${data.commits.length} 条）`,
     commitBlock,
     ``,
+    `# 未提交改动（进行中、尚未 commit，${data.uncommitted.length} 个仓库）`,
+    uncommittedBlock,
+    ``,
     `# 通过助手跑过的任务（${data.tasks.length} 条）`,
     taskBlock,
     ``,
-    `要求：`,
-    `- 输出**中文 markdown**，简洁（${label}是简报，别啰嗦）。`,
-    `- 结构：## ${label}（${data.sinceLabel}~${data.untilLabel}）→ **主要工作**（按项目/主题归纳，不要逐条罗列 commit，提炼成几件事）→ **产出/进展**（关键成果、数字）→ **遗留/下一步**（若能看出）。`,
+    `要求（这份发到手机飞书看，务必**手机端易读**）：`,
+    `- **主要工作用阿拉伯数字编号**「1. 2. 3.」，**每条独立一行**，以加粗的项目/主题开头，后跟一句话说清做了啥，别写成大段落。`,
+    `- 每行尽量短（手机一屏看得全）；**不要用表格、不要多级缩进/嵌套列表**。`,
+    `- 结构固定三段、段名加粗：**主要工作**（1. 2. 3. 逐条，按项目/主题归纳，不要逐条罗列 commit）→ **产出/进展**（关键成果/数字，短横线即可）→ **遗留/下一步**（若能看出）。`,
+    `- 「未提交改动」是还没 commit 的活，算**进行中**：在对应条目标注「进行中/未提交」，别当已完成产出。`,
     `- 只根据上面数据，别编造；数据少就如实简短。`,
-    `- 直接输出 markdown 正文，不要前言/解释/代码围栏。`,
+    `- 顶部标题保留 \`## ${label}（${data.sinceLabel}~${data.untilLabel}）\`。直接输出中文 markdown 正文，不要前言/解释/代码围栏。`,
   ].join('\n');
 }
 
@@ -91,17 +108,19 @@ function buildStructuredPrompt(data: CollectedWork): string {
     ? [...byRepo.entries()].map(([r, cs]) => `【${r}】(${cs.length})\n${cs.slice(0, 60).map((s) => '  - ' + s).join('\n')}`).join('\n')
     : '（无 git 提交）';
   const taskBlock = data.tasks.length
-    ? data.tasks.slice(0, 60).map((t) => `  - ${t.prompt.slice(0, 80)}${t.summary ? ` → ${t.summary.slice(0, 60)}` : ''}`).join('\n')
+    ? data.tasks.slice(0, 60).map((t) => `  - ${t.prompt.slice(0, 80)}${t.summary ? ` → ${t.summary.slice(0, 160)}` : ''}`).join('\n')
     : '（无）';
+  const uncommittedBlock = uncommittedBlockOf(data);
   return [
     `你是我的工作总结助手。基于「${data.sinceLabel} ~ ${data.untilLabel}」我的真实工作数据，生成一份 **${label}** 的分节内容，用于做 PPT。`,
     ``,
     `# git 提交（按仓库，${data.commits.length} 条）`, commitBlock,
+    ``, `# 未提交改动（进行中，${data.uncommitted.length} 个仓库）`, uncommittedBlock,
     ``, `# 助手任务（${data.tasks.length} 条）`, taskBlock,
     ``,
     `输出**严格 JSON**（不要任何解释/markdown 围栏），schema：`,
     `{"sections":[{"heading":"章节名","bullets":["要点1","要点2"]}]}`,
-    `建议章节：主要工作（按项目/主题归纳成几件事，不要逐条 commit）、关键成果（含数字）、亮点/难点、遗留与下一步。`,
+    `建议章节：主要工作（按项目/主题归纳成几件事，不要逐条 commit）、关键成果（含数字）、亮点/难点、遗留与下一步（未提交改动算进行中，放这里）。`,
     `每章节 3-8 个 bullet，中文，简练。只根据上面数据，别编造。`,
   ].join('\n');
 }

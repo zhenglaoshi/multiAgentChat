@@ -10,6 +10,7 @@ export * from './terminal/restart.js';
 export * from './workspace.js';
 export * from './recent-cwds.js';
 export * from './dir-index.js';
+export * from './report-repos.js';
 export * from './bookmarks.js';
 export * from './git.js';
 export * from './task-workspace.js';
