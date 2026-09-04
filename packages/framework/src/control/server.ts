@@ -438,6 +438,23 @@ function formatOriginPrefix(origin: { tty: string; cwd?: string }): string {
   return `🖥 ${label}\n`;
 }
 
+/**
+ * `--auto` 推送是否该被 `/watch` 闸门挡下（lark + wecom 两条路径共用，避免各写一份漂移）。
+ * gate 条件：`--auto` 且目标 chat 没开 `watchAllTabs`。
+ * 例外：`--question`（AskUserQuestion 原生菜单镜像）**默认穿透闸门** —— 这是阻塞会话、等用户
+ * 作答的交互问题，人在手机又没开 `/watch` 就会永远收不到、任务卡死；普通输出仍受闸门（不刷屏）。
+ * opt-out：`MCHAT_ASK_MIRROR_BYPASS_WATCH=0` 时该例外关闭，问题也恢复受闸门（私密项目不外推到飞书云端）。
+ */
+export function shouldGateAutoPush(
+  req: { auto?: boolean; question?: boolean },
+  chat: { watchAllTabs?: boolean },
+): boolean {
+  if (!req.auto) return false;
+  if (chat.watchAllTabs) return false;
+  if (req.question && process.env['MCHAT_ASK_MIRROR_BYPASS_WATCH'] !== '0') return false;
+  return true;
+}
+
 async function handleLarkSendText(
   sock: Socket,
   req: Extract<Request, { op: 'lark.send-text' }>,
@@ -452,8 +469,8 @@ async function handleLarkSendText(
     }
     try {
       const chat = await loadChat(req.chatId);
-      // --auto 也 gate（跟飞书对齐）；用户 --plain 视作强制发（复用 lark 语义）
-      if (req.auto && !chat.watchAllTabs) {
+      // --auto 也 gate（跟飞书对齐）；--question 穿透（见 shouldGateAutoPush）
+      if (shouldGateAutoPush(req, chat)) {
         logger.info('wecom auto-push gated', {
           chatId: req.chatId,
           reason: 'watchAllTabs !== true',
@@ -496,18 +513,17 @@ async function handleLarkSendText(
       }
     }
 
-    // --auto 推送（如 Claude Code Stop hook 触发）：仅当目标 chat 的 watchAllTabs=true 才放行
-    if (req.auto) {
-      if (!chat.watchAllTabs) {
-        logger.info('auto-push gated', {
-          chatId: req.chatId,
-          reason: 'watchAllTabs !== true',
-          textLen: req.text.length,
-        });
-        sendOk<LarkSendData>(sock, { details: { gated: true } });
-        sock.end();
-        return;
-      }
+    // --auto 推送（如 Claude Code Stop hook 触发）：默认仅 watchAllTabs=true 才放行；
+    // 但 --question（AskUserQuestion 原生菜单镜像）穿透闸门（见 shouldGateAutoPush）。
+    if (shouldGateAutoPush(req, chat)) {
+      logger.info('auto-push gated', {
+        chatId: req.chatId,
+        reason: 'watchAllTabs !== true',
+        textLen: req.text.length,
+      });
+      sendOk<LarkSendData>(sock, { details: { gated: true } });
+      sock.end();
+      return;
     }
 
     // origin tab 反查（完整版，含 cwd/标题，用于卡片前缀）。仅在**未被 gate** 的路径才跑，

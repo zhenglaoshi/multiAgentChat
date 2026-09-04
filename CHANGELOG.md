@@ -6,6 +6,11 @@
 
 ## [未发布]
 
+### 2026-09-04
+
+**改动**
+- **选项交互恢复「原生 shell 菜单 + 飞书卡」双通道（人在电脑前不用掏手机）**。用户诉求：单选问题现在只推飞书卡、人在电脑前也得去手机点；想保留 claude 原生 `AskUserQuestion`（shell 里上下键选择菜单）的同时仍推飞书，两边都能答。**发现所需机制早已建好**：`PreToolUse(AskUserQuestion)` hook（`bin/mchat-pretooluse-hook`，已装 `~/.claude/settings.json`）会把问题+选项镜像成飞书按钮卡，`ask-drive.ts` 用方向键（key code 125/36）驱动原生菜单——飞书点选/回裸数字即可作答。挡路的只是一段叫 claude「别用 AskUserQuestion、一定用 `agent lark ask`」的 guidance。改动：① **`im-lark/handlers.ts` 的 SYSTEM_GUIDANCE + TUI reminder** 改为——单选优先原生 `AskUserQuestion`（原生菜单 + 自动镜像飞书、电脑/手机两边可答），多选/表单/自由文本仍用 `agent lark ask`；删掉「禁用 AskUserQuestion」。② **`framework/control/server.ts`**：`--question`（AskUserQuestion 镜像）**不再受 `/watch` 闸门限制**——阻塞会话等作答的交互问题必须让用户看到（人在手机又没开 `/watch` 否则永远收不到、任务卡死）；普通输出仍受闸门（不刷屏）。顺带修了个隐藏 bug：`/watch off` 时 `pendingAnswerTty`/`askArm` 快答路由本就走不到、一起修好。过 code-reviewer + security-reviewer 双评审（均无 high/critical）：按建议修 2 Medium——**闸门逻辑提炼成共享 `shouldGateAutoPush(req, chat)`**，同步 lark + wecom 两条 `--auto` gate（原 wecom 分支漏了 `--question` 例外、同款卡死 bug 还在）；**加独立 opt-out `MCHAT_ASK_MIRROR_BYPASS_WATCH=0`**（穿透涉及把任意 claude 会话的 AskUserQuestion 问题无视 `/watch` 推到飞书云端，比 `MCHAT_LOCAL_TASK_CAPTURE` 只落本机多一跳边界，给私密项目留关闭开关）。`.env.example` 补开关说明；新增 `tests/gate-auto-push.test.ts` 5 项（question 穿透 / opt-out 恢复受闸门）。typecheck + 264 单测过。（`im-lark/lark/handlers.ts` + `framework/control/server.ts` + `.env.example` + `tests/gate-auto-push.test.ts`）
+
 ### 2026-09-03
 
 **改动**

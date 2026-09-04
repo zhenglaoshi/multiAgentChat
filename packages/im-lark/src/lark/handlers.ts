@@ -31,15 +31,16 @@ const SYSTEM_GUIDANCE = [
   '- 任务完成时先在 TUI 完整回答，然后**必须**调用 `agent lark send-text "结果摘要..."` 主动推送到飞书',
   '- 长任务请每完成一步用 `agent lark send-text` 推送进度',
   '- 文件产出用 `agent lark send-file <path>` 推送文件本体',
-  '- **要用户从多选项里选（单选/多选）或让用户填一段文本，用 `agent lark ask` —— 弹飞书交互卡片，用户手指点选/回复，答案 JSON 从 stdout 回给你。用户不必手打命令。**',
+  '- **要用户选一个（单选）→ 优先用原生 `AskUserQuestion`**：它在 shell 里弹上下键选择菜单（你人在电脑前可直接选），项目会自动把问题+选项**镜像成飞书按钮卡**（手机端点按钮 / 回裸数字即可，会用方向键驱动那个原生菜单）。**电脑原生菜单 + 手机飞书卡，两边都能答，谁先答谁生效** —— 这正是"有时候用电脑、有时候用手机"两不误。',
+  '- 多选 / 多问题表单 / 自由长文本 → 用 `agent lark ask`（飞书交互更完整，弹卡手指点选；但**只走飞书、电脑端没有原生菜单**）。确定人在电脑前时也可继续用 AskUserQuestion（原生多选菜单，飞书端仅显示、不便点选）。用户不必手打命令。',
   '    单选：`agent lark ask single --title "选哪个？" --options "选项A,选项B,选项C"`',
   '    多选：`agent lark ask multi  --title "勾选多个" --options "1,2,3"`',
   '    ⚠ 选项文本里**含逗号**时 `--options` 会被拆乱 → 改用 JSON 数组：`--options \'["含,逗号的选项","选项2"]\'`（或 `--options-json`），一个 flag 安全搞定',
   '    输入：`agent lark ask input  --title "输入什么"`  （用户在飞书 chat 里直接回复文本即可）',
-  '    多问题表单：`agent lark ask form --title "标题" --spec-json \'{"questions":[{"title":"Q1","type":"single","options":["A","B"],"allowText":true},{"title":"Q2","type":"multi","options":["X","Y"]}]}\'` —— 一次问多个、每题单/多选、allowText 题可自由输入；stdout 返回 `{"status":"answered","type":"form","answers":[{"q":0,"kind":"single","index":0,"value":"A"},...]}`。**这是 AskUserQuestion 的飞书替代，多问题场景用它，别用 AskUserQuestion（用户手机看不见）**',
+  '    多问题表单：`agent lark ask form --title "标题" --spec-json \'{"questions":[{"title":"Q1","type":"single","options":["A","B"],"allowText":true},{"title":"Q2","type":"multi","options":["X","Y"]}]}\'` —— 一次问多个、每题单/多选、allowText 题可自由输入；stdout 返回 `{"status":"answered","type":"form","answers":[{"q":0,"kind":"single","index":0,"value":"A"},...]}`。**多问题表单场景用它**（AskUserQuestion 也能多问题，但飞书镜像对多选/多问题作答不便，表单走这个更顺）。',
   '    stdout 示例：`{"status":"answered","type":"single","index":1,"value":"选项B"}`；status 也可能是 cancelled / timeout',
   '    退出码：0=answered，1=cancelled，2=timeout',
-  '- 不要调 AskUserQuestion 或在 TUI 里等键盘输入，用户手机端看不见 TUI —— **一定要用 `agent lark ask`**',
+  '- 单选问题**优先原生 `AskUserQuestion`**（原生菜单自动镜像飞书、两边可答）；多选/表单/自由文本用 `agent lark ask`。别在裸 TUI 里 `read` 等键盘而不给任何飞书通道 —— 人在手机时会收不到。',
   '- 高风险操作（写数据库 / git push --force / rm -rf / 改 .env）先 `agent request-approval --title --body` 等批准',
   '- 不要直接调任何 webhook（功能弱、不支持文件）',
   '- **「龙虾」= CareyClaw 平台**（bot.ihealthcn.com）。用户说「龙虾/careyclaw 有没有XX接口 / 这个接口怎么调 / 帮我拿XX数据」→ 触发已装的 **careyclaw-apis** 技能（检索/试调平台业务 API）；说「龙虾/careyclaw 部署/发布应用」→ 触发 **careyclaw-deploy** 技能。首次会给浏览器授权链接（用 `agent lark send-text` 把链接推给用户去点）。',
@@ -50,7 +51,7 @@ const SYSTEM_GUIDANCE = [
 const CLAUDE_TUI_REMINDER = [
   '',
   '---',
-  '⚠ 回到飞书 — 飞书看不见你的 TUI 屏幕。**先在 TUI 完整回答用户，然后再** `agent lark send-text "<同样一份摘要>"` 推到飞书（两个渠道并行，不能只推不答）。要用户从选项里选（单/多选）或填文本，**用 `agent lark ask single|multi|input`**（stdout 拿答案 JSON），不要用 AskUserQuestion 或在 TUI 里 wait 键盘。',
+  '⚠ 回到飞书 — 飞书看不见你的 TUI 屏幕。**先在 TUI 完整回答用户，然后再** `agent lark send-text "<同样一份摘要>"` 推到飞书（两个渠道并行，不能只推不答）。要用户**单选** → 优先原生 `AskUserQuestion`（shell 原生菜单 + 自动镜像飞书按钮卡，电脑/手机两边都能答）；**多选/表单/填文本** → `agent lark ask multi|form|input`（stdout 拿答案 JSON）。',
 ].join('\n');
 import { patchCard, sendCardReturnId, sendImage, sendCardMessage } from './api.js';
 import { ackCard, askCard, bareShellNoAgentCard, batchProgressCard, browseCard, careyclawKeyCard, careyclawKeyFormCard, chainProgressCard, closeIdleConfirmCard, closeTabConfirmCard, connectConfirmCard, connectFormCard, connectStatusCard, escapeLarkMd, permLevelCard, planCard, progressCard, receiptCard, tapdClaimCard, type BatchTaskItem, type ChainStepItem } from './cards.js';
