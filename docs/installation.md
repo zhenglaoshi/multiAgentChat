@@ -25,8 +25,8 @@ daemon 启动时会**自动探测**核心授权，缺了往飞书推告警；也
 | 权限 | 用途 | 触发场景 | 自动探测 |
 |---|---|---|---|
 | **Automation → Terminal.app** | 控 Terminal.app（列 tab / 发命令 / 开 tab） | 首次 AppleScript 调 tab | ✅ |
-| **Automation → System Events** | 按键注入的前置通道 | 首次方向键选项 / Ctrl-C / 关 tab | ✅ |
-| **Accessibility** | 真发按键 keystroke / key code（方向键、Ctrl-C、关 tab；回车提交默认走 pty 直写不需要） | 首次方向键选项 / 关 tab | ✅ |
+| **Automation → System Events** | 按键注入的前置通道 | 首次 Ctrl-C / Esc 关菜单 / 关 tab | ✅ |
+| **Accessibility** | 真发按键 keystroke / key code（Ctrl-C、Esc、关 tab；回车提交与 AskUserQuestion 选项作答默认走 pty 直写不需要） | 首次 Ctrl-C / 关 tab | ✅ |
 | **Screen Recording** | screencapture 抓 tab 窗口 | 首次 `/screen` | ❌（optional） |
 
 位置：**系统设置 → 隐私与安全性 → 对应权限项**。任何一项拒绝 = 相关功能静默失效。

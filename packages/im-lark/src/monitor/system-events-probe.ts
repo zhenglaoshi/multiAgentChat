@@ -11,14 +11,14 @@ const PROBE_INTERVAL_MS = 120_000;
 const REALERT_INTERVAL_MS = 30 * 60_000;
 
 const ALERT_BROKEN =
-  '🚨 System Events 术语解析挂了 —— 按键注入会失败（方向键选选项 / Ctrl-C 解卡 / 关 tab）！\n\n' +
-  '不受影响：飞书注入命令的回车提交默认走 pty 直写，照常执行（除非你设了 MCHAT_ENTER_MODE=keystroke）。\n' +
+  '🚨 System Events 术语解析挂了 —— 按键注入会失败（Ctrl-C 解卡 / 关 tab / Esc 关菜单）！\n\n' +
+  '不受影响：飞书注入命令的回车提交、AskUserQuestion 选项作答默认都走 pty 直写，照常执行（除非你设了 MCHAT_ENTER_MODE=keystroke / MCHAT_ASK_DRIVE=keys）。\n' +
   '原因：System Events 被挂起或注册损坏，osascript 连 `key code` 术语都加载不了' +
   '（常见诱因：Mac 过载、长时间没重启）。\n\n' +
   '修复：重启 Mac（最稳，顺带解过载），或先试 `sudo killall appleeventsd`。';
 
 const ALERT_RECOVERED =
-  '✅ System Events 术语已恢复 —— 方向键 / Ctrl-C 等按键注入恢复可用。';
+  '✅ System Events 术语已恢复 —— Ctrl-C / Esc 等按键注入恢复可用。';
 
 /**
  * 后台自检 System Events 术语通路（sendKeys 按键注入 + forceEnter keystroke 兜底模式的 `key code` 依赖）。

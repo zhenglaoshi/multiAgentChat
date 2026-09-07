@@ -1942,7 +1942,7 @@ function encodeAnswerOption(tty: string, label: string): string {
 
 /**
  * AskUserQuestion 箭头菜单下拉 value 编码：`askans|<tty>|<index>`（0-based）。
- * 与 `answer|` 区分：answer-select 回调命中 `askans|` → sendKeys `(index)↓+回车` 驱动本地
+ * 与 `answer|` 区分：answer-select 回调命中 `askans|` → driveAskSelect（默认 pty 写数字）驱动本地
  * 原生选择菜单（打文本选不中，见 handlers driveAskSelectFromCard）；`answer|` 是老的打文本路径。
  */
 function encodeAskSelect(tty: string, index: number): string {
@@ -1981,7 +1981,7 @@ export function originShellPushCard(d: OriginShellPushCardData) {
           content: longOpts ? `${i + 1}. ${smartTrim(label, 14)}` : truncate(label, 18),
         },
         type: i === 0 ? ('primary' as const) : ('default' as const),
-        // question（AskUserQuestion）→ ask-select：点了发方向键 (index)↓+回车 驱动本地箭头菜单；
+        // question（AskUserQuestion）→ ask-select：点了经 pty 写数字 (index+1) 直选本地箭头菜单（锁屏可用）；
         // 非 question（罕见的一般快答）→ 老的 send-to-tab 打文本。
         value: d.question
           ? { action: 'ask-select', tty: d.tty, index: i, label }
@@ -2001,7 +2001,7 @@ export function originShellPushCard(d: OriginShellPushCardData) {
             tag: 'plain_text' as const,
             content: longOpts ? `${i + 1}. ${smartTrim(label, 56)}` : truncate(label, 60),
           },
-          // question → askans|<tty>|<index>（方向键驱动）；否则老的 answer|<tty>|<label>（打文本）
+          // question → askans|<tty>|<index>（pty 数字驱动）；否则老的 answer|<tty>|<label>（打文本）
           value: d.question ? encodeAskSelect(d.tty, i) : encodeAnswerOption(d.tty, label),
         })),
         value: { action: 'answer-select' },

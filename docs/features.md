@@ -273,7 +273,7 @@ EOF
 - 装一个 root LaunchDaemon（`com.multiagent-chat.lid-awake`，`bin/mchat-lid-awake` 被复制到 `/usr/local/libexec/` 由 root 跑）：每 10s 看电源来源，**插电 → disablesleep 1，用电池 → 0**；守护退出时也恢复 0
 - 独立于 chat daemon：chat daemon 挂了它照样把「拔电→恢复睡眠」做对
 - 配合 2026-09-07 的「回车 pty 直写」修复，锁屏状态下手机发的命令照常执行
-- ✅ 2026-09-07 真机验证（守护已装、合盖、且前台压着一个系统模态弹框）：飞书发普通指令 → 回车提交执行 ✅；AskUserQuestion 原生菜单飞书作答两轮 ✅。自测法见 [installation.md「笔记本合盖守护」](installation.md#笔记本合盖也要能远程装一次守护)
+- ✅ 2026-09-07 真机验证（守护已装、合盖、锁屏、且前台压着一个系统模态弹框）：飞书发普通指令 → pty 回车提交执行 ✅；AskUserQuestion 原生菜单飞书作答：**方向键（System Events）在锁屏下送不进终端且假成功 ❌ → 已改成 pty 写数字直选 ✅**（同日修复）。自测法见 [installation.md「笔记本合盖守护」](installation.md#笔记本合盖也要能远程装一次守护)
 - `scripts/lid-awake.sh status|log` 看状态；`sudo scripts/lid-awake.sh uninstall` 卸载并恢复 0
 - ⚠ disablesleep=1 期间「苹果菜单 → 睡眠」也不会睡；要睡就拔电，或 uninstall
 - ⚠ 安全语义：合盖不睡 = 无人值守时机器持续联网、可远程操控，暴露窗口比默认更长；只在需要远程的机器装，公共网络配防火墙，Web Dashboard 设强 token

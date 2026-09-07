@@ -59,7 +59,7 @@ packages/
 │       ├─ terminal/
 │       │   ├─ tabs.ts      listTabs / getHistory / send / forceEnter / newTab
 │       │   ├─ applescript.ts runScript / runOsascript 包装 + escape
-│       │   ├─ keys.ts      sendKeys（System Events 按键注入：方向键 / Ctrl-C；需前台焦点）
+│       │   ├─ keys.ts      sendKeys（System Events 按键注入：Ctrl-C / Esc / 关 tab；需前台焦点，锁屏送不进且假成功）
 │       │   ├─ probe.ts     probeSystemEvents（System Events 术语故障自检；恒 false 分支里放 key code 36）
 │       │   ├─ screen.ts    captureScreen（截 tab 可视区域）
 │       │   ├─ status.ts    inferTabStatus（走 AgentAdapter 识别 claude/codex；idle/busy/login/waiting/TUI）
@@ -86,7 +86,8 @@ packages/
 │       │   ├─ reply.ts     replyText / sendText 工具（发送层已内建脱敏 redactMaybe + 页脚）
 │       │   ├─ redact-gate.ts 发送层回显脱敏闸门（织入 api.ts，卡片深度遍历脱敏；配 /raw 明文开关）
 │       │   ├─ footer-gate.ts 发送层「🕐 时间 + 📁 路径」页脚闸门（appendFooterCard/appendFooterText，LARK_MSG_FOOTER=0 关）
-│       │   ├─ ask-drive.ts  AskUserQuestion 方向键驱动应答（armed → (index)↓+回车，替代文本注入）
+│       │   ├─ ask-drive.ts  AskUserQuestion 远程应答纯逻辑（数字映射 / 取消口令 / 暂存提示）+ ask-driver.ts（默认 pty 写数字直选，锁屏可用；MCHAT_ASK_DRIVE=keys 退回方向键）
+│       │   │              待答期间的非选项文本存 chat.askHeld（带 tty+armAt），选完/取消后按存件自己的 tty 补发；新一轮菜单则放弃补发
 │       │   ├─ tapd-flow.ts  /tapd 建需求向导（选项目 → 选需求类别 workitem_type → 表单）
 │       │   └─ resource.ts  飞书图文入站：下载 image/post 图片到 data/inbound + post 解析 + 24h 清理 + imgPrefix 拼接
 │       ├─ monitor/
@@ -235,7 +236,7 @@ spawn detached: agent lark send-text --auto <text>
 进入 claude TUI 后：
 - `do script X` 实际往 pty 写的是 `X + "\r"` **一整块**（X 里的 `\n` 也被转成 `\r`，字节级实测）；TUI 把多字符块当**粘贴**处理，块内 `\r` 只算换行 → 文本送进去**不提交**
 - 提交靠 `forceEnter()`：默认 **pty 直写**——一次空 `do script ""` 写进去**单独一个 `\r`**，TUI 视为真回车。不依赖键盘焦点 / Accessibility / System Events，**合盖锁屏、别的 app 在前台、系统弹框压着都照常提交**。文本与回车之间留 ≥400ms（两块被合并读取会整体当粘贴）
-- `MCHAT_ENTER_MODE=keystroke` 退回旧路径（System Events key code 36 + 前台守卫；锁屏/弹框时 blocked 不盲按）。方向键等**非回车**按键（AskUserQuestion 驱动、Ctrl-C）仍只能走 System Events，锁屏时不可用（do script 无法送纯 ESC 序列——尾部必带 `\r`，TUI 当粘贴）
+- `MCHAT_ENTER_MODE=keystroke` 退回旧路径（System Events key code 36 + 前台守卫；锁屏/弹框时 blocked 不盲按）。AskUserQuestion 选项作答也走 pty（写 1-based 数字直选原生菜单，`MCHAT_ASK_DRIVE=keys` 退回方向键）。Ctrl-C / Esc / 关 tab 这类**非回车、非数字**按键仍只能走 System Events，**锁屏时送不进终端但 osascript 返回 ok（假成功）**，用 `isScreenLocked()` 先判再如实告知（do script 无法送纯 ESC 序列——尾部必带 `\r`，TUI 当粘贴）
 - `contents of tab` 返回 missing value（alt-screen 屏蔽）→ 屏幕状态我们读不到
 - `history of tab` 返回的还是退出 alt-screen 前的 scrollback → 用 char-length 而非 line-count 检测变化（claude 用 `\r` 重绘，行数不变）
 
@@ -342,7 +343,7 @@ npm run typecheck
 - **代码评审门**：改产品代码交付前强制 `code-reviewer` + `security-reviewer` 双审；做成 `/connect` 「claudeMd 块型」开关（对接=写全局 CLAUDE.md 规则块，断开=按 sentinel 删除）
 - **飞书消息统一页脚**（🕐 时间 + 📁 路径）+ **TAPD 通知分级**（首次认领卡 / 状态变轻量提示卡 / 内容变信息卡）
 - **同事任务甩单（Handoff，P1+P2 ✅）**：跨人协作——A 一句话把问题+AI建议+文件甩给同事 B，经独立中转 relay（`../multiagent-relay/`，零依赖纯 http，部署云服务器）路由到 B 的飞书。每人只跟自己的飞书 bot 说话（两边应用/租户解耦）；`from` relay 盖章防冒充、`HANDOFF_ALLOW` 收件白名单 fail-closed、收件人离线落盘排队重连补投、发送前强制脱敏。**P2**：富交互「👥 同事任务卡」（`im-lark` `handoffTaskCard`，对端内容走 plain_text 免注入）+ [接收/开始/完成/拒绝/撤回] 按钮 → 经桥接（`handoff-bridge.ts` setter → daemon 注入 `framework/relay/actions.ts sendHandoffStatus`）就地 patch，**两侧状态双向同步**；一句话 skill `skills/multiagent-handoff/`。CLI：`agent handoff send/status/list` + `agent contacts`。**P3a**：relay 升级成自助接入门户（独立项目内 `accounts.ts` 动态 token 库 + `portal.ts` 单页 + `/enroll/:code` 一键装机把凭证写进 .env + 邀请码占位登录 + 黑名单）；收件闸门语义变更——`HANDOFF_ALLOW` 空=收所有已登记同事（非空=严格 opt-in）；token 前缀 `mrt_` 已进脱敏引擎。见 docs/handoff-integration.md + ../multiagent-relay/README.md。**P3b**：门户接 OIDC 单点登录（`../multiagent-relay/src/oidc.ts`，零依赖 node:crypto 验 RS256+JWKS，配 `OIDC_*` 即启用，state/nonce 防 CSRF/重放；假 IdP 端到端冒烟 `tests/oidc-smoke.ts`）；邀请码保留作 bootstrap。**P3c**：凭证管理（门户轮换/撤销其它设备 + `/api/logout`）· 审计日志（relay `audit.ts` JSONL + `/admin/audit`）· 附件下载（`agent handoff pull`）· reply 跨人对话（`agent handoff reply`）。Handoff P1~P3c 全 ✅，待办仅同租户 open_id 直投捷径 + 过期记录清理
-- **飞书交互健壮性**：AskUserQuestion 方向键驱动应答、卡片选项完整编号防截断、message_id/token 幂等去重、osascript 超时兜底、ask 卡超时放宽 30min、`/reload` 一键重启
+- **飞书交互健壮性**：AskUserQuestion 远程应答（pty 写数字直选，锁屏可用；待答期间非选项文本暂存不吞）、卡片选项完整编号防截断、message_id/token 幂等去重、osascript 超时兜底、ask 卡超时放宽 30min、`/reload` 一键重启
 
 进行中 / 待办：
 - performance-platform 对接：P1 只读监听 ✅（`orchestrator/perf` + perf-watcher，配 PERF_* 启用）；P2 认领开 tab 修（已含 lite 版）；P3 回写+校验闭环待 perf 侧加 CAS。设计见 docs/perf-integration.md

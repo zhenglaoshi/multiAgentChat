@@ -1,15 +1,17 @@
 import * as Lark from '@larksuiteoapi/node-sdk';
 import { approvals, asks } from 'multiagent-orchestrator';
-import { loadChat, saveChat } from '../chats/store.js';
-import { PENDING_ANSWER_TTL_MS, RECENT_REPLY_TTL_MS, ASK_ARM_TTL_MS } from '../chats/types.js';
-import { buildDownEnterSeq, resolveAskAnswerIndex } from './ask-drive.js';
+import { loadChat, mutateChat, saveChat } from '../chats/store.js';
+import type { ChatState } from '../chats/types.js';
+import { PENDING_ANSWER_TTL_MS, RECENT_REPLY_TTL_MS, ASK_ARM_TTL_MS, ASK_HELD_TTL_MS, ASK_HELD_MAX_LEN } from '../chats/types.js';
+import { buildAskHoldNotice, isAskCancelWord, resolveAskAnswerIndex } from './ask-drive.js';
+import { driveAskSelect } from './ask-driver.js';
 import { logger } from 'multiagent-orchestrator';
 import { recordCwd } from 'multiagent-host-mac';
 import { ragRecall, formatRagPrefix } from 'multiagent-orchestrator';
 import { pendingTracker, markRemoteWrite } from '../monitor/pending.js';
 import { healIfWedged } from '../monitor/stuck-shell.js';
 import { recordInbound } from '../monitor/ws-watchdog.js';
-import { captureScreen, closeTabGracefully, detectSelfTty, forceEnter, getHistory, getUserFocus, launchAgentInTab, launchClaudeInTab, listTabs, newTab, openPermissionPane, send, sendKeys, sendKeysRaw } from 'multiagent-host-mac';
+import { captureScreen, closeTabGracefully, detectSelfTty, forceEnter, getHistory, getUserFocus, isScreenLocked, launchAgentInTab, launchClaudeInTab, listTabs, newTab, openPermissionPane, send, sendKeys, sendKeysRaw } from 'multiagent-host-mac';
 import { detectAgentFromProcs, listAgentAdapters, looksLikeAgentTask } from 'multiagent-orchestrator';
 import type { HandoffStatus } from 'multiagent-orchestrator';
 
@@ -31,7 +33,7 @@ const SYSTEM_GUIDANCE = [
   '- 任务完成时先在 TUI 完整回答，然后**必须**调用 `agent lark send-text "结果摘要..."` 主动推送到飞书',
   '- 长任务请每完成一步用 `agent lark send-text` 推送进度',
   '- 文件产出用 `agent lark send-file <path>` 推送文件本体',
-  '- **要用户选一个（单选）→ 优先用原生 `AskUserQuestion`**：它在 shell 里弹上下键选择菜单（你人在电脑前可直接选），项目会自动把问题+选项**镜像成飞书按钮卡**（手机端点按钮 / 回裸数字即可，会用方向键驱动那个原生菜单）。**电脑原生菜单 + 手机飞书卡，两边都能答，谁先答谁生效** —— 这正是"有时候用电脑、有时候用手机"两不误。',
+  '- **要用户选一个（单选）→ 优先用原生 `AskUserQuestion`**：它在 shell 里弹上下键选择菜单（你人在电脑前可直接选），项目会自动把问题+选项**镜像成飞书按钮卡**（手机端点按钮 / 回裸数字即可，会经 pty 写数字直选那个原生菜单，锁屏也能答）。**电脑原生菜单 + 手机飞书卡，两边都能答，谁先答谁生效** —— 这正是"有时候用电脑、有时候用手机"两不误。',
   '- 多选 / 多问题表单 / 自由长文本 → 用 `agent lark ask`（飞书交互更完整，弹卡手指点选；但**只走飞书、电脑端没有原生菜单**）。确定人在电脑前时也可继续用 AskUserQuestion（原生多选菜单，飞书端仅显示、不便点选）。用户不必手打命令。',
   '    单选：`agent lark ask single --title "选哪个？" --options "选项A,选项B,选项C"`',
   '    多选：`agent lark ask multi  --title "勾选多个" --options "1,2,3"`',
@@ -354,14 +356,65 @@ async function patchOrigToReceipt(
   }
 }
 
-// ---- AskUserQuestion（claude 原生上下键选择菜单）方向键驱动 ----
-// buildDownEnterSeq / resolveAskAnswerIndex 是纯逻辑，抽到 ./ask-drive.ts 便于单测。
+// ---- AskUserQuestion（claude 原生上下键选择菜单）远程应答 ----
+// 默认 pty 直写数字（锁屏可用），MCHAT_ASK_DRIVE=keys 退回方向键；纯逻辑在 ./ask-drive.ts，发送在 ./ask-driver.ts。
 
 /**
- * 卡片点选项（按钮 ask-select / 下拉 askans|）→ 用方向键驱动源 shell 里 claude 的
+ * 菜单处理完（选中 / 取消 / 本地作答）后，把 askArm 期间暂存的那句非选项文本补发到它**原本要去的 tab**。
+ *
+ * 关键约定：
+ *  - 目标 tty 取自 `held.tty`（暂存时记录），**不是**调用方当下的 tty —— 否则多 tab 场景会把话投错终端。
+ *  - `held.armAt` 记录当时是哪一轮提问。补发时那个 tty 又armed 了新一轮（armAt 不同）→ 不补发，
+ *    否则旧话可能被 `resolveAskAnswerIndex` 当成对新问题的应答（"是/否/1/2" 这类通用选项极易误命中）。
+ *  - 取件走 `mutateChat` 的串行化读改写，天然原子：并发调用只有一方拿得到 held，杜绝重复注入。
+ *  - 延迟 1.5s：让 claude 先消费掉刚才的选择。补发走 dispatchSendToTab 正常链路（过空内容防护 /
+ *    裸 shell 保护 / gate 排队等既有入口检查），此时 arm 已清，不会再次被暂存。
+ * fire-and-forget，所有失败只 warn。
+ */
+async function flushAskHeld(client: Lark.Client, chatId: string, delayMs = 1500): Promise<void> {
+  let held: NonNullable<ChatState['askHeld']> | undefined;
+  try {
+    held = await mutateChat(chatId, (chat) => {
+      const h = chat.askHeld;
+      if (h) delete chat.askHeld;
+      return h;
+    });
+    if (!held) return;
+    const ctx = { messageId: held.messageId, chatId };
+    if (Date.now() - held.at > ASK_HELD_TTL_MS) {
+      await replyText(client, ctx, `⏭ 存着的那句「${held.text.slice(0, 30)}…」已超过 10 分钟，没有补发；需要的话重发一次。`).catch(() => {});
+      return;
+    }
+    await new Promise((r) => setTimeout(r, delayMs));
+    const tabs = await listTabs();
+    const tab = tabs.find((t) => t.tty === held!.tty);
+    if (!tab) {
+      await replyText(client, ctx, `⚠️ 存着的那句没发出去：tab ${held.tty} 已不在了。`).catch(() => {});
+      return;
+    }
+    // 那个 tab 又弹了新一轮菜单 → 不补发（避免旧话被当成对新问题的应答），让用户答完再重发
+    const nowChat = await loadChat(chatId).catch(() => null);
+    const nowArm = nowChat?.askArm;
+    if (nowArm && nowArm.tty === held.tty && nowArm.at !== held.armAt && Date.now() - nowArm.at <= ASK_ARM_TTL_MS) {
+      await replyText(
+        client,
+        ctx,
+        `⏭ ${held.tty} 又弹了新的选择菜单，存着的那句「${held.text.slice(0, 30)}…」没有补发；答完菜单后请重发。`,
+      ).catch(() => {});
+      return;
+    }
+    logger.info('askHeld flush → dispatch', { chatId, tty: held.tty, len: held.text.length });
+    await dispatchSendToTab(client, ctx, tab, held.text);
+  } catch (e) {
+    logger.warn('askHeld flush failed', { chatId, tty: held?.tty, err: (e as Error).message });
+  }
+}
+
+/**
+ * 卡片点选项（按钮 ask-select / 下拉 askans|）→ driveAskSelect（默认 pty 写数字，锁屏可用）驱动源 shell 里 claude 的
  * 原生 AskUserQuestion 菜单选中第 index 项。
  * guard：必须仍处于 armed（chat.askArm 匹配该 tty 且未过期）—— 否则本地可能已作答 /
- * 菜单已关闭，此时注方向键会打进已经不是菜单的终端，直接拒绝（toast 提示，不 patch）。
+ * 菜单已关闭，此时写数字会打进已经不是菜单的终端，直接拒绝（toast 提示，不 patch）。
  */
 async function driveAskSelectFromCard(
   client: Lark.Client,
@@ -389,35 +442,42 @@ async function driveAskSelectFromCard(
   try {
     const tabs = await listTabs();
     if (!tabs.find((t) => t.tty === tty)) {
-      delete chat.askArm;
-      if (chat.pendingAnswerTty === tty) {
-        delete chat.pendingAnswerTty;
-        delete chat.pendingAnswerAt;
-      }
-      await saveChat(chat).catch(() => {});
+      // 同下方正常路径：走 mutateChat 重新 load 再改，别拿 listTabs 之前的旧快照整份覆盖
+      await mutateChat(chatId, (c) => {
+        delete c.askArm;
+        if (c.pendingAnswerTty === tty) {
+          delete c.pendingAnswerTty;
+          delete c.pendingAnswerAt;
+        }
+      }).catch(() => {});
       return {
         toast: { type: 'error', content: `tab ${tty} 不存在了` },
         card: ackCard({ title: '❌ 发送失败', body: `tab \`${tty}\` 已经不在了`, template: 'red' }),
       };
     }
+    let drove: Awaited<ReturnType<typeof driveAskSelect>>;
     try {
-      await sendKeys(tty, buildDownEnterSeq(index));
+      drove = await driveAskSelect(tty, index);
     } catch (e) {
       return { toast: { type: 'error', content: (e as Error).message } };
     }
-    // 消费 arm（本轮已作答）；pendingAnswerTty 也清（不再 one-shot 路由这条问题）
-    delete chat.askArm;
-    if (chat.pendingAnswerTty === tty) {
-      delete chat.pendingAnswerTty;
-      delete chat.pendingAnswerAt;
-    }
-    await saveChat(chat).catch(() => {});
+    // 消费 arm（本轮已作答）；pendingAnswerTty 也清（不再 one-shot 路由这条问题）。
+    // 走 mutateChat 重新 load 再改：上面 await（listTabs / driveAskSelect）期间别的流程可能也写过这个 chat，
+    // 直接 saveChat 整份旧对象会把它们的改动覆盖掉（lost update）。
+    await mutateChat(chatId, (c) => {
+      delete c.askArm;
+      if (c.pendingAnswerTty === tty) {
+        delete c.pendingAnswerTty;
+        delete c.pendingAnswerAt;
+      }
+    }).catch(() => {});
     const shown = label || arm.options[index] || `选项 ${index + 1}`;
     void patchOrigToReceipt(
       client,
       data,
-      `✓ 已选『${shown.length > 20 ? shown.slice(0, 20) + '…' : shown}』(↓×${index}+⏎) → ${tty}`,
+      `✓ 已选『${shown.length > 20 ? shown.slice(0, 20) + '…' : shown}』(${drove.how}) → ${tty}`,
     );
+    void flushAskHeld(client, chatId);
     return {};
   } finally {
     armInFlight.delete(claimKey);
@@ -1211,48 +1271,108 @@ async function dispatchSendToTab(
     return;
   }
 
-  // AskUserQuestion 方向键驱动：该 tab 正卡在 claude 原生选择菜单（askArm）+ 这条回复能映射到
-  // 某个选项（裸数字 / 选项文本）→ 用 sendKeys 发 (index)↓+回车 驱动菜单选中，而不是 do script
-  // 打文本（打文本移动不了高亮、选不中，历史 bug）。映射不出（改主意 / 自由输入 / 想 @ 别处）→
-  // 不劫持，照常落到下方文本注入（无回归）；本地已作答时 arm 已被 PostToolUse 清掉，也不会命中。
+  // AskUserQuestion 远程应答：该 tab 正卡在 claude 原生选择菜单（askArm）+ 这条回复能映射到
+  // 某个选项（裸数字 / 选项文本）→ driveAskSelect（默认 pty 写数字直选，锁屏可用）。映射不出 →
+  // **不注入**（pty 回车必提交，会被菜单吞掉并误选第 1 项）：取消口令按 Esc，其它文本暂存、菜单处理完补发；
+  // 本地已作答时 arm 已被 PostToolUse 清掉，不会命中（存件在下一条消息时补发）。
   // 仅对**用户直接回复**生效：chain/batch 编排步骤（有 batchInfo/chainInfo）是完整任务 prompt，
   // 不该被当成选项应答（即便碰巧是裸数字）。
   if (!batchInfo && !chainInfo) {
     const askChat = await loadChat(ctx.chatId).catch(() => null);
     const arm = askChat?.askArm;
-    if (arm && arm.tty === tab.tty && Date.now() - arm.at <= ASK_ARM_TTL_MS) {
-      const idx = resolveAskAnswerIndex(text, arm.options);
-      if (idx >= 0) {
-        // 与卡片选项路径共用同一 in-flight 键（arm.at），防卡片点选 + 文本应答并发双份注入。
-        const claimKey = `${ctx.chatId} ${tab.tty} ${arm.at}`;
-        if (armInFlight.has(claimKey)) {
-          await replyText(client, ctx, '正在处理上一次选择…').catch(() => {});
-          return;
-        }
-        armInFlight.add(claimKey);
-        try {
+    const armed = !!arm && arm.tty === tab.tty && Date.now() - arm.at <= ASK_ARM_TTL_MS;
+    // arm 已不在（本地作答 / 过期）→ 先把存件补发（flushAskHeld 内部按 held.tty 找 tab、自带过期/新菜单提示），
+    // 再继续发这条。递归不会死循环：flushAskHeld 取件是原子的，补发那次再进来时 askHeld 必为空。
+    // messageId 相等 = 正在处理的就是存件本身的补发，跳过。
+    if (!armed && askChat?.askHeld && askChat.askHeld.messageId !== ctx.messageId) {
+      await flushAskHeld(client, ctx.chatId, 0);
+    }
+    if (armed) {
+      // 三条 armed 路径（选中 / 取消 / 暂存）共用同一 in-flight 键（arm.at），也与卡片点选路径共用：
+      // 并发的两条消息只有一方进得来，杜绝双份按键打乱原生菜单、双份取件重复注入。
+      const claimKey = `${ctx.chatId} ${tab.tty} ${arm.at}`;
+      if (armInFlight.has(claimKey)) {
+        await replyText(client, ctx, '正在处理上一条应答…').catch(() => {});
+        return;
+      }
+      armInFlight.add(claimKey);
+      try {
+        const idx = resolveAskAnswerIndex(text, arm.options);
+        if (idx >= 0) {
+          let drove: Awaited<ReturnType<typeof driveAskSelect>>;
           try {
-            await sendKeys(tab.tty, buildDownEnterSeq(idx));
+            drove = await driveAskSelect(tab.tty, idx);
           } catch (e) {
             await replyText(client, ctx, `❌ 驱动选择菜单失败：${(e as Error).message}`).catch(() => {});
             return;
           }
-          delete askChat!.askArm;
-          if (askChat!.pendingAnswerTty === tab.tty) {
-            delete askChat!.pendingAnswerTty;
-            delete askChat!.pendingAnswerAt;
-          }
-          await saveChat(askChat!).catch(() => {});
+          await mutateChat(ctx.chatId, (c) => {
+            delete c.askArm;
+            if (c.pendingAnswerTty === tab.tty) {
+              delete c.pendingAnswerTty;
+              delete c.pendingAnswerAt;
+            }
+          }).catch(() => {});
           const label = arm.options[idx] ?? `选项 ${idx + 1}`;
           await replyText(
             client,
             ctx,
-            `✓ 已选『${label.length > 24 ? label.slice(0, 24) + '…' : label}』(↓×${idx}+⏎) → ${tab.tty}`,
+            `✓ 已选『${label.length > 24 ? label.slice(0, 24) + '…' : label}』(${drove.how}) → ${tab.tty}`,
+          ).catch(() => {});
+          void flushAskHeld(client, ctx.chatId);
+          return;
+        }
+        // 取消口令 → Esc 关掉菜单。Esc 只能走 System Events：锁屏时送不进终端但 osascript 照样返回 ok（假成功），
+        // 所以**只有确认没锁屏（=== false）才发**；true / null（ioreg 超时等读不到）一律保守拒绝，不假装成功。
+        if (isAskCancelWord(text)) {
+          const lockState = await isScreenLocked();
+          if (lockState !== false) {
+            await replyText(
+              client,
+              ctx,
+              lockState === true
+                ? `🔒 屏幕已锁定，Esc 送不进 ${tab.tty}；回数字选一项，或到电脑前按 Esc。`
+                : `❓ 读不到锁屏状态，不敢盲发 Esc（锁屏时会假装成功）；回数字选一项，或到电脑前按 Esc。`,
+            ).catch(() => {});
+            return;
+          }
+          try {
+            await sendKeys(tab.tty, 'esc');
+          } catch (e) {
+            await replyText(client, ctx, `❌ 关菜单失败：${(e as Error).message}`).catch(() => {});
+            return;
+          }
+          await mutateChat(ctx.chatId, (c) => { delete c.askArm; }).catch(() => {});
+          await replyText(client, ctx, `✓ 已按 Esc 关掉 ${tab.tty} 的选择菜单`).catch(() => {});
+          void flushAskHeld(client, ctx.chatId);
+          return;
+        }
+        // 映射不到选项的普通文本：**不注入**。pty 回车必提交 → 会被粘进菜单并默认选第 1 项、原话丢失
+        // （2026-09-07 当天发生 3 次）。暂存，菜单处理完自动补发；已有存件则覆盖（保留最新一句）。
+        // 超长文本不存：存件会明文落到 ./data/chats/<chatId>.json，截断又会毁掉补发的原文 → 不存并如实告知。
+        const locked = await isScreenLocked();
+        if (text.length > ASK_HELD_MAX_LEN) {
+          await replyText(
+            client,
+            ctx,
+            `⏸ ${tab.tty} 正在等你选（回数字选一项${locked === false ? '，或回「取消」关掉菜单' : ''}）。\n` +
+              `你这段太长（${text.length} 字），没有暂存；选完菜单后请重发。`,
           ).catch(() => {});
           return;
-        } finally {
-          armInFlight.delete(claimKey);
         }
+        const prev = await mutateChat(ctx.chatId, (c) => {
+          const before = c.askHeld;
+          c.askHeld = { text, at: Date.now(), messageId: ctx.messageId, tty: tab.tty, armAt: arm.at };
+          return before;
+        }).catch(() => undefined);
+        logger.info('askHeld: 菜单待答期间的非选项文本已暂存', { tty: tab.tty, len: text.length, replaced: !!prev });
+        const notice =
+          buildAskHoldNotice(tab.tty, arm.options, text, locked) +
+          (prev ? `\n（覆盖了上一句存件「${prev.text.slice(0, 20)}…」）` : '');
+        await replyText(client, ctx, notice).catch(() => {});
+        return;
+      } finally {
+        armInFlight.delete(claimKey);
       }
     }
   }
@@ -2375,7 +2495,7 @@ async function handleCardAction(
     return await buildBrowseReply(target, page);
   }
 
-  // AskUserQuestion 选项按钮：点了发方向键 (index)↓+回车 驱动源 shell 的原生选择菜单。
+  // AskUserQuestion 选项按钮：点了经 pty 写数字直选源 shell 的原生选择菜单（MCHAT_ASK_DRIVE=keys 退回方向键）。
   if (action === 'ask-select') {
     const tty = value['tty'] as string | undefined;
     const index = Number(value['index']);
@@ -2387,7 +2507,7 @@ async function handleCardAction(
   }
 
   // originShellPushCard 的下拉选择：
-  //  - `askans|<tty>|<index>` → AskUserQuestion 箭头菜单，方向键驱动（同 ask-select）
+  //  - `askans|<tty>|<index>` → AskUserQuestion 箭头菜单，pty 数字驱动（同 ask-select）
   //  - `answer|<tty>|<label>` → 老路径：把 label 打进源 shell（send-to-tab 语义）
   if (action === 'answer-select') {
     const option = data.action?.option;

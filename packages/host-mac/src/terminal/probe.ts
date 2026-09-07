@@ -3,7 +3,7 @@ import { runScript } from './applescript.js';
 /**
  * 探测 System Events 的 AppleScript 术语解析是否正常。
  *
- * sendKeys（方向键驱动 AskUserQuestion / Ctrl-C 解卡 / Cmd-W 关 tab）以及 forceEnter 的
+ * sendKeys（Ctrl-C 解卡 / Esc 关菜单 / Cmd-W 关 tab；选项作答默认已改 pty 数字）以及 forceEnter 的
  * `MCHAT_ENTER_MODE=keystroke` 兜底模式都靠 `key code`（System Events 专有术语）发真按键。
  * 若 System Events 被挂起（进程 T 态）/ LaunchServices 注册损坏 / 术语字典加载失败，`key code` 会在
  * **编译期**就报语法错 → 这些按键注入静默失败。
