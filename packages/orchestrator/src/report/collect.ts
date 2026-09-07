@@ -5,6 +5,8 @@ import { join } from 'node:path';
 import { logger } from '../logger.js';
 import { memoryStore } from '../memory/store.js';
 import type { TaskMemory } from '../memory/types.js';
+import { beijingDateOf, beijingPartsOf, parseYmd, type DateParts } from './args.js';
+import type { ReportWindow } from './types.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -25,7 +27,8 @@ async function mapLimit<T, R>(items: T[], concurrency: number, fn: (item: T) => 
 /** 报告采集扫仓库的并发上限（每仓库还会派生数次 git 子进程，控总量）。 */
 const REPO_SCAN_CONCURRENCY = 16;
 
-export type ReportWindow = 'day' | 'week' | 'month' | 'year';
+// 类型定义在 ./types.js（见那里的注释）；这里 re-export 保持既有 import 路径不变
+export type { ReportWindow } from './types.js';
 
 export interface GitCommit {
   repo: string;      // repo basename
@@ -50,7 +53,7 @@ export interface CollectedWork {
   commits: GitCommit[];
   /** 任务记忆（本工具跑过的任务）：prompt + 摘要 */
   tasks: { prompt: string; summary?: string; cwd: string; endedAt: number }[];
-  /** 未提交改动（仅当前周期 prev=false 时采集；上周期报告为空数组）。 */
+  /** 未提交改动（prev=false 时采集，按 mtime 限定在时间窗内；prev=true 为空数组）。 */
   uncommitted: UncommittedRepo[];
 }
 
@@ -119,40 +122,67 @@ export function dedupeReportTasks(mems: TaskMemory[]): TaskMemory[] {
 
 /**
  * 北京时区时间窗。
- *  - prev=false（默认）：当前周期起点 → 现在（day=今天0点 / week=本周一 / month=本月1号 / year=今年1月1号）
- *  - prev=true：上一个**完整**周期（定时周报/月报用：周一报上周、月初报上月）
+ *  - prev=false（默认）：锚点所在周期的起点 → 现在（周期未结束时）或周期末（补历史时）
+ *  - prev=true：锚点所在周期的**上一个完整**周期（定时周报/月报用：周一报上周、月初报上月）
+ *  - anchor：'YYYY-MM-DD'（北京时区日历日），缺省 = 今天 → 与历史行为完全一致。
+ *    给了历史日期就出那一天/那一周/那个月的报告（补日报用）；格式不合法则回退到今天并 warn。
+ *    **调用约定**：anchor 必须先过 `parseReportArgs`/`parseYmd` 校验，不要把未校验的用户原文
+ *    直接塞进来——非法分支会把它原样写进日志。
  */
-export function reportWindow(kind: ReportWindow, prev = false): { since: Date; until: Date; sinceLabel: string; untilLabel: string } {
-  const fmt = (d: Date) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(d);
-  const now = new Date();
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', weekday: 'short',
-  }).formatToParts(now);
-  const g = (t: string) => parts.find((p) => p.type === t)?.value ?? '';
-  const y = Number(g('year')); const m = Number(g('month')); const d = Number(g('day'));
-  const dowMap: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
-  const dow = dowMap[g('weekday')] ?? 1;
-  // 北京 00:00 = UTC 前一天 16:00 → Date.UTC(y,m-1,d,-8)
-  const bj = (yy: number, mm: number, dd: number) => new Date(Date.UTC(yy, mm - 1, dd, -8, 0, 0));
+export function reportWindow(
+  kind: ReportWindow,
+  prev = false,
+  anchor?: string,
+  now: Date = new Date(),
+): { since: Date; until: Date; sinceLabel: string; untilLabel: string } {
+  let base = beijingPartsOf(now);
+  if (anchor) {
+    const p = parseYmd(anchor);
+    if (p) base = p;
+    else logger.warn('reportWindow: 锚点日期不合法，回退到今天', { anchor: anchor.slice(0, 40) });
+  }
 
-  // 当前周期起点
-  let curStart: Date;
-  if (kind === 'day') curStart = bj(y, m, d);
-  else if (kind === 'week') curStart = new Date(bj(y, m, d).getTime() - ((dow + 6) % 7) * 86400_000);
-  else if (kind === 'month') curStart = bj(y, m, 1);
-  else curStart = bj(y, 1, 1);
+  // 锚点所在周期 [start, end)，再按 prev 回退一个周期
+  let span = spanOf(kind, base);
+  if (prev) span = spanOf(kind, beijingPartsOf(new Date(span.start.getTime() - 86400_000)));
 
-  if (!prev) return { since: curStart, until: now, sinceLabel: fmt(curStart), untilLabel: fmt(now) };
+  // 锚点在未来：算得出窗口但必然是空报告。调用方（飞书 /report）已用 parseReportArgs.future
+  // 提前拒绝；这里补一条不阻断的 warn，防止将来新入口漏了那道校验、静默产出误导性空报告。
+  if (span.start.getTime() > now.getTime()) {
+    logger.warn('reportWindow: 锚点落在未来，报告将为空', { kind, anchor, sinceLabel: beijingDateOf(span.start) });
+  }
 
-  // 上一个完整周期：[prevStart, curStart)
-  let prevStart: Date;
-  if (kind === 'day') prevStart = new Date(curStart.getTime() - 86400_000);
-  else if (kind === 'week') prevStart = new Date(curStart.getTime() - 7 * 86400_000);
-  else if (kind === 'month') prevStart = m === 1 ? bj(y - 1, 12, 1) : bj(y, m - 1, 1);
-  else prevStart = bj(y - 1, 1, 1);
-  // untilLabel 用 curStart 前一天更直观（区间是左闭右开到 curStart）
-  const untilLbl = fmt(new Date(curStart.getTime() - 86400_000));
-  return { since: prevStart, until: curStart, sinceLabel: fmt(prevStart), untilLabel: untilLbl };
+  // 周期未结束（含"当期"）→ 收到 now；已结束（补历史）→ 收到周期末
+  // 起点用 >=：恰好在北京 00:00:00.000 调用时也算"当期"，不会把 untilLabel 显示成未来日期
+  const openEnded = now.getTime() >= span.start.getTime() && now.getTime() < span.end.getTime();
+  const until = openEnded ? now : span.end;
+  // 区间左闭右开：已结束周期的 untilLabel 用周期末前一天，读起来才是"到那天为止"
+  const untilLabel = openEnded ? beijingDateOf(until) : beijingDateOf(new Date(span.end.getTime() - 86400_000));
+  return { since: span.start, until, sinceLabel: beijingDateOf(span.start), untilLabel };
+}
+
+/** 北京 00:00 = UTC 前一天 16:00 → Date.UTC(y, m-1, d, -8) */
+function bjMidnight(y: number, m: number, d: number): Date {
+  return new Date(Date.UTC(y, m - 1, d, -8, 0, 0));
+}
+
+/** 含 base 这一天的 kind 周期区间 [start, end)（end 为下一周期起点，左闭右开）。 */
+function spanOf(kind: ReportWindow, base: DateParts): { start: Date; end: Date } {
+  const { y, m, d } = base;
+  if (kind === 'day') {
+    const start = bjMidnight(y, m, d);
+    return { start, end: new Date(start.getTime() + 86400_000) };
+  }
+  if (kind === 'week') {
+    // 周一为起点；getUTCDay 对"纯日历日"载体即该日星期（0=周日）
+    const dow = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+    const start = new Date(bjMidnight(y, m, d).getTime() - ((dow + 6) % 7) * 86400_000);
+    return { start, end: new Date(start.getTime() + 7 * 86400_000) };
+  }
+  if (kind === 'month') {
+    return { start: bjMidnight(y, m, 1), end: m === 12 ? bjMidnight(y + 1, 1, 1) : bjMidnight(y, m + 1, 1) };
+  }
+  return { start: bjMidnight(y, 1, 1), end: bjMidnight(y + 1, 1, 1) };
 }
 
 /** 从全局 git config 拿身份（name + email），用于跨 repo 过滤"我的"提交。 */
@@ -286,8 +316,10 @@ export async function collectWorkData(opts: {
   gitAuthors?: string[];
   /** true → 采上一个完整周期（定时周报/月报用）。 */
   prev?: boolean;
+  /** 'YYYY-MM-DD' 日期锚点（北京时区）；缺省 = 当天/当期。补历史日报用。 */
+  anchor?: string;
 }): Promise<CollectedWork> {
-  const { since, until, sinceLabel, untilLabel } = reportWindow(opts.window, opts.prev ?? false);
+  const { since, until, sinceLabel, untilLabel } = reportWindow(opts.window, opts.prev ?? false, opts.anchor);
   const gitAuthors = opts.gitAuthors && opts.gitAuthors.length ? opts.gitAuthors : await detectGitAuthors();
 
   const commitLists = await mapLimit(opts.repos, REPO_SCAN_CONCURRENCY, (r) => gitLog(r, since, until, gitAuthors));
@@ -302,7 +334,9 @@ export async function collectWorkData(opts: {
     .sort((a, b) => a.endedAt - b.endedAt)
     .map((mem) => ({ prompt: mem.prompt, summary: mem.summary, cwd: mem.cwd, endedAt: mem.endedAt }));
 
-  // 未提交改动只对「当前周期」有意义（是 now 的快照）；定时上周期报告（prev=true）不采。
+  // 未提交改动是 now 的快照，但已按文件 mtime 落在 [since, until] 内过滤 →
+  // 补历史日报（anchor 指过去某天）时同样有效：那天动过、至今仍没 commit 的活算进行中。
+  // 定时上周期报告（prev=true）沿用旧行为不采（那批活多半早已 commit，快照对不上）。
   let uncommitted: UncommittedRepo[] = [];
   if (!(opts.prev ?? false)) {
     const lists = await mapLimit(opts.repos, REPO_SCAN_CONCURRENCY, (r) => gitUncommitted(r, since, until));

@@ -3669,27 +3669,31 @@ export function buildEventDispatcher(client: Lark.Client): Lark.EventDispatcher 
         if (cmdName === 'report' || cmdName === 'rp') {
           (async () => {
             try {
-              const rest = text.trim().slice(cmdName.length + 1).trim().toLowerCase();
-              const brief = /(--brief|简报)/.test(rest);
-              const window: 'day' | 'week' | 'month' | 'year' =
-                rest.startsWith('d') || rest.includes('日') ? 'day'
-                : rest.startsWith('m') || rest.includes('月') ? 'month'
-                : rest.startsWith('y') || rest.includes('年') ? 'year'
-                : 'week';
-              const wLabel = { day: '日报', week: '周报', month: '月报', year: '年报' }[window];
+              const rest = text.trim().slice(cmdName.length + 1).trim();
               const hm = await import('multiagent-host-mac');
               const orch = await import('multiagent-orchestrator');
-              // 报告候选仓库（dir-index 全量 ∪ tab/最近/worktasks）；下游按时间窗+mtime 过滤只留今天有活动的。
+              // 周期 + 日期锚点（'昨天' / '2026-09-01' / '2026-08'…）；没给日期 = 当天/当期
+              const args = orch.parseReportArgs(rest);
+              const { window, brief } = args;
+              const wLabel = { day: '日报', week: '周报', month: '月报', year: '年报' }[window];
+              if (args.future) {
+                void sendText(client, chat_id, `❌ ${args.anchor} 还没到，出不了报告。用法：\`/report day 昨天\` / \`/report 2026-09-01\` / \`/report week 上周\``);
+                return;
+              }
+              // 报告候选仓库（dir-index 全量 ∪ tab/最近/worktasks）；下游按时间窗+mtime 过滤只留窗内有活动的。
               const repos = await hm.activeReportRepos().catch(() => [] as string[]);
-              const collect = () => orch.collectWorkData({ window, repos });
+              const collect = () => orch.collectWorkData(args.anchor ? { window, repos, anchor: args.anchor } : { window, repos });
               const asPptx = (window === 'month' || window === 'year') && !brief;
-              void sendText(client, chat_id, `📊 ${wLabel}${asPptx ? '(PPT)' : '简报'}生成中…（采集 git+任务记忆 → claude 合成，约 30-60s）`);
+              const w = orch.reportWindow(window, false, args.anchor);
+              const spanLabel = orch.spanLabelOf(w);
+              const hint = args.unknown.length ? `\n（没认出：${args.unknown.join(' ')}；日期可写 昨天 / 2026-09-01 / 2026-08）` : '';
+              void sendText(client, chat_id, `📊 ${wLabel}（${spanLabel}）${asPptx ? 'PPT' : '简报'}生成中…（采集 git+任务记忆 → claude 合成，约 30-60s）${hint}`);
               if (asPptx) {
                 const out = `/tmp/mchat-report-${window}-${Date.now()}.pptx`;
                 const { path } = await orch.generatePptxReport(collect, out, '郑纪泉');
                 const { sendFile } = await import('./api.js');
                 await sendFile(client, chat_id, path);
-                void sendText(client, chat_id, `✅ ${wLabel} PPT 已生成（想要简报版发 \`/report ${window} --brief\`）`);
+                void sendText(client, chat_id, `✅ ${wLabel} PPT 已生成（想要简报版发 \`/report ${window}${args.anchor ? ' ' + args.anchor : ''} --brief\`）`);
               } else {
                 const { markdown } = await orch.generateBrief(collect);
                 await sendText(client, chat_id, markdown);

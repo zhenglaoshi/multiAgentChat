@@ -7,6 +7,14 @@ const CLAUDE_TIMEOUT_MS = 180_000; // claude -p 冷启动可能慢
 
 const WINDOW_LABEL: Record<ReportWindow, string> = { day: '日报', week: '周报', month: '月报', year: '年报' };
 
+/**
+ * 时间窗文案：单日（日报/补历史日报）只写一个日期，跨日才写 a~b。
+ * 导出给飞书侧「生成中」提示复用（原先那边各写一份，改格式易漏改）。
+ */
+export function spanLabelOf(data: { sinceLabel: string; untilLabel: string }): string {
+  return data.sinceLabel === data.untilLabel ? data.sinceLabel : `${data.sinceLabel} ~ ${data.untilLabel}`;
+}
+
 /** 把未提交改动拼成给 claude 的文本块。 */
 function uncommittedBlockOf(data: CollectedWork): string {
   if (!data.uncommitted.length) return '（无未提交改动）';
@@ -36,8 +44,9 @@ export function buildBriefPrompt(data: CollectedWork): string {
     : '（无）';
   const uncommittedBlock = uncommittedBlockOf(data);
 
+  const span = spanLabelOf(data);
   return [
-    `你是我的工作总结助手。基于下面「${data.sinceLabel} ~ ${data.untilLabel}」我的真实工作数据，写一份**${label}简报**。`,
+    `你是我的工作总结助手。基于下面「${span}」我的真实工作数据，写一份**${label}简报**。`,
     ``,
     `# git 提交（按仓库分组，${data.commits.length} 条）`,
     commitBlock,
@@ -54,7 +63,7 @@ export function buildBriefPrompt(data: CollectedWork): string {
     `- 结构固定三段、段名加粗：**主要工作**（1. 2. 3. 逐条，按项目/主题归纳，不要逐条罗列 commit）→ **产出/进展**（关键成果/数字，短横线即可）→ **遗留/下一步**（若能看出）。`,
     `- 「未提交改动」是还没 commit 的活，算**进行中**：在对应条目标注「进行中/未提交」，别当已完成产出。`,
     `- 只根据上面数据，别编造；数据少就如实简短。`,
-    `- 顶部标题保留 \`## ${label}（${data.sinceLabel}~${data.untilLabel}）\`。直接输出中文 markdown 正文，不要前言/解释/代码围栏。`,
+    `- 顶部标题保留 \`## ${label}（${span}）\`。直接输出中文 markdown 正文，不要前言/解释/代码围栏。`,
   ].join('\n');
 }
 
@@ -112,7 +121,7 @@ function buildStructuredPrompt(data: CollectedWork): string {
     : '（无）';
   const uncommittedBlock = uncommittedBlockOf(data);
   return [
-    `你是我的工作总结助手。基于「${data.sinceLabel} ~ ${data.untilLabel}」我的真实工作数据，生成一份 **${label}** 的分节内容，用于做 PPT。`,
+    `你是我的工作总结助手。基于「${spanLabelOf(data)}」我的真实工作数据，生成一份 **${label}** 的分节内容，用于做 PPT。`,
     ``,
     `# git 提交（按仓库，${data.commits.length} 条）`, commitBlock,
     ``, `# 未提交改动（进行中，${data.uncommitted.length} 个仓库）`, uncommittedBlock,
@@ -162,7 +171,7 @@ export async function generatePptxReport(
   const repos = new Set(data.commits.map((c) => c.repo));
   const doc: ReportDoc = {
     title: `${data.sinceLabel.slice(0, data.window === 'year' ? 4 : 7)} ${WINDOW_LABEL[data.window]}`,
-    period: `${data.sinceLabel} ~ ${data.untilLabel}`,
+    period: spanLabelOf(data),
     stats: [
       { label: 'git 提交', value: String(data.commits.length) },
       { label: '涉及仓库', value: String(repos.size) },
