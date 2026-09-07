@@ -11,18 +11,17 @@ const PROBE_INTERVAL_MS = 120_000;
 const REALERT_INTERVAL_MS = 30 * 60_000;
 
 const ALERT_BROKEN =
-  '🚨 System Events 术语解析挂了 —— 飞书注入的命令不会自动回车提交！\n\n' +
-  '现象：@tab 发的命令停在命令行，claude/终端没真正执行。\n' +
-  '原因：forceEnter 靠 `key code 36` 发 Enter，而 System Events 被挂起或注册损坏，' +
-  'osascript 连术语都加载不了（常见诱因：Mac 过载、长时间没重启）。\n\n' +
-  '修复：重启 Mac（最稳，顺带解过载），或先试 `sudo killall appleeventsd`。\n' +
-  '⚠️ 修好前从飞书发的命令都不会真正跑起来，别依赖。';
+  '🚨 System Events 术语解析挂了 —— 按键注入会失败（方向键选选项 / Ctrl-C 解卡 / 关 tab）！\n\n' +
+  '不受影响：飞书注入命令的回车提交默认走 pty 直写，照常执行（除非你设了 MCHAT_ENTER_MODE=keystroke）。\n' +
+  '原因：System Events 被挂起或注册损坏，osascript 连 `key code` 术语都加载不了' +
+  '（常见诱因：Mac 过载、长时间没重启）。\n\n' +
+  '修复：重启 Mac（最稳，顺带解过载），或先试 `sudo killall appleeventsd`。';
 
 const ALERT_RECOVERED =
-  '✅ System Events 术语已恢复 —— 飞书注入的命令能正常回车提交了。';
+  '✅ System Events 术语已恢复 —— 方向键 / Ctrl-C 等按键注入恢复可用。';
 
 /**
- * 后台自检 System Events 术语通路（forceEnter 的 `key code` 依赖）。
+ * 后台自检 System Events 术语通路（sendKeys 按键注入 + forceEnter keystroke 兜底模式的 `key code` 依赖）。
  *
  * 只在状态**翻转**时推送，避免刷屏：
  *  - 正常 → 故障：立刻向所有 chat 大声报警；持续故障每 30min 再提醒

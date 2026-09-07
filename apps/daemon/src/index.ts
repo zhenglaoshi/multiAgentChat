@@ -21,6 +21,7 @@ import { logger } from 'multiagent-orchestrator';
 import { startHealthCheck } from 'multiagent-im-lark';
 import { startSystemEventsProbe } from 'multiagent-im-lark';
 import { startHostPermissionProbe } from 'multiagent-im-lark';
+import { startLidAwakeProbe } from 'multiagent-im-lark';
 import { startTapdWatcher } from 'multiagent-im-lark';
 import { startPerfWatcher } from 'multiagent-im-lark';
 import { startCareyclawKeyReminder } from 'multiagent-im-lark';
@@ -676,7 +677,11 @@ async function dispatchWeComMessage(
   }
   if (tab.hasTUI) {
     await new Promise((r) => setTimeout(r, 400));
-    await forceEnter(tab.tty);
+    const fe = await forceEnter(tab.tty).catch((e: Error) => {
+      logger.warn('wecom send: forceEnter failed', { tty: tab.tty, err: e.message });
+      return undefined;
+    });
+    if (fe) logger.info('wecom send: forceEnter sent', { tty: tab.tty, ok: fe.ok, blocked: fe.blocked, via: fe.via });
   }
 
   // 更新 chat state：activeTty + recentReplyTty
@@ -758,7 +763,11 @@ async function dispatchWeComPlainToTab(
   }
   if (tab.hasTUI) {
     await new Promise((r) => setTimeout(r, 400));
-    await forceEnter(tab.tty);
+    const fe = await forceEnter(tab.tty).catch((e: Error) => {
+      logger.warn('wecom card send: forceEnter failed', { tty: tab.tty, err: e.message });
+      return undefined;
+    });
+    if (fe) logger.info('wecom card send: forceEnter sent', { tty: tab.tty, ok: fe.ok, blocked: fe.blocked, via: fe.via });
   }
   const now = Date.now();
   chatState.recentReplyTty = tab.tty;
@@ -1462,6 +1471,7 @@ async function main() {
   startHealthCheck(lark.client);
   startSystemEventsProbe(lark.client);
   startHostPermissionProbe(lark.client);
+  startLidAwakeProbe(lark.client); // 笔记本没装「插电合盖不睡」守护 → 推飞书提示（3 天一次）
   startTapdWatcher(
     lark.client,
     wecom

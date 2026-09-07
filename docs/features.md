@@ -262,17 +262,27 @@ EOF
 - 你希望 remote 时 Mac idle 不睡（默认开）
 - Mac 在跑长 SOP，出门后你不希望它睡了断 WS
 
-### ⚠️ 硬性限制：合盖 macOS 强制睡
+### 合盖睡眠：caffeinate 拦不住，`pmset disablesleep` 拦得住
 
-**软件层无解**：
-- `caffeinate` / `IOPMAssertionCreateWithName` / **Amphetamine 的 "Closed-Display Mode"** 全都**不能**真的阻止合盖睡眠
-- Amphetamine 的机制跟 caffeinate 一样，只影响 idle sleep 断言；合盖是 kernel + 固件层的独立行为
-- InsomniaX 类 kext 在现代 macOS SIP 下装不上
-- `pmset` 里各种参数（`lidwake` / `standby`）只调整**从睡眠恢复**行为，不阻止睡眠本身
+- `caffeinate` / IOPM 断言只影响 **idle sleep**；合盖是独立的强制睡眠路径，断言拦不住
+- 但 `sudo pmset -a disablesleep 1`（生效值见 `pmset -g` 的 `SleepDisabled`）是系统级「禁止睡眠」，**合盖也不睡**——只灭屏 + 锁屏，Wi-Fi / daemon 都在。它是全局的、不分电源（`-c/-b` 无效），所以直接开着=拔电放包里也不睡（发热耗电）
+- `pmset lidwake` / `standby` 只调「从睡眠恢复」的行为，跟阻止睡眠无关
 
-**真能合盖不睡的 3 条路**：
+**推荐：`sudo scripts/lid-awake.sh install`（插电合盖不睡，拔电自动恢复）**
 
-1. **HDMI ghost plug 假显示器**（推荐给远程场景，5-15 元）
+- 装一个 root LaunchDaemon（`com.multiagent-chat.lid-awake`，`bin/mchat-lid-awake` 被复制到 `/usr/local/libexec/` 由 root 跑）：每 10s 看电源来源，**插电 → disablesleep 1，用电池 → 0**；守护退出时也恢复 0
+- 独立于 chat daemon：chat daemon 挂了它照样把「拔电→恢复睡眠」做对
+- 配合 2026-09-07 的「回车 pty 直写」修复，锁屏状态下手机发的命令照常执行
+- ✅ 2026-09-07 真机验证（守护已装、合盖、且前台压着一个系统模态弹框）：飞书发普通指令 → 回车提交执行 ✅；AskUserQuestion 原生菜单飞书作答两轮 ✅。自测法见 [installation.md「笔记本合盖守护」](installation.md#笔记本合盖也要能远程装一次守护)
+- `scripts/lid-awake.sh status|log` 看状态；`sudo scripts/lid-awake.sh uninstall` 卸载并恢复 0
+- ⚠ disablesleep=1 期间「苹果菜单 → 睡眠」也不会睡；要睡就拔电，或 uninstall
+- ⚠ 安全语义：合盖不睡 = 无人值守时机器持续联网、可远程操控，暴露窗口比默认更长；只在需要远程的机器装，公共网络配防火墙，Web Dashboard 设强 token
+- `agent doctor` 的「合盖远程」项会区分：未装 / plist 在但 launchd 没在跑 / 在跑但插电下 SleepDisabled 仍为 0 / 正常
+- 环境变量：`MCHAT_LID_AWAKE_INTERVAL`（轮询秒，默认 10）、`MCHAT_LID_AWAKE_DRY_RUN=1`（只打印不改，普通用户可跑着看逻辑）
+
+**其它路（不想改电源设置时）**：
+
+1. **HDMI ghost plug 假显示器**（5-15 元）
    - 小 dongle 插 HDMI / USB-C 口，macOS 认为外接了显示器
    - 加 AC 电源 + BT 键鼠（或额外 HID）→ 满足 macOS clamshell mode 条件
    - 合盖后 Mac 依然认为"有外接屏"，不睡
@@ -293,7 +303,7 @@ EOF
 ```
 agent doctor
 ```
-`caffeinate (防休眠)` 那行应显示 `pass` + PID。
+`caffeinate (防休眠)` 那行应显示 `pass` + PID；`合盖远程 (插电不睡)` 那行装了守护后应 `pass`。
 
 ---
 

@@ -14,3 +14,4 @@ export * from './report-repos.js';
 export * from './bookmarks.js';
 export * from './git.js';
 export * from './task-workspace.js';
+export * from './lid-awake.js';

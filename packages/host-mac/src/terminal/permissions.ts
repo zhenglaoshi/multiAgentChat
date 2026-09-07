@@ -61,7 +61,7 @@ export const HOST_PERMISSION_SPECS: HostPermissionSpec[] = [
     severity: 'critical',
     affects: [
       '与 System Events 通信 —— 所有按键注入的前置',
-      '缺了 forceEnter / Ctrl-C / 关 tab 全部报 -1743 失败',
+      '缺了方向键选选项 / Ctrl-C / 关 tab 全部报 -1743 失败（回车提交默认走 pty 直写，不受影响）',
     ],
     grantSteps: [
       '打开「系统设置 → 隐私与安全性 → 自动化」',

@@ -1,0 +1,101 @@
+#!/bin/bash
+# multiAgentChat · 合盖远程守护（root LaunchDaemon 跑）：
+#   插电（AC）  → pmset -a disablesleep 1   合盖只灭屏+锁屏、系统不睡，Wi-Fi / daemon 都在，手机照常远程执行
+#   用电池      → pmset -a disablesleep 0   恢复 macOS 默认合盖睡眠，拔电放包里不会发热耗电
+#
+# 只做一件事：每 INTERVAL 秒读一次电源来源，跟当前 SleepDisabled 不一致才调 pmset。
+# 退出（SIGTERM/SIGINT，比如 launchctl bootout）时恢复 disablesleep 0 —— 守护不在了就回到系统默认，别把机器留在「永不睡」。
+#
+# 停用语义：plist 是 KeepAlive=true，SIGTERM/kill 只会让它恢复 disablesleep 0 后被 launchd 在 10s 内拉起、
+# 按当时电源重新收敛——要真正停用必须 `sudo scripts/lid-awake.sh uninstall`（或 launchctl bootout）。
+# 被 SIGKILL 时 trap 跑不到，最坏残留 disablesleep=1 一个 ThrottleInterval（10s），重启后第一轮即收敛。
+#
+# 全部外部命令走绝对路径：root 守护不该依赖 PATH（/usr/local/bin 常被 Homebrew 放成普通用户可写）。
+#
+# 安装/卸载/状态：sudo scripts/lid-awake.sh install|uninstall|status|log
+# 环境变量：
+#   MCHAT_LID_AWAKE_INTERVAL=10   轮询秒数
+#   MCHAT_LID_AWAKE_DRY_RUN=1     只打印不真调 pmset（本地测逻辑用，普通用户也能跑）
+set -u
+
+INTERVAL="${MCHAT_LID_AWAKE_INTERVAL:-10}"
+DRY_RUN="${MCHAT_LID_AWAKE_DRY_RUN:-0}"
+PMSET=/usr/bin/pmset
+AWK=/usr/bin/awk
+DATE=/bin/date
+SLEEP=/bin/sleep
+
+# INTERVAL 必须是正整数，否则 sleep 立刻报错 → 循环变忙轮询；非法就回默认 10
+case "$INTERVAL" in
+  ''|*[!0-9]*|0) INTERVAL=10 ;;
+esac
+
+log() { printf '%s %s\n' "$($DATE '+%Y-%m-%d %H:%M:%S')" "$*"; }
+
+# 'AC Power' / 'Battery Power' / 'UPS Power' → ac | battery | unknown
+# 用 awk NR==1 取首行（不用 head -1：避免上游被 SIGPIPE 的时序假设）
+power_source() {
+  local line
+  line="$($PMSET -g batt 2>/dev/null | $AWK 'NR==1 {print; exit}')"
+  case "$line" in
+    *"AC Power"*) echo ac ;;
+    *"Battery Power"*) echo battery ;;
+    *"UPS Power"*) echo ac ;;
+    *) echo unknown ;;
+  esac
+}
+
+# 当前 SleepDisabled：1 / 0（没这一行 = 0）。注意它只出现在 `pmset -g`（生效值），`pmset -g custom` 里没有
+sleep_disabled() {
+  local v
+  v="$($PMSET -g 2>/dev/null | $AWK '$1=="SleepDisabled" {print $2; exit}')"
+  [ "$v" = "1" ] && echo 1 || echo 0
+}
+
+apply() { # $1 = 0|1
+  if [ "$DRY_RUN" = "1" ]; then
+    log "[dry-run] would run: pmset -a disablesleep $1"
+    return 0
+  fi
+  if $PMSET -a disablesleep "$1"; then
+    log "applied: pmset -a disablesleep $1"
+  else
+    log "ERROR: pmset -a disablesleep $1 failed (need root?)"
+    return 1
+  fi
+}
+
+restore_and_exit() {
+  log "exiting → restore disablesleep 0 (system default)"
+  if [ "$(sleep_disabled)" = "1" ]; then
+    apply 0 || { $SLEEP 1; apply 0 || log "WARN: restore failed twice — disablesleep may stay 1 until next start"; }
+  fi
+  exit 0
+}
+trap restore_and_exit TERM INT HUP
+
+if [ "$DRY_RUN" != "1" ] && [ "$(id -u)" -ne 0 ]; then
+  log "ERROR: must run as root (LaunchDaemon) — or set MCHAT_LID_AWAKE_DRY_RUN=1 to test"
+  exit 1
+fi
+
+log "start: interval=${INTERVAL}s dry_run=${DRY_RUN} source=$(power_source) sleep_disabled=$(sleep_disabled)"
+last_src=""
+while :; do
+  src="$(power_source)"
+  cur="$(sleep_disabled)"
+  case "$src" in
+    ac)      want=1 ;;
+    battery) want=0 ;;
+    *)       want="$cur" ;;   # 读不到就别动
+  esac
+  if [ "$src" != "$last_src" ]; then
+    log "power source: ${last_src:-?} → $src (sleep_disabled=$cur, want=$want)"
+    last_src="$src"
+  fi
+  if [ "$want" != "$cur" ]; then
+    apply "$want" || true
+  fi
+  $SLEEP "$INTERVAL" &
+  wait $!
+done

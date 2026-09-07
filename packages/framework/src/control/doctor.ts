@@ -4,7 +4,7 @@ import { readdir } from 'node:fs/promises';
 import { connect } from 'node:net';
 import { homedir, platform } from 'node:os';
 import { join } from 'node:path';
-import { detectHostPermissions, getHostPermissionSpec } from 'multiagent-host-mac';
+import { detectHostPermissions, detectLidAwake, getHostPermissionSpec, LID_AWAKE_INSTALL_CMD } from 'multiagent-host-mac';
 
 /** 用 spawn（非 execSync）跑外部命令，避免 tsx 里 execSync spawnSync ETIMEDOUT 坑 */
 function runCommand(
@@ -359,7 +359,79 @@ async function runCaffeinate(): Promise<DoctorResult> {
     severity: 'optional',
     status: 'warn',
     message: '未找到跟随 daemon 的 caffeinate 进程',
-    hint: 'daemon 应该自动 spawn；如没有，先 pkill tsx + 重启 pnpm dev。合盖睡眠 macOS 强制，任何软件方案无解',
+    hint: 'daemon 应该自动 spawn；如没有，先 pkill tsx + 重启 pnpm dev。合盖睡眠见下一项「合盖远程」',
+  };
+}
+
+/**
+ * 「插电合盖也能远程」守护（`sudo scripts/lid-awake.sh install` 装的 root LaunchDaemon）：
+ * 插电 → pmset disablesleep 1（合盖只灭屏锁屏、不睡），拔电 → 0（恢复默认）。
+ * 只读检查：plist 在不在 + 当前 SleepDisabled（只在 `pmset -g` 里）+ 电源来源。
+ *  - 装了 → pass
+ *  - 没装但 SleepDisabled=1（手动 `pmset -a disablesleep 1`）→ warn：拔电放包里也不睡
+ *  - 没装 → warn 带装法
+ */
+async function runLidAwake(): Promise<DoctorResult> {
+  const name = '合盖远程 (插电不睡)';
+  if (platform() !== 'darwin') {
+    return { name, severity: 'optional', status: 'skip', message: '非 macOS' };
+  }
+  const st = await detectLidAwake();
+  const sd = st.sleepDisabled === null ? '?' : st.sleepDisabled ? '1' : '0';
+  const state = `电源=${st.powerSource} SleepDisabled=${sd}`;
+  if (!st.isLaptop) {
+    return { name, severity: 'optional', status: 'skip', message: `台式机 / 无内置电池，不存在合盖问题（${state}）` };
+  }
+  if (st.installed) {
+    if (!st.running) {
+      return {
+        name,
+        severity: 'optional',
+        status: 'warn',
+        message: `守护 plist 在，但 launchd 里没在跑（${state}）—— 合盖照样会睡`,
+        hint: `重装一次：${LID_AWAKE_INSTALL_CMD}；或 scripts/lid-awake.sh status 看日志`,
+      };
+    }
+    if (st.powerSource === 'ac' && st.sleepDisabled === false) {
+      return {
+        name,
+        severity: 'optional',
+        status: 'warn',
+        message: `守护在跑，但插电状态下 SleepDisabled 还是 0（${state}）—— 可能刚插电不到 10s，稍后再查`,
+        hint: 'scripts/lid-awake.sh log 看守护是否报 pmset 失败',
+      };
+    }
+    if (st.powerSource === 'battery' && st.sleepDisabled === true) {
+      return {
+        name,
+        severity: 'optional',
+        status: 'warn',
+        message: `守护在跑，但用电池时 SleepDisabled 还是 1（${state}）—— 该恢复默认睡眠却没恢复，放包里会不睡`,
+        hint: 'scripts/lid-awake.sh log 看 pmset -a disablesleep 0 是否反复失败；应急：sudo pmset -a disablesleep 0',
+      };
+    }
+    return {
+      name,
+      severity: 'optional',
+      status: 'pass',
+      message: `守护在跑：插电合盖不睡 / 拔电恢复默认（${state}）`,
+    };
+  }
+  if (sd === '1') {
+    return {
+      name,
+      severity: 'optional',
+      status: 'warn',
+      message: `全局 disablesleep=1，但没装随电源自动切换的守护（${state}）`,
+      hint: `拔电放包里也不会睡（发热耗电）→ ${LID_AWAKE_INSTALL_CMD}（插电才禁睡），或 sudo pmset -a disablesleep 0`,
+    };
+  }
+  return {
+    name,
+    severity: 'optional',
+    status: 'warn',
+    message: `未装（${state}）—— 合盖即睡、Wi-Fi 断，手机发的命令收不到`,
+    hint: `${LID_AWAKE_INSTALL_CMD}（插电合盖不睡；拔电自动恢复默认睡眠）`,
   };
 }
 
@@ -503,6 +575,7 @@ export async function runDoctor(opts: { repoRoot?: string } = {}): Promise<Docto
   results.push(...(await runHostPermissions()));
   results.push(await runSocketAndLark());
   results.push(await runCaffeinate());
+  results.push(await runLidAwake());
   results.push(await runSubagents());
   results.push(await runPresets());
   results.push(await runData(repoRoot));

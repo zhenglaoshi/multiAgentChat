@@ -65,8 +65,9 @@ daemon 依赖三个**相互独立**的授权。缺任一都影响核心链路：
 
 ## 非授权，但同类症状：System Events 术语故障
 
-不是授权问题，但表现一样（命令发了不执行）：System Events helper 被拖挂时 `key code` 术语在**编译期**就失败，
-`forceEnter` 静默失败。daemon 另有一个探针（`startSystemEventsProbe`，每 2min）专门探这个，翻转时推飞书。
+不是授权问题，但表现类似（按键发了没反应）：System Events helper 被拖挂时 `key code` 术语在**编译期**就失败，
+`sendKeys`（方向键 / Ctrl-C / 关 tab）与 `forceEnter` 的 keystroke 兜底模式静默失败；默认的回车提交（pty 直写）不受影响。
+daemon 另有一个探针（`startSystemEventsProbe`，每 2min）专门探这个，翻转时推飞书。
 **修法：重启 Mac**。详见 `CLAUDE.md` 的「System Events 术语故障」一节。
 
 ## 怎么查 / 怎么修

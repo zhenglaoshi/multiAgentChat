@@ -33,3 +33,4 @@ export * from './monitor/secret-scrub-scheduler.js';
 export * from './monitor/fleet-monitor.js';
 export * from './monitor/dogfood-scheduler.js';
 export { getUnmaskSecrets, setUnmaskSecrets, unmaskRemainingSec } from './lark/redact-gate.js';
+export * from './monitor/lid-awake-probe.js';

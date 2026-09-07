@@ -105,10 +105,12 @@ dispatchSendToTab(tab, text) 或 dispatchSopExecute(sop-action)
    ↓
 host-mac/terminal.send() → AppleScript "do script"
    ↓
-claude TUI（alt-screen）接收字符 → forceEnter() (System Events key code 36)
+claude TUI（alt-screen）接收字符 → 等 400ms → forceEnter()（默认 pty 直写：空 do script 单独写一个 \r）
 ```
 
-**关键坑**：claude TUI 里 `\n` 是 prompt multi-line，不是提交。必须 System Events 发真键盘 Return。
+**关键坑**：`do script X` 往 pty 写的是 `X + "\r"` 一整块，TUI 当粘贴处理、块内 `\r` 只算换行，所以文本送进去不提交；
+再单独送一个 `\r`（空 `do script ""`）才是真回车。这条路不依赖键盘焦点，合盖锁屏也能提交。
+`MCHAT_ENTER_MODE=keystroke` 可退回 System Events key code 36 键盘事件路径（需前台焦点 + Accessibility）。
 
 ## 数据流：出站（tab → 飞书）
 

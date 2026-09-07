@@ -358,8 +358,9 @@ export async function newTab(opts: NewTabOptions = {}): Promise<string> {
 }
 
 /**
- * 显式发 Return 键事件到目标 tab（claude TUI 用 \n 做 prompt multi-line，
- * 不会自动提交；需要真实键盘 Return 事件）。
+ * 【键盘事件兜底路径】用 System Events `key code 36` 往目标 tab 发真实键盘 Return。
+ * 默认**不走这条**——forceEnter 默认走 pty 直写（空 `do script`，不依赖焦点，见下），
+ * 仅 `MCHAT_ENTER_MODE=keystroke` 时启用。键盘事件天然打到「当前前台窗口」，所以必须先抢焦点、再守卫：
  *
  * 流程：
  *  1. 记录原 frontmost app
@@ -493,14 +494,27 @@ export async function getUserFocus(): Promise<{
   }
 }
 
+/** 回车提交走哪条通道：pty（默认，空 do script 直写 \r）/ keystroke（System Events key code 36 兜底） */
+export type EnterMode = 'pty' | 'keystroke';
+
 /** forceEnter 的结果：区分「回车已发」「被前台弹框/锁屏挡住没敢发」「没找到 tab」。 */
 export interface ForceEnterResult {
   /** Return 确实发出去了 */
   ok: boolean;
-  /** 前台不是目标 tab（系统弹框/锁屏抢了焦点）→ 为防误触弹框默认按钮，没发回车 */
+  /** 前台不是目标 tab（系统弹框/锁屏抢了焦点）→ 为防误触弹框默认按钮，没发回车。只有 keystroke 模式会出现 */
   blocked: boolean;
   /** blocked 时的前台 app 名（'' = 拿不到，多半是锁屏 loginwindow） */
   frontApp?: string;
+  /** 实际走的通道 */
+  via?: EnterMode;
+}
+
+/**
+ * 解析 `MCHAT_ENTER_MODE`：只认 `keystroke`（退回旧的键盘事件路径），其它值 / 未设 → `pty`。
+ * 纯函数，便于单测。
+ */
+export function resolveEnterMode(raw: string | undefined = process.env.MCHAT_ENTER_MODE): EnterMode {
+  return (raw ?? '').trim().toLowerCase() === 'keystroke' ? 'keystroke' : 'pty';
 }
 
 /** 解析 FORCE_ENTER_SCRIPT 的输出（"ok" / "blocked|<app>" / "not-found"）→ 结果结构。纯函数，便于单测。 */
@@ -512,12 +526,43 @@ export function parseForceEnterOutput(out: string): ForceEnterResult {
 }
 
 /**
- * 在目标 tab 显式发一次 Return 键。
- * 用于 claude TUI 这种"\n 不提交 prompt"的程序。
- * 带前台守卫：只有确认前台就是目标 Terminal tab 才真按 Return，被弹框/锁屏挡住则返回 blocked。
+ * 键盘事件路径：activate Terminal + 前台守卫 + System Events key code 36（脚本见 FORCE_ENTER_SCRIPT）。
+ * 只有确认前台就是目标 Terminal tab 才真按 Return，被弹框/锁屏挡住则返回 blocked。
+ * 依赖 Accessibility + System Events 术语正常 + 屏幕没锁；合盖锁屏时必然 blocked。
  */
-export async function forceEnter(tty: string): Promise<ForceEnterResult> {
-  return parseForceEnterOutput(await runScriptOrThrow(FORCE_ENTER_SCRIPT, [tty]));
+export async function forceEnterViaKeystroke(tty: string): Promise<ForceEnterResult> {
+  return { ...parseForceEnterOutput(await runScriptOrThrow(FORCE_ENTER_SCRIPT, [tty])), via: 'keystroke' };
+}
+
+/** forceEnter 可注入的底层依赖（单测用；生产不传） */
+export interface ForceEnterDeps {
+  sendRaw?: (tty: string, text: string) => Promise<boolean>;
+  keystroke?: (tty: string) => Promise<ForceEnterResult>;
+}
+
+/**
+ * 在目标 tab 提交一次「回车」——给 claude / codex 这类 TUI 用（`do script` 送进去的文本不会自动提交）。
+ *
+ * 默认走 **pty 直写**：一次空 `do script "" in tab`。字节级实测（2026-09-07，raw 模式读 pty）：
+ *  - Terminal 对 `do script X` 写进 pty 的是 `X + "\r"` **一整块**（X 里的 \n 也被转成 \r）；
+ *    TUI 把多字符块当「粘贴」处理，块内的 \r 变成换行——这才是「do script 不提交」的真正原因；
+ *  - X 为空时写进去的是**单独一个 \r 字节**，对 TUI 就是一次真回车（claude 实测提交成功）。
+ * 优点：完全不依赖键盘焦点 / Accessibility / System Events 术语——合盖锁屏、别的 app 在前台、
+ * 系统弹框压着，全都照常提交；也没有 200ms 抢焦点闪屏。
+ *
+ * `MCHAT_ENTER_MODE=keystroke` 可退回旧的键盘事件路径（forceEnterViaKeystroke，带前台守卫、可能 blocked）。
+ * 调用方在「送文本」和本次「回车」之间要留 ≥400ms：两次 pty 写入若被 TUI 一次 read 合并，
+ * 又会整块当粘贴处理而不提交。
+ */
+export async function forceEnter(
+  tty: string,
+  opts: { mode?: EnterMode } = {},
+  deps: ForceEnterDeps = {},
+): Promise<ForceEnterResult> {
+  const mode = opts.mode ?? resolveEnterMode();
+  if (mode === 'keystroke') return (deps.keystroke ?? forceEnterViaKeystroke)(tty);
+  const sent = await (deps.sendRaw ?? sendKeysRaw)(tty, '');
+  return { ok: sent, blocked: false, via: 'pty' };
 }
 
 // 关**单个 tab**（不是整窗）：选中目标 tab → 前台化 → System Events Cmd-W（= Close Tab，

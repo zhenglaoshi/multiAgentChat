@@ -116,7 +116,11 @@ export class WebDashboardServer {
         const tab = tabs.find((t) => t.tty === tty);
         if (result.ok && tab?.hasTUI) {
           await new Promise((r) => setTimeout(r, 400));
-          await forceEnter(tty);
+          const fe = await forceEnter(tty).catch((e: Error) => {
+            logger.warn('dashboard send: forceEnter failed', { tty, err: e.message });
+            return undefined;
+          });
+          if (fe) logger.info('dashboard send: forceEnter sent', { tty, ok: fe.ok, blocked: fe.blocked, via: fe.via });
         }
         return sendJson(res, { ok: result.ok, reason: result.reason });
       }

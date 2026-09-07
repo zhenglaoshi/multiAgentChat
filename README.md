@@ -54,7 +54,8 @@
 
 - ✅ 飞书入站（命令 + `@target` + `>>` chain + 多行 batch）
 - ✅ 企业微信入站（同上 · 走 cloudflared tunnel 打通 webhook）
-- ✅ AppleScript 控制 Terminal.app（含 Claude Code TUI forceEnter 适配 alt-screen）
+- ✅ AppleScript 控制 Terminal.app（Claude Code TUI 回车走 pty 直写：锁屏 / 弹框 / 别的 app 在前台都能提交）
+- ✅ 笔记本「插电合盖也能远程」守护（`sudo scripts/lid-awake.sh install`，拔电自动恢复睡眠；首次安装顺带装 + 没装时飞书提醒）
 - ✅ 实时进度卡 patch + 长任务自适应节流 3.5s→60s + `/quiet` 静默模式 + 单卡 🔇 按钮
 - ✅ `agent lark ask` / `agent wecom ask`（single/multi/input 三种交互卡）
 - ✅ SOP 任务编排（stage / gate 审批 / 失败回环 / artifact handoff / memory 召回）

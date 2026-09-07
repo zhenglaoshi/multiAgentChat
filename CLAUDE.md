@@ -18,6 +18,7 @@ agent tabs                                    # 看 Mac 上所有 Terminal tab
 agent lark send-text -m "结果摘要..."         # 主动推消息到飞书（auto-resolve chat）
 agent lark send-file <path>                   # 推文件
 agent request-approval --title "git push --force" --body "..."  # 审批
+sudo scripts/lid-awake.sh install             # 插电合盖不睡、拔电自动恢复（root LaunchDaemon 切 pmset disablesleep）
 ```
 
 `.env` 必须 gitignored。健康检查、WS watchdog 会自动重启 dev，但 `.env` 改了要手动 kill 重启。
@@ -58,8 +59,8 @@ packages/
 │       ├─ terminal/
 │       │   ├─ tabs.ts      listTabs / getHistory / send / forceEnter / newTab
 │       │   ├─ applescript.ts runScript / runOsascript 包装 + escape
-│       │   ├─ keys.ts      sendKeys / forceEnter（System Events key code 36 发真 Enter）
-│       │   ├─ probe.ts     probeSystemEvents（术语故障自检；恒 false 分支里放 key code 36）
+│       │   ├─ keys.ts      sendKeys（System Events 按键注入：方向键 / Ctrl-C；需前台焦点）
+│       │   ├─ probe.ts     probeSystemEvents（System Events 术语故障自检；恒 false 分支里放 key code 36）
 │       │   ├─ screen.ts    captureScreen（截 tab 可视区域）
 │       │   ├─ status.ts    inferTabStatus（走 AgentAdapter 识别 claude/codex；idle/busy/login/waiting/TUI）
 │       │   ├─ restart.ts   restart-all-claude-tabs（isClaudeTab + adapter.launchCommand，过 trust 弹窗）
@@ -154,7 +155,7 @@ sendToNamedTarget → resolveTarget(target) → dispatchSendToTab
 注入 SYSTEM_GUIDANCE（6h throttle）+ recall（cwd+keyword Top3）
    ↓
 tabs.send(tty, text) → osascript "do script"
-   ↓ 若是 claude TUI → 等 400ms → forceEnter（System Events key code 36）
+   ↓ 若是 claude TUI → 等 400ms → forceEnter（默认 pty 直写：空 do script 单独写一个 \r，不抢焦点、锁屏也能提交）
    ↓
 pendingTracker.add({ tty, beforeCharLen, originalPrompt, source, batchId... })
    ↓ 进度卡（sendCardReturnId）回飞书
@@ -232,7 +233,9 @@ spawn detached: agent lark send-text --auto <text>
 ### claude TUI / alt-screen 模式
 
 进入 claude TUI 后：
-- `do script` 加 `\n` 被 claude 理解为多行换行，**不是 Enter** → 必须 `forceEnter()` 用 System Events key code 36 发真 Enter
+- `do script X` 实际往 pty 写的是 `X + "\r"` **一整块**（X 里的 `\n` 也被转成 `\r`，字节级实测）；TUI 把多字符块当**粘贴**处理，块内 `\r` 只算换行 → 文本送进去**不提交**
+- 提交靠 `forceEnter()`：默认 **pty 直写**——一次空 `do script ""` 写进去**单独一个 `\r`**，TUI 视为真回车。不依赖键盘焦点 / Accessibility / System Events，**合盖锁屏、别的 app 在前台、系统弹框压着都照常提交**。文本与回车之间留 ≥400ms（两块被合并读取会整体当粘贴）
+- `MCHAT_ENTER_MODE=keystroke` 退回旧路径（System Events key code 36 + 前台守卫；锁屏/弹框时 blocked 不盲按）。方向键等**非回车**按键（AskUserQuestion 驱动、Ctrl-C）仍只能走 System Events，锁屏时不可用（do script 无法送纯 ESC 序列——尾部必带 `\r`，TUI 当粘贴）
 - `contents of tab` 返回 missing value（alt-screen 屏蔽）→ 屏幕状态我们读不到
 - `history of tab` 返回的还是退出 alt-screen 前的 scrollback → 用 char-length 而非 line-count 检测变化（claude 用 `\r` 重绘，行数不变）
 
@@ -244,11 +247,11 @@ spawn detached: agent lark send-text --auto <text>
 → Terminal.app / iTerm / 任何运行 dev 的进程 + osascript 自己都要加到：
   System Settings → Privacy & Security → Accessibility
 
-### System Events 术语故障（forceEnter 静默失败）
+### System Events 术语故障（按键注入静默失败）
 
-`forceEnter` 靠 System Events 专有术语 `key code 36` 发真 Enter。当 System Events helper 被拖挂
-（进程 T 态 / LaunchServices 注册损坏 / 术语字典加载失败，实测诱因：Mac 严重过载 + 长时间未重启），
-`key code` 会在 **编译期** 就报语法错 → forceEnter 静默失败 → 飞书注入的命令停在命令行不回车。
+`sendKeys`（方向键 / Ctrl-C / 关 tab）和 `forceEnter` 的 keystroke 兜底模式靠 System Events 专有术语 `key code` 发真按键。
+当 System Events helper 被拖挂（进程 T 态 / LaunchServices 注册损坏 / 术语字典加载失败，实测诱因：Mac 严重过载 + 长时间未重启），
+`key code` 会在 **编译期** 就报语法错 → 这些按键注入静默失败。默认的回车提交（pty 直写）**不经 System Events，不受影响**。
 → `host-mac/terminal/probe.ts` 的 `probeSystemEvents()` 把 `key code 36` 塞进恒 false 分支：编译期
   照样解析术语（坏则捕获），运行时永不真按键。`im-lark/monitor/system-events-probe.ts` 每 2min 自检，
   仅在状态翻转时推飞书（正常→故障发 🚨 含修法；故障→正常发 ✅），持续故障每 30min 再提醒。
@@ -329,7 +332,7 @@ npm run typecheck
 
 已完成（2026-07~08 稳健性 / 安全 / 自治）：
 - **macOS TCC 授权自检**：单一事实源 `host-mac/terminal/permissions.ts` + 启动/周期探针推交互卡（缺哪项+废哪些功能+一键开面板），doctor 三条精确权限项。见 docs/permissions.md
-- **System Events 术语故障自检告警** + **`forceEnter` 前台守卫**（弹框/锁屏不盲按回车）
+- **System Events 术语故障自检告警** + **`forceEnter` 前台守卫**（keystroke 兜底模式：弹框/锁屏不盲按回车）；2026-09-07 起回车提交默认改走 **pty 直写**（空 do script），合盖锁屏也能执行
 - **明文凭证脱敏**：统一引擎 `orchestrator/secrets`（回显脱敏 redact-on-echo 织入发送层 + `/raw` 明文开关 + claude/codex 历史文件 scrub + 定期任务 opt-in）；打包成 `multiagent-secret-guard` skill。⚠ AK 类已按用户要求不再自动脱敏
 - **高危命令 → 飞书审批 gate**：`orchestrator/guard`（PreToolUse Bash hook）+ **5 档权限等级 L0-L4**（`/perm-level`，默认 L1 仅致命）+ **学习型放行**（连续批准 ≥阈值自动放行，最灾难命令永不学习）
 - **裸 shell 保护**：任务型 prompt 打进裸 zsh 会卡死 → 拦截 + 一键起 agent + watcher 自愈解卡（`orchestrator/shell-safety` + `stuck-shell.ts`）

@@ -211,7 +211,9 @@ export interface LaunchClaudeOptions {
  * 在一个已停在 shell prompt 的 tab 里启动指定 agent（claude/codex），并自动过掉首次的
  * "Do you trust the files in this folder?" 弹窗。
  *
- * 该弹窗默认高亮"信任本目录"，一个真 Return（key code 36）即接受。agent 进 alt-screen 后
+ * 该弹窗默认高亮"信任本目录"，一次回车即接受——走 forceEnter（默认 pty 直写：空 do script 送单独一个 \r；
+ * `MCHAT_ENTER_MODE=keystroke` 时为 key code 36 键盘事件）。⚠ pty 路径过 trust 弹窗尚未真机验证，
+ * 若发现 trust 弹窗过不去，先试 keystroke 模式定位。agent 进 alt-screen 后
  * 我们读不到屏幕内容，只能按时序补 Return —— 发两次、错开时序，覆盖启动快/慢两种情况；
  * 目录已信任（无弹窗）时 Return 落到 agent 空 prompt，无副作用。codex 首跑同样有信任提示，
  * 复用同一套时序。

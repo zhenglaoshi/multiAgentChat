@@ -71,6 +71,21 @@ PLISTEOF
     echo "   系统设置 → 隐私与安全性 →「自动化」允许 node 控制 Terminal.app；「辅助功能」勾选 node（${NODE}）。"
     echo "   首次控 Terminal 时若弹授权框，点允许。授权后 launchctl kickstart -k $DOMAIN/$LABEL 重启生效。"
     echo "   ⚠ 远程（人不在 Mac 前）无法点授权框 → 此时别用 launchd，改用 Terminal 登录项跑 npm run dev。"
+
+    # 顺带装「插电合盖也能远程」守护（笔记本 + 还没装 + 交互式终端才问；MCHAT_SKIP_LID_AWAKE=1 跳过）
+    if [ "${MCHAT_SKIP_LID_AWAKE:-0}" != "1" ] && [ -t 0 ] \
+       && pmset -g batt 2>/dev/null | grep -q InternalBattery \
+       && [ ! -f /Library/LaunchDaemons/com.multiagent-chat.lid-awake.plist ]; then
+      echo ""
+      echo "🔌 这台是笔记本：合盖会睡、Wi-Fi 断，手机发的命令收不到。"
+      echo "   可装一个 root 守护：插电合盖只灭屏锁屏不睡；拔电自动恢复默认睡眠（需要 sudo 密码一次）。"
+      printf "   现在装吗？[Y/n] "
+      read -r ans
+      case "${ans:-Y}" in
+        [Yy]*) sudo "$REPO/scripts/lid-awake.sh" install || echo "⚠ 合盖守护安装失败，之后可手动：sudo scripts/lid-awake.sh install" ;;
+        *) echo "   跳过。之后随时：sudo scripts/lid-awake.sh install（daemon 启动时也会在飞书提醒）" ;;
+      esac
+    fi
     ;;
 
   uninstall)

@@ -25,8 +25,8 @@ daemon 启动时会**自动探测**核心授权，缺了往飞书推告警；也
 | 权限 | 用途 | 触发场景 | 自动探测 |
 |---|---|---|---|
 | **Automation → Terminal.app** | 控 Terminal.app（列 tab / 发命令 / 开 tab） | 首次 AppleScript 调 tab | ✅ |
-| **Automation → System Events** | 按键注入的前置通道 | 首次 forceEnter / Ctrl-C | ✅ |
-| **Accessibility** | 真发按键 keystroke / key code（回车提交、关 tab） | 首次 `forceEnter` / 关 tab | ✅ |
+| **Automation → System Events** | 按键注入的前置通道 | 首次方向键选项 / Ctrl-C / 关 tab | ✅ |
+| **Accessibility** | 真发按键 keystroke / key code（方向键、Ctrl-C、关 tab；回车提交默认走 pty 直写不需要） | 首次方向键选项 / 关 tab | ✅ |
 | **Screen Recording** | screencapture 抓 tab 窗口 | 首次 `/screen` | ❌（optional） |
 
 位置：**系统设置 → 隐私与安全性 → 对应权限项**。任何一项拒绝 = 相关功能静默失效。
@@ -234,6 +234,28 @@ agent doctor
 
 critical fail 都要按 💡 hint 修完再往下。
 
+### 笔记本：合盖也要能远程？装一次守护
+
+笔记本合盖=强制睡眠，Wi-Fi 断、daemon 停，手机发的命令收不到；`caffeinate` 拦不住这条路。项目提供一次性方案：
+
+```bash
+sudo scripts/lid-awake.sh install     # 插电合盖只灭屏锁屏、不睡；拔电自动恢复默认睡眠
+scripts/lid-awake.sh status           # 看状态
+```
+
+- `scripts/launchd-setup.sh install` 在笔记本上会**顺带问你要不要装**；漏了的话 daemon 启动时会在飞书提醒（3 天一次，`LID_AWAKE_NUDGE=0` 关）
+- 为什么不能全自动：改 `pmset disablesleep` 要 root，daemon 以普通用户跑；所以只能这一步输一次 sudo 密码
+- ⚠ 安全语义：插电合盖不睡 = 机器**无人值守时持续联网、可被远程操控**（本项目 socket / 可选 Web Dashboard 等面一直在线），比默认「合盖即睡断网」暴露窗口更长。只在确实需要远程的机器上装；公共网络注意防火墙；Web Dashboard 务必设强 token。守护是 KeepAlive，kill 掉会被拉起，停用请 `sudo scripts/lid-awake.sh uninstall`
+- 锁屏状态下命令照常执行：回车提交走 pty 直写、不依赖前台焦点（2026-09-07 起默认），不用额外配置
+- 细节与其它路线（假显示器 / 真 clamshell）见 [features.md 第 10 节](features.md#10-防休眠sleep-prevention)
+
+装完自测（2 分钟）：
+
+1. `scripts/lid-awake.sh status` 看到「守护：✅ 已装并在运行」且插电时 `SleepDisabled：1`
+2. 插着电合上盖子，等 1 分钟，手机飞书里发 `@<你的 claude tab> 回复 pong`
+3. 收到 pong = 合盖远程链路通。想顺带验「弹框压前台」：合盖前先在 Mac 上跑 `osascript -e 'tell application "System Events" to display dialog "test" giving up after 300'`，再重复第 2 步
+4. 没回音 → `agent doctor` 看「合盖远程」项 + `scripts/lid-awake.sh log`；仍不通再看 [常见踩坑](#常见踩坑)
+
 ---
 
 ## 第 8 步：第一条消息
@@ -263,7 +285,7 @@ critical fail 都要按 💡 hint 修完再往下。
 
 daemon 启动时**自动** spawn `caffeinate -i -m -w <daemon-pid>`，阻止 macOS idle sleep。daemon 挂 caffeinate 自动退。不用配置。
 
-`caffeinate` 阻 **idle sleep**（Mac 闲置一段时间自动睡）但**阻不了合盖睡眠**（kernel/固件层，任何软件方案都无解）。合盖也想不睡的三条路见 [features.md 第 10 节](features.md#10-防休眠sleep-prevention)。
+`caffeinate` 阻 **idle sleep**（Mac 闲置一段时间自动睡）但**阻不了合盖睡眠**。合盖也想远程执行 → `sudo scripts/lid-awake.sh install`：root 守护按电源自动切 `pmset disablesleep`（**插电合盖不睡、拔电恢复默认**），详见 [features.md 第 10 节](features.md#10-防休眠sleep-prevention)。
 
 env vars：
 - `AGENT_NO_CAFFEINATE=1` → 关闭 daemon 自动 caffeinate
