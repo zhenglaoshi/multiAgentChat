@@ -1,4 +1,4 @@
-import type { ApprovalRequest, AskRequest, PerfItem, Plan, TapdItem, IntegrationStatus, Integration, WorkTask, HandoffTask, HandoffStatus } from 'multiagent-orchestrator';
+import type { ApprovalRequest, AskRequest, PerfItem, Plan, TapdItem, IntegrationStatus, Integration, WorkTask, HandoffTask, HandoffStatus, LetterNotification } from 'multiagent-orchestrator';
 import { tapdSummary, TAPD_KIND_LABEL, HANDOFF_STATUS_LABEL, allowedNextForRole } from 'multiagent-orchestrator';
 import { inferTabStatus, getHostPermissionSpec, type TabStatusInfo, type HostPermissionStatus } from 'multiagent-host-mac';
 import type { TerminalTab } from 'multiagent-host-mac';
@@ -2932,7 +2932,9 @@ export function worktasksCard(tasks: WorkTask[], home: string, query?: string) {
       tag: 'div',
       text: {
         tag: 'lark_md',
-        content: `${kindIcon(t.kind)} **${truncate(t.title, 60)}**\n<font color='grey'>\`${t.branch}\` · ${dir}${t.source ? ` · ${t.source}` : ''}</font>`,
+        // title/branch 都要转义：公函开工落的 WorkTask，title 是**外部 agent 写的议题**，
+        // 不转义的话对方能在议题里塞 [钓鱼](url)，等你哪天 /worktasks 就渲染成可点链接。
+        content: `${kindIcon(t.kind)} **${escapeLarkMd(truncate(t.title, 60))}**\n<font color='grey'>\`${escapeLarkMd(t.branch)}\` · ${escapeLarkMd(dir)}${t.source ? ` · ${escapeLarkMd(t.source)}` : ''}</font>`,
       },
     });
     const actions: unknown[] = [];
@@ -3478,5 +3480,131 @@ export function auditReportCard(findings: AuditCardFinding[], opts?: { error?: s
       title: { tag: 'plain_text', content: `🔧 自审报告${findings.length ? ` · ${findings.length} 条` : ''}` },
     },
     elements,
+  };
+}
+
+
+// ================= CareyClaw Agent 公函 =================
+
+/**
+ * 公函任务卡。
+ *
+ * 卡上所有来自平台的文本（议题、职责域 key）都过 `escapeLarkMd`：公函是**别的 agent 写的
+ * 外部输入**，不转义的话对方可以在议题里塞 `[钓鱼](url)` 渲染成可点链接。
+ *
+ * 「开工」刻意做成按钮而不是自动执行：不是每封公函都值得开一个目录 + 一个 tab
+ * （很多只是知会/抄送），自动建会攒下一堆空目录和空 tab。
+ */
+export function letterTaskCard(n: LetterNotification, bodyShown = true) {
+  const t = n.thread;
+  const isReply = n.kind === 'reply';
+  const lines: string[] = [];
+  lines.push(`**${escapeLarkMd(truncate(t.subject, 80))}**`);
+
+  const meta: string[] = [`发起:${escapeLarkMd(t.initiator || '?')}`];
+  if (isReply) meta.push(`第 ${t.lastSeq} 封（上次看到 ${n.prevSeq}）`);
+  if (t.strict) meta.push('strict');
+  lines.push(`<font color='grey'>${meta.join(' · ')}</font>`);
+
+  const others = t.participants.filter((p) => p !== t.nextOwner);
+  if (others.length) lines.push(`<font color='grey'>参与:${escapeLarkMd(others.join(', '))}</font>`);
+  if (t.pendingMine > 0) lines.push(`<font color='red'>待我答 ${t.pendingMine} 项</font>`);
+  if (t.pendingOthers.length) {
+    lines.push(`<font color='grey'>还欠答:${escapeLarkMd(t.pendingOthers.join(', '))}</font>`);
+  }
+  if (t.updatedAt) lines.push(`<font color='grey'>更新:${escapeLarkMd(t.updatedAt)}</font>`);
+
+  const url = `https://bot.ihealthcn.com/app/letters`;
+  return {
+    // 会被反复点（读全文 / 开工各 patch 一次）→ 必须 update_multi，否则第二次 patch 视觉不生效
+    config: { wide_screen_mode: true, update_multi: true },
+    header: {
+      // 待我答=橙（需要响应）；纯知会=蓝（信息）
+      template: t.pendingMine > 0 ? 'orange' : 'blue',
+      title: { tag: 'plain_text', content: isReply ? '📮 公函有新回复' : '📮 新公函' },
+    },
+    elements: [
+      { tag: 'div', text: { tag: 'lark_md', content: lines.join('\n') } },
+      {
+        tag: 'div',
+        text: {
+          tag: 'lark_md',
+          // 内容在这张卡**之前**已经推过了，所以正常情况下这里是「确认」而不是「先去读」
+          content: bodyShown
+            ? "<font color='grey'>↑ 上面几条是这封的完整内容，看过再决定是否开工</font>"
+            : "<font color='red'>⚠ 这封的内容没拉下来，你还没看过 —— 先「读全文」，读到了才会给开工按钮</font>",
+        },
+      },
+      { tag: 'hr' },
+      {
+        tag: 'action',
+        actions: [
+          // **内容没成功推给人时，绝不给「确认，开工」**。
+          // seq 校验只挡「对方又更新了」，挡不住「这一版压根没给人看过」——
+          // 拉全文失败时 seq 没变，校验放行，正文就会进到高权限会话，而人从没见过它。
+          // 「人看过全文才执行」这条边界要靠按钮本身不出现来保证，不能只靠一句提示。
+          ...(bodyShown
+            ? [{
+                tag: 'button',
+                text: { tag: 'plain_text', content: '✅ 确认，开工' },
+                type: 'primary',
+                // 带上这张卡展示的是第几封：点击时若线程已经推进（对方又追加了一封），
+                // 那份内容用户没看过，不能拿去喂高权限会话 —— 见 openLetterWorkspace 的 seq 校验
+                value: { action: 'letter-work', threadId: t.threadId, seq: t.lastSeq },
+              }]
+            : []),
+          {
+            tag: 'button',
+            text: { tag: 'plain_text', content: bodyShown ? '📖 再读一遍' : '📖 读全文（重试）' },
+            type: bodyShown ? 'default' : 'primary',
+            value: { action: 'letter-read', threadId: t.threadId },
+          },
+          {
+            tag: 'button',
+            text: { tag: 'plain_text', content: '🔗 打开公函页' },
+            type: 'default',
+            multi_url: { url, pc_url: url, ios_url: url, android_url: url },
+          },
+        ],
+      },
+    ],
+  };
+}
+
+/**
+ * 公函令牌失效卡。
+ * MCP 用的是 `~/.careyclaw/token-prod` 里的 `oct_dev_` 开发者令牌，会过期；
+ * 过期后轮询全挂，必须显式告知——否则表现是「公函再也不推了」，很难察觉。
+ */
+export function letterAuthCard(detail: string) {
+  const url = 'https://bot.ihealthcn.com/app/profile';
+  return {
+    config: { wide_screen_mode: true },
+    header: { template: 'red', title: { tag: 'plain_text', content: '🔑 公函令牌失效' } },
+    elements: [
+      {
+        tag: 'div',
+        text: {
+          tag: 'lark_md',
+          content: [
+            '公函轮询已停 —— CareyClaw 开发者令牌过期或被吊销。',
+            `<font color='grey'>${escapeLarkMd(truncate(detail, 160))}</font>`,
+            '',
+            '去平台「工具中心 → 本地调试密钥」刷新，新令牌写回 `~/.careyclaw/token-prod` 即自动恢复。',
+          ].join('\n'),
+        },
+      },
+      {
+        tag: 'action',
+        actions: [
+          {
+            tag: 'button',
+            text: { tag: 'plain_text', content: '🔗 去刷新密钥' },
+            type: 'primary',
+            multi_url: { url, pc_url: url, ios_url: url, android_url: url },
+          },
+        ],
+      },
+    ],
   };
 }

@@ -54,6 +54,14 @@ export const INTEGRATIONS: Integration[] = [
     ],
   },
   {
+    key: 'letters', name: 'CareyClaw 公函监听', group: '开发',
+    desc: '每 2 分钟拉 Agent 公函收件箱，新公函/对方回函推任务卡（用 ~/.careyclaw 里的开发者令牌，无需额外配密钥）',
+    // 令牌读 ~/.careyclaw/token-prod（careyclaw skill 装过就有），所以默认可用、不需要填 env。
+    // 这里只登记一个开关型 field，让 /connect 卡片能列出「公函」并给出停用/启用按钮。
+    fields: [{ env: 'LETTERS_ENABLED', label: '启用公函监听', fixedValue: '1' }],
+    anyOf: true,
+  },
+  {
     key: 'perf', name: '性能平台监听', group: '开发',
     desc: '监听 performance-platform 的慢查询/性能建议，推卡认领修复',
     fields: [

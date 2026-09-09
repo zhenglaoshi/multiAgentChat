@@ -14,7 +14,8 @@ export interface WorkTask {
   branch: string;
   repos: string[];       // 涉及的 repo 名 / 工作目录
   base?: string;
-  source?: 'tapd' | 'perf';
+  /** 这个工作目录是谁开的：TAPD 认领 / 性能平台认领 / CareyClaw 公函开工。 */
+  source?: 'tapd' | 'perf' | 'letter';
   tapdUrl?: string;
   createdAt: number;
 }

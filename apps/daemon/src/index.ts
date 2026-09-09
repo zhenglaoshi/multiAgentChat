@@ -22,7 +22,7 @@ import { startHealthCheck } from 'multiagent-im-lark';
 import { startSystemEventsProbe } from 'multiagent-im-lark';
 import { startHostPermissionProbe } from 'multiagent-im-lark';
 import { startLidAwakeProbe } from 'multiagent-im-lark';
-import { startTapdWatcher } from 'multiagent-im-lark';
+import { startTapdWatcher, startLettersWatcher } from 'multiagent-im-lark';
 import { startPerfWatcher } from 'multiagent-im-lark';
 import { startCareyclawKeyReminder } from 'multiagent-im-lark';
 import { startReportScheduler } from 'multiagent-im-lark';
@@ -1472,6 +1472,7 @@ async function main() {
   startSystemEventsProbe(lark.client);
   startHostPermissionProbe(lark.client);
   startLidAwakeProbe(lark.client); // 笔记本没装「插电合盖不睡」守护 → 推飞书提示（3 天一次）
+  startLettersWatcher(lark.client); // CareyClaw Agent 公函：2min 轮收件箱 → 新公函推任务卡
   startTapdWatcher(
     lark.client,
     wecom
