@@ -9,7 +9,8 @@
 ### 2026-09-09
 
 **文档**
-- 把最新功能补进对外文档：`README.md` 的「当前状态」清单补 9 项（Handoff 甩单 / 工作总结报告 / **CareyClaw 公函** / 裸 shell 保护 / 代码评审门 / 跨会话 RAG 召回 / TCC 授权自检 / `/connect` 一站式对接），「核心功能概览」新增「📊 工作总结报告」「📮 CareyClaw Agent 公函」两节（各带真实用法 + 为什么这么设计）；`CLAUDE.md` 阶段标题 2026-08 → 2026-09、目录树补 `orchestrator/letters/` 与 `letters-watcher.ts`、新增「2026-09 报告与协作」小节（含三个漏活根因与公函的三条硬边界）、待办补两条公函加固项；`docs/README.md` 索引补 §22 / §22b 入口；`.env.example` 补 `LETTERS_*` 配置段；`docs/commands.md` 的 `/report` 补四路数据源说明。
+- **`README.md`「当前状态」补全并重排成分组式**：原清单 19 项、缺了一半能力（Watch mode / Agent CLI / Doctor / WS watchdog / 图文入站 / A3 Planner / perf 监听 / Web Dashboard / Knowledge / Subagent / 双层 Memory / 多 tab / 智能派发 / 关 tab 先退 agent 都没写），补到 **42 项**并按七个能力域分组（双向桥·入站出站 / 编排·记忆 / 交互·观测 / 安全·权限 / 外部系统集成 / 报告·知识沉淀 / 运维健壮性）——40 项平铺没法读，分组后才是能扫的一览。每项都对着代码核过（`ask` 确有 single/multi/input/form 四种、`/watch` 在 `commands.ts:1557`、`agent doctor`、`closeTabGracefully` 等）。
+- 其余文档：`README.md` 的「当前状态」清单补 9 项（Handoff 甩单 / 工作总结报告 / **CareyClaw 公函** / 裸 shell 保护 / 代码评审门 / 跨会话 RAG 召回 / TCC 授权自检 / `/connect` 一站式对接），「核心功能概览」新增「📊 工作总结报告」「📮 CareyClaw Agent 公函」两节（各带真实用法 + 为什么这么设计）；`CLAUDE.md` 阶段标题 2026-08 → 2026-09、目录树补 `orchestrator/letters/` 与 `letters-watcher.ts`、新增「2026-09 报告与协作」小节（含三个漏活根因与公函的三条硬边界）、待办补两条公函加固项；`docs/README.md` 索引补 §22 / §22b 入口；`.env.example` 补 `LETTERS_*` 配置段；`docs/commands.md` 的 `/report` 补四路数据源说明。
 
 
 **新增**

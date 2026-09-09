@@ -50,35 +50,63 @@
 
 ## 当前状态
 
-**Beta** — 已能日常使用，但接口可能会变。
+**Beta** — 已能日常使用，但接口可能会变。按能力域分组，详细说明见 [docs/features.md](docs/features.md)。
 
+**双向桥 · 入站出站**
 - ✅ 飞书入站（命令 + `@target` + `>>` chain + 多行 batch）
 - ✅ 企业微信入站（同上 · 走 cloudflared tunnel 打通 webhook）
 - ✅ AppleScript 控制 Terminal.app（Claude Code TUI 回车走 pty 直写：锁屏 / 弹框 / 别的 app 在前台都能提交）
-- ✅ 笔记本「插电合盖也能远程」守护（`sudo scripts/lid-awake.sh install`，拔电自动恢复睡眠；首次安装顺带装 + 没装时飞书提醒）
-- ✅ 实时进度卡 patch + 长任务自适应节流 3.5s→60s + `/quiet` 静默模式 + 单卡 🔇 按钮
-- ✅ `agent lark ask` / `agent wecom ask`（single/multi/input 三种交互卡）
-- ✅ SOP 任务编排（stage / gate 审批 / 失败回环 / artifact handoff / memory 召回）
-- ✅ 高风险审批工作流（`agent request-approval`）
-- ✅ `/screen` 抓 alt-screen 截图 · `/keys` 按键遥控 · `//foo` 显式转发
 - ✅ Stop hook 双 IM 通吃（Claude turn 完成自动推给源 chat）
-- ✅ 首次启动自动化 5 项（Node ≥22 assert · .env 自动 cp · skill/hooks upsert · agent CLI symlink · macOS 权限提示）
+- ✅ 飞书图文入站（截图 + 一句话描述 → 直接喂给 shell 里的 claude）
+- ✅ 智能派发 Smart-dispatch（没写 `@target` 时按 cwd / 关键词 / 最近活跃自动选 tab）
+
+**编排 · 记忆**
+- ✅ 多 tab 并行（一个 tab = 一个任务，互不干扰；`/dashboard` 看实时状态）
+- ✅ SOP 任务编排（stage / gate 审批 / 失败回环 / artifact handoff / memory 召回）
+- ✅ Subagent 系统（`/subagent gen <描述>` 自动生成，SOP 各 stage 可指定）
+- ✅ 任务模板 `/template` + 任务链 `@a X >> @b Y`
+- ✅ A3 Planner `/plan <目标>`（`claude -p` 分解成计划 → 逐步派发）
+- ✅ 双层 Memory（任务记忆 + stage 记忆）+ 自动 recall
+- ✅ 跨会话 RAG 召回（BM25 + 中文 bigram + cwd/时间加权，语料含 memories + knowledge，零依赖）
+
+**交互 · 观测**
+- ✅ `agent lark ask` / `agent wecom ask`（single/multi/input/form 四种交互卡）
+- ✅ 实时进度卡 patch + 长任务自适应节流 3.5s→60s + `/quiet` 静默模式 + 单卡 🔇 按钮
+- ✅ `/screen` 抓 alt-screen 截图 · `/keys` 按键遥控 · `//foo` 显式转发
+- ✅ 本地 shell 监听 `/watch on`（不经飞书发起的本地任务也能看到）
+- ✅ Web Dashboard（手机浏览器直控 Mac，配 `WEB_DASHBOARD_TOKEN` 启用）
+- ✅ `agent` CLI + Unix domain socket（任何 tab 里都能用，不依赖网络）
+
+**安全 · 权限**
 - ✅ 高危命令审批 gate：5 档权限等级（`/perm-level` L0~L4，默认 L1 仅致命）+ 学习放行（连续批准同一命令 N 次后自动放行）
-- ✅ 明文凭证脱敏（回显 + 落盘）+ `/raw on/off` 临时明文模式
-- ✅ TAPD 缺陷/需求自动监听 → 认领/轻量提示卡分级（不再每次改动都打扰）
-- ✅ 任务工作目录隔离（`fix_/feature_<id6>` git worktree，`/worktasks` 可搜可打开）
-- ✅ 多 agent · Codex CLI 对接（`AgentAdapter` 抽象，`@target` 派发同样能打到 codex tab）
-- ✅ Dogfood 自审（`/selfaudit`：`claude -p` 定期审自己 CHANGELOG↔docs↔日志有没有出入）
-- ✅ Fleet 主动监控（卡住哨兵 · 闲置提议 · 每早摘要，主动推飞书不用你问）
-- ✅ 出站飞书消息统一加「🕐 时间 + 📁 路径」页脚
-- ✅ 同事任务甩单 Handoff（一句话把问题+AI 建议+文件甩给同事，经独立 relay 路由到对方飞书，状态双向同步）
-- ✅ 工作总结报告（`/report day|week|month|year`，四路数据源：git 提交 + 未提交改动 + 任务记忆 + **Claude Code 会话历史**）
-- ✅ CareyClaw Agent 公函接入（2min 轮收件箱 → 推全文 + 任务卡 → 确认后开 shell，同一封复用原 shell）
+- ✅ 明文凭证脱敏（回显 + 落盘 + 历史文件 scrub）+ `/raw on/off` 临时明文模式
+- ✅ macOS TCC 授权自检（缺哪项 + 废哪些功能 + 一键开面板，启动/周期探针）
 - ✅ 裸 shell 保护（任务型 prompt 打进裸 zsh 会卡死 → 拦截 + 一键起 agent + watcher 自愈解卡）
 - ✅ 代码评审门（改产品代码交付前强制 `code-reviewer` + `security-reviewer` 双审，`/connect` 可开关）
-- ✅ 跨会话 RAG 召回（BM25 + 中文 bigram + cwd/时间加权，语料含 memories + knowledge，零依赖）
-- ✅ macOS TCC 授权自检（缺哪项 + 废哪些功能 + 一键开面板，启动/周期探针）
-- ✅ 一站式对接管理 `/connect`（TAPD / 性能平台 / 公函 / 知识提炼 / 企微 / Web面板 / 报告 / CareyClaw 按需开关）
+
+**外部系统集成**
+- ✅ TAPD 缺陷/需求自动监听 → 认领/轻量提示卡分级（不再每次改动都打扰）
+- ✅ performance-platform 性能建议监听（P1 只读 + P2 认领并建需求）
+- ✅ CareyClaw Agent 公函（2min 轮收件箱 → 推全文 + 任务卡 → 确认后开 shell，同一封复用原 shell）
+- ✅ 同事任务甩单 Handoff（一句话把问题+AI 建议+文件甩给同事，经独立 relay 路由到对方飞书，状态双向同步）
+- ✅ 多 agent · Codex CLI 对接（`AgentAdapter` 抽象，`@target` 派发同样能打到 codex tab）
+- ✅ 一站式对接管理 `/connect`（上面这些 + 知识提炼 / 企微 / Web面板 / 报告按需开关）
+
+**报告 · 知识沉淀**
+- ✅ 工作总结报告（`/report day|week|month|year`，四路数据源：git 提交 + 未提交改动 + 任务记忆 + **Claude Code 会话历史**；月/年报出 PPT）
+- ✅ Knowledge Extraction（每次任务完成自动提炼成结构化知识条目，跨项目复用）
+- ✅ Dogfood 自审（`/selfaudit`：`claude -p` 定期审自己 CHANGELOG↔docs↔日志有没有出入）
+
+**运维健壮性**
+- ✅ 笔记本「插电合盖也能远程」守护（`sudo scripts/lid-awake.sh install`，拔电自动恢复睡眠）
+- ✅ 防休眠 caffeinate + WS 长连接 watchdog（SDK 假活自动重启）+ 健康检查自杀重启
+- ✅ System Events 术语故障自检（按键注入静默失败 → 推飞书告警，含修法）
+- ✅ Fleet 主动监控（卡住哨兵 · 闲置提议 · 每早摘要，主动推飞书不用你问）
+- ✅ 诊断 `agent doctor`（权限 / 依赖 / socket 一次性自检）
+- ✅ 首次启动自动化 5 项（Node ≥22 assert · .env 自动 cp · skill/hooks upsert · agent CLI symlink · macOS 权限提示）
+- ✅ 任务工作目录隔离（`fix_/feature_<id6>` git worktree，`/worktasks` 可搜可打开）
+- ✅ 关 tab 前先退 agent（省 CPU/内存，避免留孤儿进程）
+- ✅ 出站飞书消息统一加「🕐 时间 + 📁 路径」页脚
 
 ---
 
