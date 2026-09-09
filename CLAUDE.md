@@ -103,6 +103,7 @@ packages/
 │       │   ├─ host-permission-probe.ts  启动+每 2min 探 TCC 授权，缺失集合翻转推「缺哪项+废哪些功能」交互卡
 │       │   ├─ stuck-shell.ts  裸 shell 卡在续行提示（dquote>/quote>）自愈：确认稳定卡住 → Ctrl-C 解卡 + 告警（MCHAT_AUTO_UNWEDGE=0 关）
 │       │   ├─ fleet-monitor.ts  主动盯舰队（卡住哨兵 + 闲置提议 + 每早摘要，纯读 watcher 缓存；FLEET_MONITOR_ENABLED=0 关）+ fleet-monitor-logic.ts（纯判定）
+│       │   ├─ letters-watcher.ts 轮询 CareyClaw 公函收件箱（2min）→ 每封先推全文再推任务卡；令牌失效推红卡（6h 节流）
 │       │   ├─ tapd-watcher.ts  轮询 TAPD 指派/开发给我的缺陷需求 → 分级推送（首次=认领卡 / 状态变=轻量提示卡 / 内容变=信息卡；TAPD_SPLIT_NOTIFY=0 回退）
 │       │   ├─ perf-watcher.ts  轮询 performance 建议 → 推性能卡（配 PERF_* 启用）
 │       │   ├─ report-scheduler.ts 定时生成日/周/月报（配 REPORT_*_AT 启用）
@@ -123,6 +124,7 @@ packages/
         ├─ approval/        审批工作流（manager.create/resolve/list，5min auto-timeout）
         ├─ ask/             AskUserQuestion 交互问答（manager / types；含多问题表单 form）
         ├─ planner/         A3 Planner：generatePlan(claude -p 分解目标) + 内存计划库（/plan 用）
+        ├─ letters/         CareyClaw Agent 公函（A2A）：client(MCP 端点 a2a_* 工具)/config/store(去重+letterDirSlug+fenceExternal)/sessions(shell 复用记录+canReuseSession)/render(letterFullText)/types
         ├─ perf/            performance 对接（P1 只读+P2 认领并建需求）：config/client/query/store/tapd-story(createPerfStory)
         ├─ tapd/            TAPD 对接：client(MCP)/config/query/claims(TapdClaim.kind/resolveClaimKind)/prompt/repo-map/mcp-setup
         ├─ integrations/    /connect 对接管理：registry(env/skill/agentType)/envfile(状态+停用)/skills/careyclaw-key
@@ -318,7 +320,7 @@ npm run typecheck
 7. 加平台（如企微已在 `im-wecom/`）→ implement `framework/im` 的 `IMTransport`，daemon 里 attach，chatId 带平台前缀
 8. **每次功能/修复/文档改动 → 在 `CHANGELOG.md` 顶部「未发布」区对应日期追加一条**（新增/修复/文档/改动）。这是硬约定，commit 前顺手补。
 
-## 当前阶段（2026-08）
+## 当前阶段（2026-09）
 
 已完成（基础设施 / 平台）：
 - v3.x 基础链路 + TUI 适配 + memory + approval + WS watchdog
@@ -345,10 +347,17 @@ npm run typecheck
 - **同事任务甩单（Handoff，P1+P2 ✅）**：跨人协作——A 一句话把问题+AI建议+文件甩给同事 B，经独立中转 relay（`../multiagent-relay/`，零依赖纯 http，部署云服务器）路由到 B 的飞书。每人只跟自己的飞书 bot 说话（两边应用/租户解耦）；`from` relay 盖章防冒充、`HANDOFF_ALLOW` 收件白名单 fail-closed、收件人离线落盘排队重连补投、发送前强制脱敏。**P2**：富交互「👥 同事任务卡」（`im-lark` `handoffTaskCard`，对端内容走 plain_text 免注入）+ [接收/开始/完成/拒绝/撤回] 按钮 → 经桥接（`handoff-bridge.ts` setter → daemon 注入 `framework/relay/actions.ts sendHandoffStatus`）就地 patch，**两侧状态双向同步**；一句话 skill `skills/multiagent-handoff/`。CLI：`agent handoff send/status/list` + `agent contacts`。**P3a**：relay 升级成自助接入门户（独立项目内 `accounts.ts` 动态 token 库 + `portal.ts` 单页 + `/enroll/:code` 一键装机把凭证写进 .env + 邀请码占位登录 + 黑名单）；收件闸门语义变更——`HANDOFF_ALLOW` 空=收所有已登记同事（非空=严格 opt-in）；token 前缀 `mrt_` 已进脱敏引擎。见 docs/handoff-integration.md + ../multiagent-relay/README.md。**P3b**：门户接 OIDC 单点登录（`../multiagent-relay/src/oidc.ts`，零依赖 node:crypto 验 RS256+JWKS，配 `OIDC_*` 即启用，state/nonce 防 CSRF/重放；假 IdP 端到端冒烟 `tests/oidc-smoke.ts`）；邀请码保留作 bootstrap。**P3c**：凭证管理（门户轮换/撤销其它设备 + `/api/logout`）· 审计日志（relay `audit.ts` JSONL + `/admin/audit`）· 附件下载（`agent handoff pull`）· reply 跨人对话（`agent handoff reply`）。Handoff P1~P3c 全 ✅，待办仅同租户 open_id 直投捷径 + 过期记录清理
 - **飞书交互健壮性**：AskUserQuestion 远程应答（pty 写数字直选，锁屏可用；待答期间非选项文本暂存不吞）、卡片选项完整编号防截断、message_id/token 幂等去重、osascript 超时兜底、ask 卡超时放宽 30min、`/reload` 一键重启
 
+已完成（2026-09 报告与协作）：
+- **工作总结报告四路数据源**（`/report day|week|month|year`，可带日期锚点补历史）。09-09 修了三个漏活根因，都记在 docs/features.md §22 防回归：① dir-index 的 `find -name .git -type d` 对 **git worktree 完全失明**（worktree 的 `.git` 是**文件**，实测 34 个全漏），② 排除用 `-not -path` 只过滤输出、find 照样递归下降 → 全量扫分钟级 → 只能挂 24h TTL → **当天新建的仓库当天进不了报告**（改 `-prune` + 根去重后 58.7s → 4.8s，报告路径加 `ensureDirIndexFresh`），③ 只看 git + memory 而 memory 覆盖率极低（实测某天 476 个会话文件只落 11 条）→ 新增 **Claude Code 会话历史**源（`orchestrator/report/sessions.ts`，取真人原话，只认 `origin.kind==='human'`，过 `redactTextStrict`）。
+- **CareyClaw Agent 公函（A2A letters）**（`orchestrator/letters` + `im-lark/monitor/letters-watcher.ts`，见 docs/features.md §22b）。2min 轮收件箱 → **每封先推全文再推任务卡**（多封不合并）→ 点【确认，开工】才建目录起 claude，**同一封复用原 shell**。⚠ **走 MCP 端点不走 REST**：`/api/v2/a2a/*` 只认浏览器 cookie（dev token 直接 401），而 `https://bot.ihealthcn.com/mcp` 用 `~/.careyclaw/token-prod` 的 Bearer 令牌就能访问全套 `a2a_*` 工具 —— 别改回 REST。正文是**外部第三方写的**，三条硬边界：内容必须先于确认按钮到人眼前、推给人的与喂给模型的必须同源、**写进终端前必须确认那个 tab 跑的还是 agent**（否则正文连同回车落进裸 shell = 当命令执行，`send()` 底层只挡 hasTUI 白名单，claude 不在其列）。
+- **脱敏引擎加固**（`orchestrator/secrets/redactor.ts`）：PEM 块整块脱（覆盖加密私钥头/PGP/单行粘贴/引用前缀/行尾空格/`=CRC` 等真实污染）、上下文 key 泛化 + 中文自然语言规则 + 全角分隔符、`strict` 模式额外脱 AK 类（**只**给会话历史源用，回显脱敏维持「AK 不自动脱」）。两个教训写在注释里：头行多一个空格曾导致「只脱了头却回报已脱敏」的**假阳性**（比漏脱危险）；PEM 正文写成嵌套量词曾引入**真 ReDoS**。
+
 进行中 / 待办：
 - performance-platform 对接：P1 只读监听 ✅（`orchestrator/perf` + perf-watcher，配 PERF_* 启用）；P2 认领开 tab 修（已含 lite 版）；P3 回写+校验闭环待 perf 侧加 CAS。设计见 docs/perf-integration.md
 - A3 Planner 甲（多 tab 自动串）/乙（单 tab SOP）方案待叠加
 - Dogfood 自审 phase 2（自动改 + 开 PR，需 worktree 隔离）
+- 公函纵深加固：用受限 `--permission-mode` / 工具白名单起处理公函的那个 claude 实例（`launchClaudeInTab` 现在不支持传自定义参数，要动 `orchestrator/agents` 抽象层）。当前防线是「人必须先看过与模型完全同一段正文」+「写终端前确认 tab 跑的是 agent」两道，不是工具级隔离
+- 公函 `send` 前那道闸没有回归测试（`handlers.ts` 的 `listTabs`/`send` 未做依赖注入）
 - TAPD 逐字段 diff（受限于 MCP 网关无变更历史 API，暂只做快照分级）
 
 下一会话从 `agent tabs` 开始看现状，然后 `cat MEMORY.md` 看 memory 上下文。CHANGELOG.md 顶部「未发布」区是最新交付的权威流水。

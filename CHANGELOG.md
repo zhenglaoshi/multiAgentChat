@@ -8,6 +8,10 @@
 
 ### 2026-09-09
 
+**文档**
+- 把最新功能补进对外文档：`README.md` 的「当前状态」清单补 9 项（Handoff 甩单 / 工作总结报告 / **CareyClaw 公函** / 裸 shell 保护 / 代码评审门 / 跨会话 RAG 召回 / TCC 授权自检 / `/connect` 一站式对接），「核心功能概览」新增「📊 工作总结报告」「📮 CareyClaw Agent 公函」两节（各带真实用法 + 为什么这么设计）；`CLAUDE.md` 阶段标题 2026-08 → 2026-09、目录树补 `orchestrator/letters/` 与 `letters-watcher.ts`、新增「2026-09 报告与协作」小节（含三个漏活根因与公函的三条硬边界）、待办补两条公函加固项；`docs/README.md` 索引补 §22 / §22b 入口；`.env.example` 补 `LETTERS_*` 配置段；`docs/commands.md` 的 `/report` 补四路数据源说明。
+
+
 **新增**
 - **CareyClaw Agent 公函接入**（`orchestrator/letters` + `im-lark/monitor/letters-watcher.ts`）。每 2 分钟拉一次「球在我这」的公函收件箱，新公函 / 对方回函了 → 推一张飞书任务卡（议题、发起方、参与方、待我答项数、strict 标记、他人欠答），卡上三个按钮：**📖 读全文**（拉线程正文推飞书）、**🛠 开工（建目录）**、🔗 打开公函页。
   - **走 MCP 而不是 REST，这是关键**：平台 `/api/v2/a2a/*` 只认浏览器 cookie，`oct_dev_` 开发者令牌请求它直接 401「请先登录」，而 cookie 要手机验证码登录、会过期，做不了无人值守轮询。同一批能力在 **MCP 端点 `https://bot.ihealthcn.com/mcp`** 上用 Bearer 开发者令牌就能访问（`a2a_inbox` / `a2a_read_thread` / `a2a_send_letter` / `a2a_my_commitments` …），于是整套登录态维护、验证码回填、agent-browser 流程全部省掉。令牌读 `~/.careyclaw/token-prod`（装过 careyclaw skill 的机器天然具备），所以默认启用，不想要用 `/connect` 停用或 `LETTERS_ENABLED=0`。

@@ -71,6 +71,14 @@
 - ✅ Dogfood 自审（`/selfaudit`：`claude -p` 定期审自己 CHANGELOG↔docs↔日志有没有出入）
 - ✅ Fleet 主动监控（卡住哨兵 · 闲置提议 · 每早摘要，主动推飞书不用你问）
 - ✅ 出站飞书消息统一加「🕐 时间 + 📁 路径」页脚
+- ✅ 同事任务甩单 Handoff（一句话把问题+AI 建议+文件甩给同事，经独立 relay 路由到对方飞书，状态双向同步）
+- ✅ 工作总结报告（`/report day|week|month|year`，四路数据源：git 提交 + 未提交改动 + 任务记忆 + **Claude Code 会话历史**）
+- ✅ CareyClaw Agent 公函接入（2min 轮收件箱 → 推全文 + 任务卡 → 确认后开 shell，同一封复用原 shell）
+- ✅ 裸 shell 保护（任务型 prompt 打进裸 zsh 会卡死 → 拦截 + 一键起 agent + watcher 自愈解卡）
+- ✅ 代码评审门（改产品代码交付前强制 `code-reviewer` + `security-reviewer` 双审，`/connect` 可开关）
+- ✅ 跨会话 RAG 召回（BM25 + 中文 bigram + cwd/时间加权，语料含 memories + knowledge，零依赖）
+- ✅ macOS TCC 授权自检（缺哪项 + 废哪些功能 + 一键开面板，启动/周期探针）
+- ✅ 一站式对接管理 `/connect`（TAPD / 性能平台 / 公函 / 知识提炼 / 企微 / Web面板 / 报告 / CareyClaw 按需开关）
 
 ---
 
@@ -235,6 +243,25 @@ KNOWLEDGE_EXTRACT_ENABLED=1              # .env
 agent knowledge stats/list/show/extract-last
 ```
 详见 [docs/knowledge.md](docs/knowledge.md)。
+
+### 📊 工作总结报告 · 日报 / 周报 / 月报 / 年报
+```bash
+/report day            # 今日简报         /report month     # 本月 PPT
+/report 昨天           # 补昨天的         /report 上周五    # 补那天的
+```
+**四路数据源缺一都会漏活**（每一路都对应过一次真实的「日报没总结进来」）：git 提交 ·
+未提交改动（按 mtime 限定在窗口内，当天新建还没 commit 的项目全靠它）· 任务记忆 ·
+**Claude Code 会话历史**（`~/.claude/projects/*.jsonl` 里真人打进去的原话——纯讨论、
+只读排查、在 TAPD/云控制台点配置、非 git 目录里的产出，只有这一路能看见）。
+月/年报出 PPT（pptxgenjs，无 python 依赖）。详见 [docs/features.md §22](docs/features.md)。
+
+### 📮 CareyClaw Agent 公函（A2A letters）
+别的团队的 agent 给你发正式技术文书 → 每 2 分钟拉一次收件箱 → **先推完整内容，再推任务卡**
+（一封一串，多封不合并）→ 点【✅ 确认，开工】才在 `~/ihealth-work/letter_xxx/` 建目录起 claude；
+**同一封公函复用原来那个 shell**（来回几轮不攒重复 tab）。
+走平台 **MCP 端点 + 开发者令牌**，不需要浏览器 cookie / 验证码，能无人值守轮询。
+公函正文是外部第三方写的，所以「内容必须先于确认按钮到人眼前」「写进终端前先确认那个 tab
+跑的还是 agent」都是硬边界。详见 [docs/features.md §22b](docs/features.md)。
 
 ---
 
