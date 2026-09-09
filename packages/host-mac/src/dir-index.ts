@@ -10,18 +10,38 @@ const execP = promisify(exec);
 
 const FILE = resolve('./data/dir-index.json');
 const REFRESH_TTL_MS = 24 * 60 * 60 * 1000;
-const SCAN_MAXDEPTH = 5;
-const SCAN_ROOTS = ['~', '~/ihealth-project', '~/code', '~/Projects', '~/projects'];
-const EXCLUDE_PATTERNS = [
-  '*/node_modules/*',
-  '*/.Trash/*',
-  '*/Library/*',
-  '*/.npm/*',
-  '*/.cache/*',
-  '*/.yarn/*',
-  '*/.vscode/*',
-  '*/dist/*',
-  '*/.next/*',
+/**
+ * 从**扫描根**往下的最大深度。
+ *
+ * 取 6 而非 5：根去重（`topScanRoots`）后 `~/ihealth-work` 这些子根不再各自单独扫，
+ * 统一从 `~` 起算，等于给它们的子树少了一层预算（`~/ihealth-work/fixes/<name>/.git`
+ * 从 home 数已经是第 4 层）。提一档把这层还回去，实测耗时无明显变化。
+ * 改动这个值请同时看 `tests/report-sessions.test.ts` 里 `dedupeContainedRoots` 的断言。
+ */
+const SCAN_MAXDEPTH = 6;
+/**
+ * 扫描根。`~/ihealth-work` 是 worktree / 临时工作目录的主力根（`prepareTaskWorkspace` 的
+ * `taskWorkroot` 也落这里），虽然 `~` + maxdepth 5 名义上已覆盖，但显式列出可以让
+ * `scanTopLevelContainers` 也收录它的子目录（`~` 因为太大被跳过了容器扫描）。
+ */
+const SCAN_ROOTS = ['~', '~/ihealth-project', '~/ihealth-work', '~/code', '~/Projects', '~/projects'];
+/**
+ * 扫描时**整棵剪掉**的目录名。
+ *
+ * 早先写成 `-not -path` 加 node_modules 通配（形如 星/node_modules/星）—— 那只过滤 find 的
+ * **输出**，find 照样递归下降进 node_modules / Library 把每个 inode 都 stat 一遍。
+ * 实测 `~/ihealth-project` 单个根
+ * 16.0s → 换成 `-prune` 后 0.68s（命中数完全一致），全盘扫从分钟级掉到秒级。
+ * 这也是「dir-index 一刷就要几分钟、于是只好挂 24h TTL、于是当天新建的仓库当天进不了报告」
+ * 的根源。加目录时留意：这里是**目录名**匹配（任意层级同名目录都会被剪）。
+ */
+const EXCLUDE_DIR_NAMES = [
+  'node_modules', '.Trash', 'Library', '.npm', '.cache', '.yarn', '.vscode', 'dist', '.next',
+  // 包管理器 / 运行时缓存：体量大且不可能有我的工作仓库
+  '.nvm', '.pnpm-store', '.gradle', '.m2', '.rustup', '.cargo', '.docker', '.orbstack',
+  '.npminstall_tarball', '.cursor',
+  // 媒体库（Photos / Music 的 .photoslibrary 内部有海量文件）
+  'Pictures', 'Music', 'Movies', 'Applications',
 ];
 
 export interface DirEntry {
@@ -62,43 +82,110 @@ async function flushToDisk(state: DirIndexState): Promise<void> {
 }
 
 /**
+ * `.git` 匹配式。
+ *
+ * **必须同时收 `-type d` 和 `-type f`**：普通仓库的 `.git` 是目录，但 **git worktree 的
+ * `.git` 是一个文件**（内容形如 `gitdir: /path/to/main/.git/worktrees/xxx`）。早先只写
+ * `-type d`，导致所有 worktree 对索引完全不可见——实测 `~/ihealth-work` 下 34 个 worktree
+ * 一个都没进索引，只收到 6 个普通 clone。而 worktree 正是本项目 `task-workspace.ts`
+ * 主推的任务隔离方式，于是「在 worktree 里干的活」全被工作报告漏掉。
+ */
+const GIT_MATCH = `-name .git '(' -type d -o -type f ')'`;
+
+/** 剪枝表达式（EXCLUDE_DIR_NAMES 是模块内常量，非用户输入）。 */
+function pruneExpr(): string {
+  const names = [...new Set(EXCLUDE_DIR_NAMES)].map((n) => `-name '${n}'`).join(' -o ');
+  return `'(' ${names} ')' -prune -o`;
+}
+
+/**
+ * 单个根的扫描超时。报告路径上会**同步**等这个扫描，没有上限的话一个病态目录
+ * （网络挂载失联、海量小文件）就能把整份报告卡死。超时后 exec 抛错，走下面的
+ * 「用已产出的部分 stdout」分支，宁可少几个仓库也不阻塞。
+ */
+const SCAN_TIMEOUT_MS = 60_000;
+
+/**
+ * 跑一条 find，返回命中的 `.git` 路径的父目录（= 仓库根）。
+ * find 只要有一个 perm-denied 就退 1，但 stdout 可能已经产出很多 —— 捕获后用 err.stdout。
+ * 参数刻意只收 `abs`（模块内常量派生）：这里是拼 shell 字符串交给 `exec`，
+ * 多一个能从外部灌入的拼接参数就是一个命令注入面。要加过滤条件请改成 execFile + 数组参数。
+ *
+ * 命中的 `.git` 自身也 `-prune`：找到就不必再下降进它内部（子模块在 `.git/modules` 下的
+ * 嵌套 `.git` 只会造出指向同一仓库的重复根）。
+ */
+async function findRepoRoots(abs: string): Promise<string[]> {
+  let stdout = '';
+  try {
+    const r = await execP(
+      `find "${abs}" -maxdepth ${SCAN_MAXDEPTH} ${pruneExpr()} ${GIT_MATCH} -print -prune 2>/dev/null`,
+      { maxBuffer: 4 * 1024 * 1024, timeout: SCAN_TIMEOUT_MS },
+    );
+    stdout = r.stdout;
+  } catch (e) {
+    const err = e as Error & { stdout?: string };
+    stdout = err.stdout ?? '';
+    // 部分结果也用；只有完全没结果才 warn
+    if (!stdout) {
+      logger.warn('dir-index scan failed for root', { root: abs, err: err.message });
+    }
+  }
+  const out: string[] = [];
+  for (const line of stdout.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    out.push(dirname(trimmed));
+  }
+  return out;
+}
+
+/**
+ * 去掉被别的路径包含的那些（纯逻辑，可测）。
+ * `SCAN_ROOTS` 里 `~` 已覆盖 `~/ihealth-project`、`~/ihealth-work`… 不去重就是把同一批目录
+ * 遍历好几遍（全量扫时间成倍上涨）。
+ * 按路径**分段**判断而非裸前缀：`/a/bc` 不该被 `/a/b` 吃掉。
+ */
+export function dedupeContainedRoots(paths: string[]): string[] {
+  const uniq = [...new Set(paths)];
+  return uniq.filter((r) => !uniq.some((o) => o !== r && r.startsWith(o.endsWith('/') ? o : `${o}/`)));
+}
+
+/** 存在的扫描根，去掉被别的根包含的那些。容器扫描仍用完整 SCAN_ROOTS——它要的正是这些子根。 */
+function topScanRoots(): string[] {
+  return dedupeContainedRoots(SCAN_ROOTS.map(expandHome).filter((p) => existsSync(p)));
+}
+
+/**
  * 扫全机 git 仓库 —— 用 find 命令一把梭，比递归 readdir 快。
- * 排除 node_modules / Library 等噪音目录。
+ * 排除 node_modules / Library 等噪音目录（`-prune`，见 EXCLUDE_DIR_NAMES）。
  */
 async function scanGitRepos(): Promise<string[]> {
   const results = new Set<string>();
-  const excludeArgs = EXCLUDE_PATTERNS.flatMap((p) => ['-not', '-path', p]);
-
-  for (const root of SCAN_ROOTS) {
-    const abs = expandHome(root);
-    if (!existsSync(abs)) continue;
-    // find 只要有一个 perm-denied 就退 1，但 stdout 可能已经产出很多 —— 捕获后用 err.stdout
-    let stdout = '';
-    try {
-      const r = await execP(
-        `find "${abs}" -maxdepth ${SCAN_MAXDEPTH} -name .git -type d ${excludeArgs.map((a) => (a.startsWith('-') ? a : `'${a}'`)).join(' ')} 2>/dev/null`,
-        { maxBuffer: 4 * 1024 * 1024 },
-      );
-      stdout = r.stdout;
-    } catch (e) {
-      const err = e as Error & { stdout?: string };
-      stdout = err.stdout ?? '';
-      // 部分结果也用；只有完全没结果才 warn
-      if (!stdout) {
-        logger.warn('dir-index scan failed for root', {
-          root: abs,
-          err: err.message,
-        });
-      }
-    }
-    for (const line of stdout.split('\n')) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      const repo = dirname(trimmed);
-      results.add(repo);
-    }
+  for (const abs of topScanRoots()) {
+    for (const repo of await findRepoRoots(abs)) results.add(repo);
   }
   return [...results];
+}
+
+/**
+ * 保证索引「不比 `since` 旧」，需要时同步做一次全量刷新。
+ *
+ * 报告专用。默认 24h TTL 意味着**当天新建的仓库当天进不了报告**——实测新建的项目
+ * （几十个文件已 `git add`）就因此整个从日报里消失，而日报最该关心的恰恰是今天新开的活。
+ * 以前不敢在报告路径上同步刷新是因为全量扫要分钟级；改用 `-prune` + 根去重后全量约 7s，
+ * 直接刷全量比「只找窗口内动过 .git 的增量扫」更简单也更准（后者漏掉纯编辑没跑过 git 的目录）。
+ */
+export async function ensureDirIndexFresh(since: Date): Promise<DirIndexState> {
+  const cur = cache ?? (await loadFromDisk());
+  if (cur) {
+    cache = cur;
+    if (cur.updatedAt >= since.getTime()) return cur;
+  }
+  logger.info('dir-index 早于报告窗口，强制刷新', {
+    updatedAt: cur ? new Date(cur.updatedAt).toISOString() : null,
+    since: since.toISOString(),
+  });
+  return refreshDirIndex(true);
 }
 
 /**

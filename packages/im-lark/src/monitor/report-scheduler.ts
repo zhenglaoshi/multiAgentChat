@@ -75,9 +75,12 @@ export function startReportScheduler(client: Lark.Client): void {
   const fireOne = async (s: Sched, key: string): Promise<void> => {
     const chats = await listAllChats();
     if (chats.length === 0) { logger.warn('report scheduler 无 chat 可推'); return; }
-    // 报告候选仓库（dir-index 全量 ∪ tab/最近/worktasks）；下游按时间窗+mtime 过滤只留今天有活动的。
-    const repos = await activeReportRepos().catch(() => [] as string[]);
-    const collect = () => collectWorkData({ window: s.kind, repos, prev: s.prev });
+    // 报告候选仓库（dir-index 全量 ∪ tab/最近/worktasks ∪ 窗口内新鲜度兜底）；
+    // 下游按时间窗+mtime 过滤只留今天有活动的。
+    const w = reportWindow(s.kind, s.prev);
+    const repos = await activeReportRepos({ since: w.since, until: w.until }).catch(() => [] as string[]);
+    // 复用上面那个 w（同 handlers）：两处同窗，会话采集才能命中缓存只扫一遍
+    const collect = () => collectWorkData({ window: s.kind, repos, prev: s.prev, window_: w });
     if (s.format === 'pptx') {
       const out = `/tmp/mchat-report-${key.replace(/[:\s]/g, '_')}.pptx`;
       const { path } = await generatePptxReport(collect, out, '郑纪泉');

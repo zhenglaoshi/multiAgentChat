@@ -1,9 +1,9 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { logger, listWorkTasks } from 'multiagent-orchestrator';
+import { logger, listWorkTasks, collectSessionActivity } from 'multiagent-orchestrator';
 import { listTabs } from './terminal/tabs.js';
 import { listRecentCwds } from './recent-cwds.js';
-import { getDirIndex, type DirEntry } from './dir-index.js';
+import { getDirIndex, ensureDirIndexFresh, type DirEntry } from './dir-index.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -29,13 +29,18 @@ async function gitRoot(dir: string): Promise<string | null> {
  * 早先只按 tab/最近/worktasks 收窄，会把「今天真改了、但没开着 tab 也没 cd 记录」的仓库
  * （如 performance-platform-web）漏在集合外 → 今天的活进不了报告。纳入全部 + 下游过滤 = 不漏又不脏。
  * .nvm / 插件市场 / 上家老代码这类没今天活动的仓库，扫到了也被过滤掉，不进报告。
+ *
+ * 传 `window` 时额外开两条**新鲜度**兜底（dir-index 有 24h TTL，只靠它会漏掉「当天新建」的仓库）：
+ * 索引早于窗口起点就先刷新，再并入窗口内有真人会话的 cwd（连非 git 目录也覆盖到）。
  */
-export async function activeReportRepos(): Promise<string[]> {
+export async function activeReportRepos(window?: { since: Date; until: Date }): Promise<string[]> {
   const roots = new Set<string>();
 
   // 1) dir-index 全部 git 仓库 —— 覆盖「今天有活动」全量。dir-index 的 path 本身就是仓库根，
   //    直接纳入，无需再 rev-parse（省掉上百次 git 调用）。
-  const index = await getDirIndex().catch(() => ({ dirs: [] as DirEntry[] }));
+  //    给了报告窗口时先保证索引不比窗口旧，否则当天新建的仓库整个看不见。
+  const index = await (window ? ensureDirIndexFresh(window.since) : getDirIndex())
+    .catch(() => ({ dirs: [] as DirEntry[] }));
   for (const d of index.dirs) if (d.isGitRepo) roots.add(d.path);
 
   // 2) tab / recent-cwds / worktasks 里的目录可能是仓库**子目录**或 dir-index 未收录的新 worktree，
@@ -52,6 +57,17 @@ export async function activeReportRepos(): Promise<string[]> {
     if (t.taskDir) extras.add(t.taskDir);
     // t.repos 混了 repo 名与工作目录，只收绝对路径的，避免把裸名字拼错。
     for (const r of t.repos ?? []) if (r.startsWith('/')) extras.add(r);
+  }
+
+  // 3) 会话 cwd 兜底（仅在给了报告时间窗时）：窗口内真人在哪些目录起过 claude。
+  //    覆盖索引和 tab 都抓不到的情况——在父目录起 claude 让它去子目录建项目、
+  //    或干脆在非 git 目录里干活。失败只是少一层兜底，不阻断报告。
+  if (window) {
+    const sessions = await collectSessionActivity(window.since, window.until).catch((e) => {
+      logger.warn('report 会话活动采集失败', { err: (e as Error).message });
+      return { cwds: [] as string[], prompts: [] };
+    });
+    for (const c of sessions.cwds) extras.add(c);
   }
 
   // 有并发上限地解析 extras（避免一次 spawn 上百个 git 子进程）。

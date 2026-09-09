@@ -6,6 +6,7 @@ import { logger } from '../logger.js';
 import { memoryStore } from '../memory/store.js';
 import type { TaskMemory } from '../memory/types.js';
 import { beijingDateOf, beijingPartsOf, parseYmd, type DateParts } from './args.js';
+import { collectSessionActivity, type SessionPrompt } from './sessions.js';
 import type { ReportWindow } from './types.js';
 
 const execFileAsync = promisify(execFile);
@@ -55,6 +56,11 @@ export interface CollectedWork {
   tasks: { prompt: string; summary?: string; cwd: string; endedAt: number }[];
   /** 未提交改动（prev=false 时采集，按 mtime 限定在时间窗内；prev=true 为空数组）。 */
   uncommitted: UncommittedRepo[];
+  /**
+   * 窗口内我在各目录发起的会话输入（Claude Code 会话历史，已脱敏）。
+   * 覆盖前三个源都看不见的活：纯讨论 / 只读排查 / 在外部平台点配置 / 非 git 目录里的产出。
+   */
+  sessions: SessionPrompt[];
 }
 
 /**
@@ -202,12 +208,25 @@ async function repoLocalAuthors(repo: string): Promise<string[]> {
   const out: string[] = [];
   for (const key of ['user.name', 'user.email']) {
     try {
-      const v = (await execFileAsync('git', ['-C', repo, 'config', key], { timeout: 5000 })).stdout.trim();
+      const v = (await execFileAsync('git', ['-C', repo, 'config', key], { timeout: 5000, env: GIT_ENV })).stdout.trim();
       if (v) out.push(v);
     } catch { /* ignore */ }
   }
   return out;
 }
+
+/**
+ * 「仓库正常，只是还没有任何提交」——`git log` 对空仓库退非 0，但这不是故障：
+ * 刚 `git init`、活儿全在工作区的新项目就是这样（正是报告最该关心的一类）。
+ * 静默返回空即可，否则每出一次报告就刷一串误导性 WARN。
+ * git 子进程统一带 `LC_ALL=C`，错误文案不随系统语言变，这里才能稳定识别。
+ */
+function isEmptyRepoError(msg: string): boolean {
+  return /does not have any commits yet|unknown revision or path not in the working tree/i.test(msg);
+}
+
+/** git 子进程统一环境：锁英文输出，便于稳定识别错误类型。 */
+const GIT_ENV = { ...process.env, LC_ALL: 'C' };
 
 async function gitLog(repo: string, since: Date, until: Date, authors: string[]): Promise<GitCommit[]> {
   // 全局身份 ∪ 本 repo local 身份（多身份场景：全局 A、某 repo local B）
@@ -220,14 +239,15 @@ async function gitLog(repo: string, since: Date, until: Date, authors: string[])
     ...allAuthors.map((a) => `--author=${a}`),
   ];
   try {
-    const { stdout } = await execFileAsync('git', args, { timeout: 20_000, maxBuffer: 8 * 1024 * 1024 });
+    const { stdout } = await execFileAsync('git', args, { timeout: 20_000, maxBuffer: 8 * 1024 * 1024, env: GIT_ENV });
     const base = repo.split('/').pop() || repo;
     return stdout.split('\n').filter((l) => l.trim()).map((l) => {
       const [hash, date, subject] = l.split('\x1f');
       return { repo: base, hash: hash ?? '', date: date ?? '', subject: subject ?? '' };
     });
   } catch (e) {
-    logger.warn('report gitLog failed', { repo, err: (e as Error).message });
+    const msg = (e as Error).message;
+    if (!isEmptyRepoError(msg)) logger.warn('report gitLog failed', { repo, err: msg });
     return [];
   }
 }
@@ -277,8 +297,11 @@ async function gitUncommitted(repo: string, since: Date, until: Date): Promise<U
       execFileAsync('git', ['-C', repo, 'status', '--porcelain', '-z'], {
         timeout: 10_000,
         maxBuffer: 4 * 1024 * 1024,
+        env: GIT_ENV,
       }),
-      execFileAsync('git', ['-C', repo, 'rev-parse', '--abbrev-ref', 'HEAD'], { timeout: 5000 })
+      // `branch --show-current` 而非 `rev-parse --abbrev-ref HEAD`：后者在**尚无任何提交**的
+      // 新仓库上直接失败（分支名只好留空），而新建项目正是报告最该报的一类活。
+      execFileAsync('git', ['-C', repo, 'branch', '--show-current'], { timeout: 5000, env: GIT_ENV })
         .then((r) => r.stdout.trim())
         .catch(() => ''),
     ]);
@@ -318,8 +341,19 @@ export async function collectWorkData(opts: {
   prev?: boolean;
   /** 'YYYY-MM-DD' 日期锚点（北京时区）；缺省 = 当天/当期。补历史日报用。 */
   anchor?: string;
+  /**
+   * 调用方已经算好的时间窗，直接复用（不再内部重算）。
+   *
+   * 为什么需要：当期报告（无 anchor、非 prev）的 `until` 就是 `new Date()`——调用方先算一次
+   * 窗口去挑候选仓库，几百毫秒到数秒后这里再算一次，两个 `until` 必然差几毫秒。
+   * 于是 `collectSessionActivity` 的窗口缓存 key 对不上、**永远不命中**，
+   * 「一次报告只扫一遍会话语料」的设计被架空，默认 `/report` 和每日定时报告都白扫两遍。
+   * 传了就用调用方那个，两边严格同窗。
+   */
+  window_?: { since: Date; until: Date; sinceLabel: string; untilLabel: string };
 }): Promise<CollectedWork> {
-  const { since, until, sinceLabel, untilLabel } = reportWindow(opts.window, opts.prev ?? false, opts.anchor);
+  const { since, until, sinceLabel, untilLabel } =
+    opts.window_ ?? reportWindow(opts.window, opts.prev ?? false, opts.anchor);
   const gitAuthors = opts.gitAuthors && opts.gitAuthors.length ? opts.gitAuthors : await detectGitAuthors();
 
   const commitLists = await mapLimit(opts.repos, REPO_SCAN_CONCURRENCY, (r) => gitLog(r, since, until, gitAuthors));
@@ -343,5 +377,13 @@ export async function collectWorkData(opts: {
     uncommitted = lists.filter((u): u is UncommittedRepo => u !== null);
   }
 
-  return { window: opts.window, sinceLabel, untilLabel, gitAuthors, commits, tasks, uncommitted };
+  // 会话历史：前三个源的盲区兜底（见 sessions.ts 顶部注释）。采集失败不阻断报告。
+  const sessions = await collectSessionActivity(since, until)
+    .then((a) => a.prompts)
+    .catch((e) => {
+      logger.warn('report 会话历史采集失败', { err: (e as Error).message });
+      return [] as SessionPrompt[];
+    });
+
+  return { window: opts.window, sinceLabel, untilLabel, gitAuthors, commits, tasks, uncommitted, sessions };
 }
