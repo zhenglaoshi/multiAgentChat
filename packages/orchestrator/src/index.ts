@@ -19,3 +19,4 @@ export * from './letters/index.js';
 export * from './dogfood/index.js';
 export * from './shell-safety/index.js';
 export * from './handoff/index.js';
+export * from './bootcheck/index.js';

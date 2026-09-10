@@ -19,6 +19,7 @@
 - **[tapd.md](tapd.md)** — TAPD Bug 自动监听：推卡→认领→多选 repo→切分支→开 claude tab 修复→回写状态
 - **[features.md § 22](features.md)** — 工作总结报告（日/周/月/年报，四路数据源；含「漏活的高发区」防回归说明）
 - **[features.md § 22b](features.md)** — CareyClaw Agent 公函：2min 轮收件箱 → 推全文 + 任务卡 → 确认后开 shell（走 MCP 不走 REST）
+- **[features.md § 34](features.md)** — `agent bootcheck`：交付/push 前的通用机器门（发现项目自己的加载期冒烟 → 跑 → 如实报告；全局 git hook + opt-in 白名单）
 - **[perf-integration.md](perf-integration.md)** — performance-platform 性能建议对接方案（P1 只读监听 + P2 认领并建需求已落地）
 - **[handoff-deployment.md](handoff-deployment.md)** — 同事任务甩单：**部署与使用指南**（环境变量总表 / 上线三步 / 排障），要落地看这篇
 - **[handoff-integration.md](handoff-integration.md)** — 同事任务甩单：设计/协议/分期（中转 relay + OIDC 门户，配套独立项目 `../multiagent-relay/`）

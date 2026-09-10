@@ -110,6 +110,8 @@ interface Flags {
   originCwd?: string;     // agent lark send-text --origin-cwd <cwd>：hook 传 Claude Code cwd，反查 fallback
   subagent?: string;      // agent task stage-auto --subagent <type>：Task hook 传 subagent_type
   question: boolean;      // agent lark send-text --question：本次推送含待用户回答的问题，daemon 记 pendingAnswerTty
+  json: boolean;          // agent bootcheck --json：机器可读输出（给 reviewer 贴进审查报告）
+  hook: boolean;          // agent bootcheck --hook：git hook 调用，只对白名单仓库真跑、失败才拦
   optionsJson?: string;   // agent lark send-text --options-json '["是","否"]'：AskUserQuestion 选项 label
   options?: string;       // agent lark ask --options "a,b,c" (逗号分隔简写)
   specJson?: string;      // agent lark ask form --spec-json '{"questions":[...]}'（多问题表单）
@@ -141,6 +143,8 @@ function parseArgs(args: string[]): Flags {
     plain: false,
     auto: false,
     question: false,
+    json: false,
+    hook: false,
     attach: [],
     positional: [],
   };
@@ -204,6 +208,10 @@ function parseArgs(args: string[]): Flags {
       flags.auto = true;
     } else if (a === '--question') {
       flags.question = true;
+    } else if (a === '--json') {
+      flags.json = true;
+    } else if (a === '--hook') {
+      flags.hook = true;
     } else if (a === '--origin-pid') {
       const v = args[++i] ?? die('--origin-pid 需要数字');
       const n = Number(v);
@@ -1856,6 +1864,17 @@ function printHelp() {
       '       --chat 不给时走 WECOM_DEFAULT_TO_USER；@target 派发到 tab 目前只支持',
       '       企微收消息端（企微 chat → @ttys003 命令），CLI 侧发消息不涉及 tab',
       '',
+      '交付前的机器门（bootcheck —— 评审门门 1 的执行体，任意项目通用）：',
+      '  agent bootcheck                          在当前仓库跑「还能不能起来」检查',
+      '                                            发现顺序：typecheck → check:boot/check:schema/smoke',
+      '                                            → 都没有就退化跑 build；一个都没有则如实报「未做机器验证」',
+      '  agent bootcheck --json                   机器可读（reviewer 把这段贴进审查报告）',
+      '  agent bootcheck install-hook             装全局 git hook（core.hooksPath，一次管所有仓库）',
+      '                                            标准 hook 名都装 dispatch：先跑仓库自己的同名 hook',
+      '  agent bootcheck allow | deny             把当前仓库加入/移出白名单（默认谁都不自动跑）',
+      '  agent bootcheck status | list | remove-hook',
+      '       逃生开关：SKIP_BOOTCHECK=1 git push ...',
+      '',
       '安装 Claude Code 全局 skill：',
       '  agent install-skill                      把 multiagent-lark 装到 ~/.claude/skills/',
       '                                            装完所有 Mac 上的 claude 都自动知道用 agent lark',
@@ -2133,6 +2152,122 @@ async function cmdContacts(): Promise<void> {
   }
 }
 
+/**
+ * agent bootcheck —— 「这份改动还能不能起来」的通用机器门（评审门门 1 的执行体）。
+ *
+ * 刻意**不走 daemon socket**：git hook 场景 daemon 可能没起，而这件事本身只是
+ * 「在某个目录里跑该项目自己的脚本」，没有任何需要 daemon 的状态。
+ */
+async function cmdBootCheck(flags: Flags): Promise<void> {
+  const {
+    runBootCheck,
+    formatBootCheckReport,
+    installGlobalHook,
+    removeGlobalHook,
+    hookStatus,
+    allowRepo,
+    denyRepo,
+    readConfig,
+    decideAllowed,
+    repoFingerprint,
+    repoRootOf,
+  } = await import('multiagent-orchestrator');
+
+  const sub = flags.positional[0];
+
+  if (sub === 'install-hook') {
+    const r = installGlobalHook();
+    stdout.write(r.message + '\n');
+    if (!r.ok) exit(1);
+    return;
+  }
+  if (sub === 'remove-hook') {
+    const r = removeGlobalHook();
+    stdout.write(r.message + '\n');
+    if (!r.ok) exit(1);
+    return;
+  }
+  if (sub === 'status') {
+    const st = hookStatus();
+    const cfg = readConfig();
+    stdout.write(`全局 hook 目录：${st.dir}\n`);
+    stdout.write(`core.hooksPath：${st.globalHooksPath ?? '(未设)'}${st.installed ? ' ← 已指向我们' : ''}\n`);
+    stdout.write(`脚本齐备：${st.scriptsPresent ? '是' : '否'}\n`);
+    stdout.write(`白名单仓库（${cfg.hookRepos.length}）：\n`);
+    for (const e of cfg.hookRepos) {
+      const when = e.approvedAt ? e.approvedAt.slice(0, 19).replace('T', ' ') : '(旧格式，需重新确认)';
+      stdout.write(`  ${e.repo}  ← 登记于 ${when}\n`);
+    }
+    if (!cfg.hookRepos.length) stdout.write('  (空——pre-push 不会自动跑任何仓库的脚本)\n');
+    return;
+  }
+
+  const target = repoRootOf(flags.cwd ?? procCwd());
+
+  if (sub === 'allow') {
+    const r = allowRepo(target);
+    if (r.unchanged) {
+      stdout.write(`已在白名单且脚本未变：${r.repo}\n`);
+      return;
+    }
+    stdout.write(`${r.refreshed ? '✓ 已重新确认' : '✓ 已登记'}：${r.repo}\n`);
+    if (r.approvedCommands.length) {
+      stdout.write('  此后 push 时会自动执行下面这些命令（你正在信这段内容）：\n');
+      for (const c of r.approvedCommands) stdout.write(`    ${c}\n`);
+    } else {
+      stdout.write('  这个仓库当前没有可跑的检查脚本（bootcheck 会如实报「未做机器验证」）\n');
+    }
+    stdout.write(
+      '  ⚠ 执行时继承你 shell 的全部环境变量（含你 export 过的 token/密钥）。\n' +
+        '  ⚠ 指纹覆盖：上面这些命令（含 pre/post 钩子）+ 命令指向的仓库内文件的内容\n' +
+        '     （目录引用 / 省略扩展名 / 引号内嵌 / --flag=path 都能认出来）。\n' +
+        '  ⚠ 仍不覆盖：传递依赖（被指向的脚本 import 的其它文件）、非 JS 运行时命令里的裸词路径、\n' +
+        '     单条命令引用超 20 个文件时排在后面的那些。所以别在这个目录 review 不信任的 PR。\n',
+    );
+    return;
+  }
+  if (sub === 'deny') {
+    stdout.write(denyRepo(target) ? `✓ 已移出白名单：${target}\n` : `本来就不在白名单：${target}\n`);
+    return;
+  }
+  if (sub === 'list') {
+    for (const e of readConfig().hookRepos) stdout.write(e.repo + '\n');
+    return;
+  }
+  if (sub && sub !== 'run') {
+    die(`未知子命令：${sub}（可用：run(默认) / install-hook / remove-hook / status / allow / deny / list）`);
+  }
+
+  // hook 模式：白名单按**内容**授信（不只按路径）。任何一种「不该跑」都 fail-open 放行 push
+  // ——这是质量闸不是安全闸，堵死会让人直接卸掉它。但绝不盲跑没过目的脚本内容。
+  if (flags.hook) {
+    const decision = decideAllowed(target, readConfig().hookRepos, repoFingerprint(target));
+    if (!decision.allowed) {
+      if (decision.reason === 'not-listed') {
+        stdout.write(`bootcheck: ${target} 不在白名单，跳过（agent bootcheck allow 可启用）\n`);
+      } else {
+        stdout.write(
+          `bootcheck: 跳过——${target} 里会被自动执行的脚本内容变了（切分支 / 拉 PR / 换 worktree？）。\n` +
+            `  没有盲跑陌生内容。过目后重新确认：agent bootcheck allow\n`,
+        );
+      }
+      return;
+    }
+  }
+
+  const report = await runBootCheck({ cwd: target });
+  stdout.write(flags.json ? JSON.stringify(report, null, 2) + '\n' : formatBootCheckReport(report) + '\n');
+  if (report.status === 'fail') {
+    if (flags.hook) {
+      stdout.write(
+        '\n✋ push 已拦下：上面这步没过，这样上线可能起不来。\n' +
+          '   确认要强推：SKIP_BOOTCHECK=1 git push ...\n',
+      );
+    }
+    exit(1);
+  }
+}
+
 async function main(): Promise<void> {
   const [, , cmd = 'help', ...rest] = argv;
   const flags = parseArgs(rest);
@@ -2211,6 +2346,8 @@ async function main(): Promise<void> {
         return await cmdContacts();
       case 'report':
         return await cmdReport(flags);
+      case 'bootcheck':
+        return await cmdBootCheck(flags);
       case 'help':
       case '--help':
       case '-h':

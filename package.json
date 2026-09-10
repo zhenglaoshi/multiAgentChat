@@ -21,6 +21,7 @@
     "agent": "tsx packages/framework/src/control/cli.ts",
     "build": "tsc -b",
     "typecheck": "tsc -b --pretty",
+    "check:boot": "tsx scripts/check-boot.ts",
     "gen:feishu-commands": "tsx scripts/gen-feishu-commands.ts",
     "verify:feishu-commands": "tsx scripts/gen-feishu-commands.ts --verify"
   },

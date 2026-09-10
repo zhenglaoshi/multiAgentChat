@@ -1152,6 +1152,121 @@ daemon 启动幂等把两个 subagent 装到 `~/.claude/agents/`。
 
 ---
 
+## 34. `agent bootcheck` · 「这份改动还能不能起来」的通用机器门
+
+### 能力
+交付/push 前跑一次确定性检查，专挡**启动期/装配期崩溃**——这类问题静态读 diff 挡不住，但编译期 100% 可机器检出。
+
+```bash
+agent bootcheck                 # 在当前仓库跑，人读输出
+agent bootcheck --json          # 机器可读（reviewer 把这段贴进审查报告当证据）
+agent bootcheck install-hook    # 装全局 git hook：一次管所有仓库
+agent bootcheck allow | deny    # 把当前仓库加入/移出白名单（默认谁都不自动跑）
+agent bootcheck status | list | remove-hook
+SKIP_BOOTCHECK=1 git push       # 逃生开关
+```
+
+**发现顺序**（`orchestrator/bootcheck/plan.ts`，纯函数可测）：`typecheck` → `check:boot` / `check:schema` /
+`check:startup` / `smoke`（项目自备的加载期冒烟，按优先级）→ 都没有则退化跑 `build`。一个都没有就如实
+输出「未做机器验证」，**不假装验证过**。报告里区分「加载期冒烟」和「静态检查」两种 kind——后者挡不住装配期崩溃。
+
+### 为什么这么切分
+**通用层只负责发现、调用、判定、如实报告；「精准短路外部连接」只能各项目自己提供。**
+刻意不做「通用地起一次进程」兜底：iHealth 这批服务 env 来自 K8s，本地起会因连不上 DB/MQ 而退出，
+判 FAIL 是假警报。所以每个项目自己写一个 `check:boot`（样板见 pivotal-parrot 的 `scripts/check-schema.js`：
+组装 apollo schema 前把 `MQ_URL` 置空，免得挂消费者跟线上抢消息）。
+
+本仓库自己的 `check:boot` = `scripts/check-boot.ts`：① 真 import 五个 workspace 包入口（顶层 throw /
+循环 import / 模块级副作用炸掉，只有真加载才暴露）；② 查本仓库的跨文件契约——`protocol.ts` 的 op
+字面量 ↔ `server.ts` 的 case 分支双向对齐（CLAUDE.md 扩展坑 #4 要求的三处同改，漏一处 typecheck 未必报，
+但那条 CLI 命令直接不可用）。刻意**不** import `apps/daemon/src/index.ts`：它底部就调 `main()`，
+import 等于把 daemon 起起来——冒烟脚本的通用注意点是「只组装、不启动」。
+
+### 全局 git hook 的两个坑（`orchestrator/bootcheck/hook.ts`）
+1. **`core.hooksPath` 一设就接管所有 hook 类型**：各仓库 `.git/hooks/` 里原有的 pre-commit / commit-msg
+   会被**整体忽略**。所以给 git 的**完整** hook 名单（28 个）都装同一份 dispatch，脚本第一件事是
+   **把仓库自己的同名 hook 链起来跑**（透传参数与 stdin，本地 hook 失败即整体失败）。本机实测
+   blog-backend / pigeon 各有一整套 husky 老版本装的 hook，少列一个名字就等于悄悄废掉人家一个 hook。
+   （husky 新版设的是**本地** `core.hooksPath`，本地配置优先，不受影响。）
+2. **不覆盖已有的全局 hooksPath**：已指向别处时 install 直接拒绝并说明，而不是顶掉人家的配置。
+   定位本地 hook 用 `git rev-parse --git-common-dir`，**不能**用 `--git-path hooks/x`（后者受
+   `core.hooksPath` 影响会链回自己 → 无限递归）；用 marker 注释认自己。
+   另外 dispatch 走「便宜路径优先」：cwd 下 `.git` 是目录就直接用，只有 worktree / submodule（`.git` 是文件）
+   才 fork 一次 `git rev-parse`——`fsmonitor-watchman`（配了 `core.fsmonitor` 时几乎每次 `git status` 都调）
+   和 `reference-transaction`（一次 push/fetch 可能按 ref 触发多次）都在这 28 个名字里，每次多 fork 一个
+   子进程是可感知的开销。
+
+**opt-in 白名单 = 按内容授信（TOFU），不按路径授信**（`~/.multiagent-chat/bootcheck.json`，0600/0700）。
+hook 会自动执行仓库里的 npm script，这是真实的供应链面；但**光有路径白名单不够**（security-reviewer 审出的
+high）：路径不变、内容随便换 —— 日常最容易踩的是「在自己常用的仓库目录里 checkout 同事的 PR / `git worktree add`
+/ 拉了别人控制的 submodule，然后 push 了个无关分支」，此刻磁盘上那几个固定名字的 script 已经是别人写的了。
+脚本**名字**受控不等于**内容**受控。所以：
+
+- `agent bootcheck allow` 时对「将来真会被执行的那几条命令」做 sha256 快照，并**把这些命令原样打印出来**
+  （让你知道自己在信什么），外加提醒「执行时继承你 shell 的全部环境变量，含 export 过的 token/密钥」。
+- **指纹范围（两条旁路是安全评审实测出来的，都已纳入）**：
+  ① `pre<name>` / `post<name>` 前后钩子 —— npm / pnpm / yarn **三者都**会对任意脚本名自动跑它们
+  （实测：加个 `precheck:boot`，`npm run check:boot` 会先跑它）。只 hash `check:boot` 的话，攻击者
+  不碰它、只新增 `precheck:boot` 就能让指纹不变而代码换掉，而且 `allow` 打印给人过目的清单里
+  **根本看不到这个键** —— 人在过目那一刻就是瞎的。
+  ② 命令**指向的仓库内文件的内容**（`check:boot: tsx scripts/check-boot.ts` 里那个 `.ts`）——
+  否则这行不变、文件被换掉，指纹照样不变，TOFU 信的就只是个指针。
+  这个识别被连着抓了**三轮**，现在覆盖：目录引用（`node .` / `node ./dist`）—— 按 Node 规则**递归**解析
+  `main`（含省略扩展名、指子目录），否则 `index.*`。⚠ **刻意不读 `exports`**：真 node v22 实测过，
+  `node <目录>` 这种 CLI 直接执行目录的场景 Node **根本不看 `exports`**（CJS / ESM 都一样），只认
+  `main` → 否则 `index.js`；`exports` 只在被 `require()`/`import` 当模块引用时才生效。
+  第五轮评审就是抓的这个：「顺手支持 exports」反而制造了一个更隐蔽的洞 —— 仓库只要有 `exports`
+  （大量 2020 年后的包都有，哪怕只是给外部消费者用）+ 没有可用 `main` + 有 `index.js`，就会命中
+  exports 目标、提前返回、**永不再试 `index.js`** → 锁了个真实 node 从不执行的文件，而 `allow` 清单
+  显示「已锁定」、`unresolved` 也是空的 → **伪造出「已被保护」的假象，比「看不出没锁」更糟**。
+  · 省略扩展名（`node ./noext`）· 引号内嵌路径
+  （`node -e "require('./x.js')"`）· `--flag=path` 等号内嵌 · 引号内含空格的路径（所以自己分词，不用 `split(/\s+/)`）。
+  **实在定位不到入口时会明确标出「这条没做内容锁」**（`allow` 的清单里带 ⚠），因为「不显示锁定」很容易被
+  读成「这条命令没有仓库内文件依赖」—— 第四轮就是这个盲区让 `"main": "lib/index"` 与「只有 exports」
+  两种主流布局下 `node .` 完全没锁而没人看得出来。
+  上限也不再「扫到第 5 个就提前退出」——那样攻击者只要在命令里先垫 5 个正常文件、把真载荷排在后面，
+  那个文件就永远不进指纹；现在扫全部、排序后取前 20 个，**并把引用总数写进指纹**（垫参数会让总数变）。
+  反过来也校准过：`npm run --silent build` 不会把 `build/` 产物目录当路径，否则每次构建都变指纹、天天弹「重新确认」，没人会再看。
+- ⚠ **仍未覆盖（如实记，别当成已解决）**：**传递依赖**（本仓库的 `check-boot.ts` 自己就 import 了五个包的整棵树）、
+  非 JS 运行时命令里的裸词路径、以及单条命令引用超过 20 个文件时排在后面的那些。彻底闭合等于把整棵源码树都
+  hash，那已经是另一个东西（「信任这个 commit」）。这道门的诚实定位是：把「同一目录被换了内容」从
+  **静默执行**变成**要么指纹不符被挡下、要么你亲眼过目过**，而不是「能改仓库任意文件的人也改不动被执行的内容」。
+- pre-push 时重新算指纹：不一致 → **不跑**，打印「脚本内容变了，过目后重新确认 `agent bootcheck allow`」，
+  但**不堵 push**（fail-open：这是质量闸不是安全闸，堵死会让人直接卸掉它）。
+- 只对 plan 认识的那几个 script 名取 hash——改 `test` 或加依赖不该弹提示，否则噪音大到没人看。
+- 早期「只存路径字符串」的配置格式 → 当作需要重新确认，不无条件放行。配置坏了当空白名单（fail-closed）。
+- `agent` 不在 PATH 时 hook 放行，但**打一行 stderr 提示**——完全静默会让你误以为「装了 hook 所以每次 push
+  都验过了」，其实从未运行。
+
+**两条 code-reviewer 审出的 high，都在 `run.ts`/`hook.ts` 里修了并有回归测试**：
+0. **`detached` 引入的新回归也一并修了**（第三轮实测出来的）：子进程自成进程组后，终端 Ctrl-C
+   只打到父进程，被 spawn 的 `npm/tsc` 会变孤儿继续跑（watch 类脚本会一直吃 CPU），而 pre-push
+   慢时用户按 Ctrl-C 很常见。`runBootCheck` 现在装一次性 `SIGINT`/`SIGTERM` handler，收到信号
+   把当前子进程整组带走再按 shell 约定退出（130/143），跑完卸载 listener。
+1. **超时只 kill 直接子进程会永挂**：`npm run` → `sh -c` → 真命令是三级进程树，SIGKILL 只杀第一级；
+   孙进程若还攥着 stdout/stderr 管道写端，Node 的 `close` 可能永远不来 → Promise 永挂 → 挂在 pre-push 上
+   就是把 `git push` 卡死（比没有超时更糟：用户看不到任何提示）。改成 `detached: true` 起进程 +
+   `process.kill(-pid)` 杀整组 + kill 后 2s 宽限期**无论 close 是否触发都强制收工**。
+2. **`remove-hook` 的假成功**：`git config --global --unset core.hooksPath` 失败时原先不看返回码就继续删脚本，
+   结果 `core.hooksPath` 仍指着一个被清空的目录——而 git 一旦设了它就**不会**回退看 `.git/hooks`，
+   于是全机所有 hook（含用户自己的本地 hook）静默失效，工具却报「已恢复生效」。改成失败即返回、**不删任何脚本**。
+
+### 由来
+2026-09 真实事故（见 §32 评审门）：pivotal-parrot 一个只给内部调用的函数 export 在 `queries/` 目录，
+被 `loadFiles` 自动注册进 GraphQL `Query`，SDL 没有同名字段 → `new ApolloServer()` 构造即抛、
+`App.listen` 执行不到、进程假活。双 reviewer 都跑过都漏了——diff 里那行 `+export` 单看完全正常。
+同族风险内部已复发：blog-backend 用同一份 loader（无防护），pigeon 的 Subscription 踩过同一条报错
+并为此写了静态断言测试。结论：**能被机器 100% 检出的问题，别指望"审得更仔细"。**
+
+### 底层
+`orchestrator/bootcheck/{plan,run,allowlist,hook,types}.ts` + `framework/control/cli.ts`（`cmdBootCheck`，
+不走 socket——git hook 场景 daemon 可能没起）+ `scripts/check-boot.ts`。63 个单测（`tests/bootcheck.test.ts`；`spawn`、`git`、`git rev-parse` 都可注入，所以能覆盖病态场景、也不会真改全局 git 配置），
+含七条防回归：hook 名单必须覆盖 husky 老版本那一整套 · 被 kill 后 close 永不触发时不许永挂 ·
+`--unset` 失败时不许删脚本 · 新增 `pre<name>` 必须让指纹变 · 被指向脚本文件内容变了必须让指纹变 ·
+垫参数挤不掉真载荷 · Ctrl-C 时子进程要被整组带走。
+
+---
+
 ## 33. 飞书消息统一页脚（🕐 时间 + 📁 路径）
 
 所有推到飞书的消息在发送层统一加一行灰字页脚：**时间**（发送时刻北京时间 `MM-DD HH:MM`，永远加）+ **路径**（按需——大多数卡片已经显示 cwd，只给"有 cwd 但文本没显示"的场景补路径），解决并发多任务时消息分不清是哪个 tab/何时发的。
