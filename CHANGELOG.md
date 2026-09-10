@@ -6,6 +6,16 @@
 
 ## [未发布]
 
+### 2026-09-10
+
+**改动**
+- **评审门补第一道「机器验证」+ 两个 reviewer 补「跨文件契约」维度**（`orchestrator/integrations/registry.ts` 的 `review-gate` 规则文本 + `~/.claude/agents/{code-reviewer,security-reviewer}.md`）。起因是一次真实事故：pivotal-parrot 的「每月绩效自检」合进 master 后**服务起不来**——`persistAchievementSnapshotAtSigning` 只给 `restful/fadada.js` 内部调用，但导出在 `modules/achievement/queries/index.js`，仓库的 `loadFiles` 把该目录的所有导出整个塞进 GraphQL `Query` resolver map，SDL 没有同名字段 → `new ApolloServer()` 构造即抛 `Query.xxx defined in resolvers, but not in schema`，而 `App.listen` 写在它之后，GraphQL 与 REST 一起没监听、进程假活。**双 reviewer 当时都跑过、都漏了**：diff 里那行 `+export const ...` 单看完全正常，判它有罪需要的两个事实（自动注册机制 + SDL 缺字段）**都不在 diff 里**，而且这类错误是编译期 100% 可机器检出的，用 LLM 读 diff 去防本身就是最差的手段。
+  - **门 1（新）= 机器验证「还能不能起来」**：交付前先用项目自己的命令跑 typecheck/build/lint/test，并且**必须有一次「加载期冒烟」**（让改动模块真被编译/import/组装一次：起服务看监听、构造 schema、`node -e require(...)`）；跑不动就如实写「未做机器验证：原因」，不许默默省略。hard failure 一律先修再进门 2。
+  - **`code-reviewer`**：新增第 0 维「启动期/加载期 & 跨文件契约」——先 grep 仓库的自动装配机制（`loadFiles`/`glob`/`require.context`/`readdirSync`/桶文件/装饰器），凡命中就意味着「多一个 export == 多一个对外字段」；契约两端清单（resolver↔SDL / 路由↔handler / migration↔model / env↔配置 / i18n key↔语言包 / emit↔listener / CLI↔server op↔protocol）；手法固定为「对 diff 里每个新增或改名的符号跑一次全仓 grep，看另一半在不在」。并新增原则「确定性手段优先」：这类问题除了报，还必须顺带建议加一道机器门。
+  - **`security-reviewer`**：新增「攻击面意外扩大（隐式自动注册）」——自动装配会把只想内部调用的写操作函数变成对外可调端点，要对照鉴权白名单确认它落在哪一侧（本次是 schema 恰好缺字段才崩出来暴露了它；同名字段若存在，它就是个匿名可调的写接口）；另补「鉴权与全局开关同源」「破坏性操作要有成功路径审计日志」「启动顺序把 listen 放在可能抛错的构造之后 = 自伤式可用性风险」。
+  - **门 1 里写了「跑之前先看这条命令会碰什么」**：会不会连真实 DB/MQ/Redis、会不会写数据、会不会挂消费者抢消息——语法无害的 `npm run xxx` 也可能在 import 阶段就建连。这条是本次自证的：新写的 `check-schema.js` 第一版注释写着「不连 DB、不监听端口」，security-reviewer 实测发现它**会尝试连 RabbitMQ 并挂消费者**（`loadFiles` 匹配到 `modules/<mod>/queries` 后实际 require 的是**父级** `modules/<mod>/index.js`，于是 `examination/index.js` 的 `import './onload'` 加载即执行 → `getRabbit()`；同队列多消费者是轮询分发，在配了真实 `MQ_URL` 的机器上跑就会跟线上抢消息）。已在脚本里 require 业务代码**之前**把 `MQ_URL` 置空短路，并把这条机制写进 `src/utils/loadFiles.js` 顶部注释（pivotal 的 `CLAUDE.md` 是 gitignored，同事看不到，所以警示要放在随仓库走的文件里）。
+  - 规则文本同时改在 `registry.ts`（`/connect` 的 claudeMd 块型模板）和已落盘的 `~/.claude/CLAUDE.md` 里，两边逐字符一致，避免 `/connect` 重新对接把改动冲掉（已用脚本对比验证 in-sync）。
+
 ### 2026-09-09
 
 **文档**
