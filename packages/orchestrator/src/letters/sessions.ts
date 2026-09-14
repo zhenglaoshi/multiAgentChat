@@ -76,7 +76,7 @@ export async function forgetLetterSession(threadId: string): Promise<void> {
  *    公函正文**连同回车一起写进一个裸 shell —— Terminal 的 `do script` 把文本+`\r` 整块写入
  *    pty，对空闲 zsh 而言等价于「往终端粘贴多行命令」，正文里任何一行合法 shell 命令都会当场执行。
  *    那就把「人看过全文再点确认」的批准，变成了本地任意命令执行。
- *    复用分支还跳过了 `launchClaudeInTab`，所以更不能指望后面有人补救。
+ *    复用分支还跳过了起 agent 那一步（`launchDefaultAgentInTab`），所以更不能指望后面有人补救。
  *
  * `procs` 传 tab 的进程名列表，由调用方用 `detectAgentFromProcs` 判定后传入布尔值——
  * 这个模块是传输/宿主无关的叶子，不直接依赖 agents 注册表。

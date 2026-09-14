@@ -222,17 +222,16 @@ export class TabWatcher {
 
     const tail = arr.slice(-30).join('\n');
 
-    // Claude 进程 tab 完全跳过 needsInput 检测：
-    //   1. Claude 的 AskUserQuestion 组件绘制在 alt-screen buffer，`history of tab` 拿不到 →
+    // agent（claude/codex）进程 tab 完全跳过 needsInput 检测：
+    //   1. 交互式选项组件绘制在 alt-screen buffer，`history of tab` 拿不到 →
     //      watcher 看到的是滚回区的 task list checkbox（`◻ ...`），会假阳性触发 pattern
     //   2. 触发后推给飞书的 promptSnippet 是 scrollback tail，跟真问题无关，
     //      手机端看到"要输入"但没有问题原文 —— 信息量为零反而添乱
-    //   3. Claude 用 AskUserQuestion 时应自己主动 `agent lark send-text` 推问题+选项
-    //      （skill 和 SYSTEM_GUIDANCE 里补了这条规则）
-    const isClaudeTab = tab.processes.some((p) =>
-      /(^|\/)claude(-code)?$/i.test(p) || p.toLowerCase().includes('claude'),
-    );
-    if (isClaudeTab) {
+    //   3. 要用户作答时 agent 应自己主动走飞书通道推问题+选项
+    //      （skill 和各 agent 的 systemGuidance 里补了这条规则）
+    // codex 同样是 alt-screen TUI，同样的假阳性 → 与 claude 一视同仁，走 adapter 判定。
+    const isAgentTab = detectAgentFromProcs(tab.processes) !== null;
+    if (isAgentTab) {
       // 保留 snapshot 便于其他逻辑（比如 processPendingByStability），但不做 waiting 判定
       const prev = this.snapshots.get(tab.tty);
       this.snapshots.set(tab.tty, {

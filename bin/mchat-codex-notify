@@ -22,6 +22,8 @@ import { spawn, execFileSync } from 'node:child_process';
 import { appendFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { shouldPush } from './lib/push-dedupe.mjs';
+import { looksHeadlessCommand } from './lib/headless.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MAX_TEXT_LEN = 3500;
@@ -48,8 +50,8 @@ function isHeadlessSession() {
   if (process.env['MCHAT_INTERNAL_SESSION'] === '1') return true;
   try {
     const cmd = execFileSync('ps', ['-o', 'command=', '-p', String(process.ppid)], { encoding: 'utf8' }).trim();
-    if (/(^|\s)codex\s+(exec|e)(\s|$)/.test(cmd)) return true;   // codex 非交互
-    if (/(^|\s)(-p|--print)(\s|$)/.test(cmd)) return true;
+    // 与 bin/mchat-stop-hook 共用同一份判定（bin/lib/headless.mjs，有单测）
+    if (looksHeadlessCommand(cmd)) return true;
   } catch { /* 拿不准 → 照旧推 */ }
   return false;
 }
@@ -97,6 +99,13 @@ function handle(raw) {
     const trimmedLen = text.trim().length;
     if (trimmedLen < MIN_TEXT_LEN) { dbg(`skip: too short (${trimmedLen})`); return process.exit(0); }
     if (text.length > MAX_TEXT_LEN) text = text.slice(0, MAX_TEXT_LEN) + '\n\n…(truncated)';
+    // 与 bin/mchat-stop-hook 共用同一把去重锁：codex 0.154+ 装了 [[hooks.Stop]] 之后，
+    // 同一个 turn 会同时走 notify 和 Stop hook；谁先到谁推，另一条静默跳过。
+    // 判据是通道名而非纯内容 —— 同一条通道再次出现相同文本说明是新的一轮，必须放行。
+    if (!shouldPush(text, 'codex-notify', String(process.ppid))) {
+      dbg('skip: 同一个 turn 已由另一条通道（Stop hook）推过');
+      return process.exit(0);
+    }
 
     const agentBin = resolve(HERE, 'agent');
     const args = ['lark', 'send-text', '--auto', '--origin-pid', String(process.ppid)];

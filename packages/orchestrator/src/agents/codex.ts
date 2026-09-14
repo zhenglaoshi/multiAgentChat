@@ -1,4 +1,5 @@
 import type { AgentAdapter } from './types.js';
+import { buildSystemGuidance, buildTuiReminder } from './guidance.js';
 
 /**
  * Codex CLI adapter。
@@ -36,5 +37,36 @@ export const codexAdapter: AgentAdapter = {
     payloadSource: 'argv-json',
     messageField: 'last-assistant-message',
   },
-  unverified: true, // 仅 notify payload 格式待真机 turn 验证
+  /**
+   * codex 0.154+ 的 lifecycle hooks —— 与 Claude Code 的 hook 协议**同构**，所以直接复用同一批脚本。
+   *
+   * 依据（从 codex 二进制内嵌的 JSON Schema 抽出，见 docs/codex-integration.md §8）：
+   *  - 事件名同名：PreToolUse / PostToolUse / Stop / UserPromptSubmit / SessionStart / ...
+   *  - 入参字段逐字相同：`hook_event_name` / `session_id` / `cwd` / `transcript_path` /
+   *    `last_assistant_message`（Stop）/ `tool_name` / `tool_input`（PreToolUse）
+   *  - 出参字段逐字相同：`hookSpecificOutput.{hookEventName,permissionDecision,permissionDecisionReason}`
+   *
+   * 两处与 claude 的**关键差异**：
+   *  1. `matcher` 是**正则**（codex 内部包成 `\A(?:…)\z` 全值匹配），claude 是字面量工具名。
+   *     所以"匹配全部"在 codex 要写 `.*`，写 `*` 会被当无效正则。
+   *  2. codex 的 shell 工具在 `tool_name` 里叫什么**尚未真机确认**（候选：shell / exec_command /
+   *     unified_exec）。所以这里**不赌工具名**，一律 `.*` 全匹配，由 mchat-permission-hook 自己按
+   *     payload 形状判断是不是 shell 调用 —— 赌错工具名的后果是审批闸**静默失效**，比多跑几次脚本危险得多。
+   *
+   * 不装的：AskUserQuestion 的 Pre/PostToolUse（codex 没这个工具）、Task hook（codex 没 Task 工具）。
+   */
+  hookInstall: {
+    configPathFromHome: '.codex/config.toml',
+    format: 'codex-config-toml',
+    specs: [
+      // fire-and-forget（spawn 完就 exit），30s 绰绰有余
+      { event: 'Stop', matcher: '.*', script: 'mchat-stop-hook', purpose: 'turn 结束把 last_assistant_message 推飞书', timeoutSec: 30 },
+      // **阻塞型**：要等人在飞书上点批准/拒绝。审批 auto-timeout 是 5min，这里给 6min 兜底，
+      // 给短了会在人还没点的时候被 codex 掐断 → 闸门退化成"没拦住"。
+      { event: 'PreToolUse', matcher: '.*', script: 'mchat-permission-hook', purpose: '高危 shell 命令抢在原生审批前推飞书审批卡', timeoutSec: 360 },
+    ],
+  },
+  systemGuidance: buildSystemGuidance('codex'),
+  tuiReminder: buildTuiReminder('codex'),
+  unverified: true, // 仍待真机：notify payload 格式、codex shell 工具的 tool_name 取值
 };

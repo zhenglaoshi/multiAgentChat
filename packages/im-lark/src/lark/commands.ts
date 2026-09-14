@@ -4,7 +4,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import { homedir, hostname, networkInterfaces } from 'node:os';
 import { join, resolve } from 'node:path';
 import { approvals } from 'multiagent-orchestrator';
-import { getAgentAdapter } from 'multiagent-orchestrator';
+import { listAgentAdapters } from 'multiagent-orchestrator';
 import { loadChat, saveChat } from '../chats/store.js';
 import { getUnmaskSecrets, setUnmaskSecrets, unmaskRemainingSec } from './redact-gate.js';
 import { runAuditAndReport } from '../monitor/dogfood-scheduler.js';
@@ -120,20 +120,25 @@ export function stripForwardSlash(text: string): string {
 }
 
 /**
- * Claude Code 内置常见 slash 命令白名单 —— 收到这些时不算 mchat 未知命令，静默
- * 转发到 activeTty 让 claude session 自己处理。列表参考官方文档，可能不全，随
- * Claude Code 更新可扩展。
+ * agent 内建 slash 命令白名单 —— 收到这些时不算 mchat 未知命令，静默转发到 activeTty
+ * 让 tab 里的 agent 自己响应。各 agent 的列表在自己的 adapter 里（单一真源，
+ * 见 orchestrator/agents/{claude,codex}.ts）。
  *
- * 注意：这些命令名跟 mchat 内建**不冲突**（我们已避开）。如果哪天 mchat 加了
- * 同名命令，白名单里那条要移除或改约定。
+ * 取**所有 adapter 的并集**，而不是按 active tab 的 agent 分流：
+ *  - 这个判定发生在「已确认不是 mchat 命令」之后，所以不存在与 mchat 命令抢名字的风险；
+ *  - 本函数拿不到 tab 上下文（纯命令路由），要分流就得把 agent kind 一路穿进来；
+ *  - 转错了也无害：codex 独有的命令转给 claude tab，最多是 claude 在 TUI 里回一句「未知命令」——
+ *    与不转发时的结果一样。反过来**不取并集才有真实代价**：codex 独有的 `/diff`、`/mention`
+ *    会被 mchat 当未知命令挡下来，codex 用户根本用不了。
+ *
+ * 注意：`/help` 不在白名单 —— mchat 自己有 /help 优先响应，想看 agent 的 help 用 `//help`。
  */
-// 内建 slash 白名单从 claude adapter 取（单一真源，见 orchestrator/agents/claude.ts）。
-// 注意：`/help` 不在白名单 —— mchat 自己有 /help 优先响应，想看 Claude Code 的 help 用 `//help`。
-// 未来按 active tab 的 agent 种类选对应 adapter 的白名单（codex 内建 slash 不同）。
-const CLAUDE_CODE_NATIVE_SLASH = new Set(getAgentAdapter('claude')!.builtinSlashCommands);
+const AGENT_NATIVE_SLASH = new Set(
+  listAgentAdapters().flatMap((a) => a.builtinSlashCommands.map((c) => c.toLowerCase())),
+);
 
-export function isClaudeNativeSlash(name: string): boolean {
-  return CLAUDE_CODE_NATIVE_SLASH.has(name.toLowerCase());
+export function isAgentNativeSlash(name: string): boolean {
+  return AGENT_NATIVE_SLASH.has(name.toLowerCase());
 }
 
 const ALIAS: Record<string, string> = {
@@ -1834,9 +1839,9 @@ export async function handleCommand(
   }
 
   // ---- 未匹配 mchat 命令 ----
-  // 若是 Claude Code 常见内建 slash（/help /config /model ...）→ 转发到 activeTty
-  // 让 tab 里的 claude 自己响应
-  if (isClaudeNativeSlash(name)) {
+  // 若是 agent（claude/codex）常见内建 slash（/config /model /diff ...）→ 转发到 activeTty
+  // 让 tab 里的 agent 自己响应
+  if (isAgentNativeSlash(name)) {
     return {
       kind: 'forward-slash-to-tab',
       text: text,  // 保留原 `/foo bar` 完整文本
@@ -1846,6 +1851,6 @@ export async function handleCommand(
   // 其他 → 报错 + 提示 // 转发语法
   return {
     kind: 'text',
-    text: `未知命令：/${name}\n\n如果这是 tab 里 claude 的 skill / 插件命令，用 \`//${name}\` 强制转发到 active tab（前面加一个 /）。\n查 mchat 命令：/help`,
+    text: `未知命令：/${name}\n\n如果这是 tab 里 agent 的 skill / 插件命令，用 \`//${name}\` 强制转发到 active tab（前面加一个 /）。\n查 mchat 命令：/help`,
   };
 }

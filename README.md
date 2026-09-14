@@ -89,7 +89,7 @@
 - ✅ performance-platform 性能建议监听（P1 只读 + P2 认领并建需求）
 - ✅ CareyClaw Agent 公函（2min 轮收件箱 → 推全文 + 任务卡 → 确认后开 shell，同一封复用原 shell）
 - ✅ 同事任务甩单 Handoff（一句话把问题+AI 建议+文件甩给同事，经独立 relay 路由到对方飞书，状态双向同步）
-- ✅ 多 agent · Codex CLI 对接（`AgentAdapter` 抽象，`@target` 派发同样能打到 codex tab）
+- ✅ 多 agent · Codex CLI **与 Claude Code 能力打平**（结果回传飞书 + 高危命令飞书审批，复用同一批 hook 脚本；`MCHAT_DEFAULT_AGENT` 选默认 agent。见 docs/features.md §25）
 - ✅ 一站式对接管理 `/connect`（上面这些 + 知识提炼 / 企微 / Web面板 / 报告按需开关）
 
 **报告 · 知识沉淀**
@@ -413,7 +413,7 @@ pnpm typecheck    # tsc -b --pretty
 - ✅ Phase 2: orchestrator 包独立
 - ✅ Phase 3: IMTransport 抽象接口
 - ✅ Phase 4: 企业微信 transport（99% 对齐飞书）
-- ✅ Phase 5: 多 agent · Codex CLI 对接（`AgentAdapter` 抽象；C1+C2+C3 已完成）
+- ✅ Phase 5: 多 agent · Codex CLI 对接（`AgentAdapter` 抽象；C1+C2+C3 对接闭环 + **C5 能力打平**，已真机验证）
 - 🚧 Phase 6: 钉钉 / Slack / Telegram transport（IMTransport 已就位）
 - 🚧 Phase 7: DAG 编排 / token usage tracking / cost dashboard
 

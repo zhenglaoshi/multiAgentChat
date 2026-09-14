@@ -41,7 +41,7 @@ import {
 import {
   closeTabGracefully,
   getHistory,
-  isClaudeTab,
+  isAgentTab,
   listTabs,
   newTab,
   restartClaudeInPlace,
@@ -210,7 +210,9 @@ async function handleTabRestartClaude(
     const continueSession = req.continueSession ?? true;
 
     const tabs = await listTabs();
-    const claudeTabs = tabs.filter(isClaudeTab);
+    // 注意：op 名叫 restart-claude 是历史遗留，实际重启的是**所有 agent tab**（claude + codex），
+    // 且每个 tab 按它原本跑的 agent 原样拉起（见 host-mac restartAgentInPlace）。
+    const claudeTabs = tabs.filter(isAgentTab);
     const targetsTabs = claudeTabs.filter((t) => !except.has(t.tty));
     const excluded = claudeTabs.filter((t) => except.has(t.tty)).map((t) => t.tty);
 

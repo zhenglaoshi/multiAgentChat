@@ -2,14 +2,20 @@ import { spawnSync } from 'node:child_process';
 import { closeTab, forceEnter, listTabs, send } from './tabs.js';
 import { sendKeys } from './keys.js';
 import type { TerminalTab } from './types.js';
-import { detectAgentFromProcs, getAgentAdapter, type AgentKind } from 'multiagent-orchestrator';
+import { detectAgentFromProcs, getAgentAdapter, resolveDefaultAgentKind, type AgentKind } from 'multiagent-orchestrator';
 
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** 与 status.ts 的判定一致：进程列表里有没有在跑 agent（claude/codex）。走 AgentAdapter registry。 */
-export function isClaudeTab(tab: TerminalTab): boolean {
+export function isAgentTab(tab: TerminalTab): boolean {
   return detectAgentFromProcs(tab.processes) !== null;
 }
+
+/**
+ * 历史别名 —— 老调用点保持不变。**名字有误导性**：它认的是任意 agent（claude + codex），
+ * 不只 claude。新代码请用 `isAgentTab`。
+ */
+export const isClaudeTab = isAgentTab;
 
 /**
  * daemon/CLI 自己跑在哪个 tab（controlling tty）—— 沿 pid→ppid 上溯找第一个持真 ctty 的祖先
@@ -151,14 +157,14 @@ export interface RestartClaudeResult {
 }
 
 /**
- * 原地重启一个 claude tab：
- *  1. 连发 Ctrl-C（每次后查进程列表，claude 消失即停）退出 TUI 回到 shell
- *  2. 回到 shell 后重跑 `claude` / `claude --continue`
+ * 原地重启一个 agent tab（claude / codex 都走这条）：
+ *  1. 连发 Ctrl-C（每次后查进程列表，agent 消失即停）退出 TUI 回到 shell
+ *  2. 回到 shell 后按**重启前检测到的那个 agent** 重跑（`claude` / `codex` / 各自的续接命令）
  *
  * 不关窗、不新开 tab —— 窗口/tab/cwd 全保留。
- * claude 彻底卡死（Ctrl-C 也退不出）时返回 ok:false，由调用方决定是否降级处理。
+ * agent 彻底卡死（Ctrl-C 也退不出）时返回 ok:false，由调用方决定是否降级处理。
  */
-export async function restartClaudeInPlace(
+export async function restartAgentInPlace(
   tty: string,
   opts: RestartClaudeOptions = {},
 ): Promise<RestartClaudeResult> {
@@ -169,31 +175,37 @@ export async function restartClaudeInPlace(
   const before = (await listTabs()).find((t) => t.tty === tty);
   if (!before) return { ok: false, tty, reason: `tab 不存在：${tty}` };
   const cwd = before.cwd;
-  if (!isClaudeTab(before)) {
-    return { ok: false, tty, cwd, reason: '该 tab 没在跑 claude，跳过' };
+  // 记住**原来跑的是哪个 agent**，退出后要按原样重启。
+  // （曾经这里写死 launchClaudeInTab → 重启一个 codex tab 会把它变成 claude。）
+  const agent = detectAgentFromProcs(before.processes);
+  if (!agent) {
+    return { ok: false, tty, cwd, reason: '该 tab 没在跑 agent（claude/codex），跳过' };
   }
 
-  // 1. 退出 claude TUI。claude 的退出需要「快速连按两次 Ctrl-C」——两次间隔过久
+  // 1. 退出 agent TUI。claude 的退出需要「快速连按两次 Ctrl-C」——两次间隔过久
   //    （> ~1s）claude 会重置"再按一次退出"计时，导致永远退不出。所以每次尝试用
   //    单个 sendKeys 一口气发两个 ctrl+c（默认 50ms 间隔），再查进程；不行再重试。
+  //    codex 按同一手势处理（用户 2026-09-14 拍板共用这段）。⚠ 未做真机实测：
+  //    若发现 codex tab 退不出去（restartAgentInPlace 返回"Ctrl-C N 次仍未退出"），
+  //    先怀疑这里 —— codex 可能需要不同次数/间隔，或只认 /quit。
   let exited = false;
   for (let i = 0; i < maxInterrupts && !exited; i++) {
     await sendKeys(tty, 'ctrl+c ctrl+c');
     await delay(settleMs);
     const cur = (await listTabs()).find((t) => t.tty === tty);
-    if (cur && !isClaudeTab(cur)) exited = true;
+    if (cur && !isAgentTab(cur)) exited = true;
   }
   if (!exited) {
     return {
       ok: false,
       tty,
       cwd,
-      reason: `Ctrl-C ${maxInterrupts} 次仍未退出 claude（可能卡死）；建议手动或关窗重开`,
+      reason: `Ctrl-C ${maxInterrupts} 次仍未退出 ${agent.displayName}（可能卡死）；建议手动或关窗重开`,
     };
   }
 
-  // 2. 回到 shell 后重跑 claude（默认纯 `claude`，不带历史）+ 自动过 trust 弹窗
-  const launched = await launchClaudeInTab(tty, { continueSession });
+  // 2. 回到 shell 后按**原来那个 agent** 重跑（默认不带历史）+ 自动过 trust 弹窗
+  const launched = await launchAgentInTab(tty, agent.kind, { continueSession });
   if (!launched.ok) {
     return { ok: false, tty, cwd, reason: `重启命令未发出：${launched.reason ?? '未知'}` };
   }
@@ -248,3 +260,25 @@ export async function launchClaudeInTab(
 ): Promise<{ ok: boolean; command?: string; reason?: string }> {
   return launchAgentInTab(tty, 'claude', opts);
 }
+
+/**
+ * 在新开的 tab 里启动**默认 agent**（`MCHAT_DEFAULT_AGENT`，未设=claude）。
+ *
+ * 所有"开个新 tab 干活"的入口（公函开工 / TAPD 认领 / perf 认领 / `/new`）都该走这个，
+ * 而不是写死 `launchClaudeInTab` —— 否则把默认 agent 切成 codex 的用户，
+ * 点一次「确认，开工」还是会被塞一个 claude。
+ */
+export async function launchDefaultAgentInTab(
+  tty: string,
+  opts: LaunchClaudeOptions = {},
+): Promise<{ ok: boolean; command?: string; reason?: string; kind: AgentKind }> {
+  const kind = resolveDefaultAgentKind();
+  const r = await launchAgentInTab(tty, kind, opts);
+  return { ...r, kind };
+}
+
+/**
+ * 历史别名 —— 老调用点（`tab.restart-claude` op 等）保持不变。
+ * 行为已按 tab 实际跑的 agent 分流，不再写死 claude。
+ */
+export const restartClaudeInPlace = restartAgentInPlace;

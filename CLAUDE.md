@@ -136,11 +136,18 @@ packages/
         ├─ secrets/         明文凭证脱敏单一事实源：redactor(redact/hasSecrets 回显脱敏) + scrub(claude/codex 历史文件脱敏 CLI)
         ├─ shell-safety/    裸 shell 保护纯逻辑：looksLikeAgentTask / hasUnbalancedQuotes / detectWedge（拦任务型 prompt 打进裸 zsh）
         ├─ dogfood/         自审 loop：runSelfAudit（claude -p 只读比对 CHANGELOG/docs/git，报文档 vs 实现漂移；/selfaudit）
-        ├─ agents/          AgentAdapter 抽象（claude/codex：进程识别/登录文案/启动命令/slash白名单/回传通道规格）；多 agent 解耦，见 docs/codex-integration.md
+        ├─ agents/          AgentAdapter 抽象（claude/codex）：types(含 AgentHookSpec/AgentHookInstall)/claude/codex/
+        │                   guidance(系统引导文案按 agent 分流)/registry(detectAgentFromProcs + resolveDefaultAgentKind)/
+        │                   hook-install(纯逻辑：claude settings.json upsert + codex config.toml TOML 渲染/幂等/信任记录保全)/
+        │                   codex-status。codex 0.154+ 的 hook 协议与 Claude Code 同构 → 复用同一批 bin/mchat-* 脚本。
+        │                   见 docs/codex-integration.md §8 / features §25
         └─ handoff/         同事任务甩单纯逻辑：types(HandoffEnvelope wire 协议)/state(状态机 canTransition)/envelope(build/validateIncoming)/store(requester+assignee 双视角 task + applyIncoming 幂等 + markProcessed 去重)；传输经 framework/relay + 独立 ../multiagent-relay/，见 docs/handoff-integration.md
 
 skills/multiagent-lark/SKILL.md    →  会 symlink/copy 到 ~/.claude/skills/
 bin/agent                          →  CLI 入口（npx tsx packages/framework/src/control/cli.ts）
+bin/mchat-*-hook / mchat-codex-notify →  claude+codex 共用的 hook 脚本（ESM，见下「Stop hook 脚本必须 ESM」）
+bin/lib/*.mjs                      →  hook 脚本共用的纯逻辑：push-dedupe(跨通道回传去重) /
+                                      tool-command(从 PreToolUse payload 抽 shell 命令) / headless(判 claude -p / codex exec)
 data/                              →  运行时持久化（memories / chats / approvals / templates / knowledge）
 ```
 
@@ -328,7 +335,7 @@ npm run typecheck
 - 企微 transport（im-wecom，`IMTransport` 抽象，配 WECOM_* 才启用）
 - Web Dashboard（apps/daemon/web-dashboard，配 WEB_DASHBOARD_TOKEN 启用）
 - Knowledge Extraction（orchestrator/knowledge，shell 交互流自动提炼；KNOWLEDGE_EXTRACT_ENABLED=1 启用）
-- 多 agent 支持 · Codex CLI（`AgentAdapter` 抽象 + `mchat-codex-notify` 回传 + `/connect` codex 项。见 docs/codex-integration.md / features §25）
+- **多 agent 支持 · Codex CLI —— 已与 Claude Code 能力打平**（C1~C3 对接闭环 + C5 打平）：codex 0.154+ 的 lifecycle hooks 与 Claude Code **同构**（事件名/入参/出参逐字相同，依据是从 codex 二进制抽出的内嵌 JSON Schema）→ **复用同一批 `bin/mchat-*` 脚本**，codex 因此拿到与 claude 一样的「结果回传飞书 + 高危命令飞书审批」。另含：回车提交、引导文案按 agent 分流、watcher/notifier 认 codex、重启不串台、新开 tab 按 `MCHAT_DEFAULT_AGENT`、slash 白名单取并集。**2026-09-14 已真机验证跑通**。见 docs/codex-integration.md §8 / features §25
 - 任务工作目录隔离（worktree + `/worktasks` + perf 认领并建需求；`orchestrator/worktasks` + `host-mac/task-workspace.ts`，见 features §24）
 - A 路线 · 编排：A1 任务模板（/template + /run ✅）、A2 任务链（chains.ts ✅）、A3 Planner（v1·方案丙 ✅ `/plan`；甲多tab自动串/乙单tab SOP 待叠加）
 - 图文入站（飞书✅ + 企微✅）；待补：先文后图配对、富文本(A) 真机验证

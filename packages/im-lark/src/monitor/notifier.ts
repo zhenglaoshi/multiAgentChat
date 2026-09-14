@@ -1,7 +1,7 @@
 import { basename } from 'node:path';
 import { homedir } from 'node:os';
 import * as Lark from '@larksuiteoapi/node-sdk';
-import { approvals, asks, redactText } from 'multiagent-orchestrator';
+import { approvals, asks, redactText, detectAgentFromProcs } from 'multiagent-orchestrator';
 import type { ApprovalRequest, AskRequest } from 'multiagent-orchestrator';
 import { listAllChats, loadChat } from '../chats/store.js';
 import { sendText } from '../lark/reply.js';
@@ -415,13 +415,11 @@ export function attachWatcherToLark(larkClient: Lark.Client): void {
         }
         // 卡片只展示「本次任务新增」的输出，不含历史 scrollback
         let tailForCard = trimTailForCard(taskOnlyTail || '');
-        // claude TUI alt-screen 模式下 watcher 看不全屏幕；提示完整回复看 claude 主动推
-        const isClaudeTab = tab.processes.some((p) =>
-          /(^|\/)claude(-code)?$/i.test(p) || p.toLowerCase().includes('claude'),
-        );
-        if (isClaudeTab) {
+        // agent（claude/codex）的 alt-screen TUI 下 watcher 看不全屏幕；提示完整回复看 agent 主动推
+        const agent = detectAgentFromProcs(tab.processes);
+        if (agent) {
           tailForCard +=
-            '\n\n— TUI 屏幕飞书不可见；完整回复见 claude 主动 send-text 推送 —';
+            `\n\n— TUI 屏幕飞书不可见；完整回复见 ${agent.kind} 主动 send-text 推送 —`;
         }
         const card = progressCard({
           state: isFinal ? 'done' : 'running',

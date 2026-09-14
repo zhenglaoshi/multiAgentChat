@@ -98,11 +98,14 @@ export async function integrationStatuses(): Promise<IntegrationStatus[]> {
     }
     if (it.agentType === 'codex') {
       const st = await codexAgentStatus();
-      const connected = st.installed && st.loggedIn && st.notifyHooked; // 全绿才算就绪
+      // 就绪 = CLI 装了 + 登录了 + **至少有一条回传通道**（lifecycle hooks 主通道 / legacy notify 兜底）。
+      // 不强求两条都在：hooks 要用户在 codex 里手动批准信任，只有 notify 时功能也是可用的。
+      const connected = st.installed && st.loggedIn && (st.lifecycleHooked || st.notifyHooked);
       const missing: string[] = [];
       if (!st.installed) missing.push('codex CLI 未安装');
       else if (!st.loggedIn) missing.push('codex 未登录');
-      if (st.installed && !st.notifyHooked) missing.push('notify 钩子未装');
+      if (st.installed && !st.lifecycleHooked && !st.notifyHooked) missing.push('回传钩子未装');
+      else if (st.installed && !st.lifecycleHooked) missing.push('lifecycle hooks 未装（高危审批闸不可用，回传走 notify 兜底）');
       return { key: it.key, name: it.name, group: it.group, desc: it.desc, connected, disabled: false, core: false, skill: false, agent: true, missing };
     }
     const present = it.fields.filter((f) => has(f.env)).map((f) => f.env);

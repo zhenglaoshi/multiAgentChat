@@ -1625,7 +1625,8 @@ async function cmdConnect(flags: Flags): Promise<void> {
     stdout.write(`「${it.name}」状态：\n`);
     stdout.write(`  ${st.installed ? '✓' : '✗'} CLI 安装${st.binPath ? `（${st.binPath}）` : ''}\n`);
     stdout.write(`  ${st.loggedIn ? '✓' : '✗'} 登录${st.loginDetail ? `（${st.loginDetail}）` : ''}\n`);
-    stdout.write(`  ${st.notifyHooked ? '✓' : '✗'} notify 回传钩子\n`);
+    stdout.write(`  ${st.lifecycleHooked ? '✓' : '✗'} lifecycle hooks（Stop 回传 + 高危审批闸；首次需 codex TUI 里 /hooks 批准信任）\n`);
+    stdout.write(`  ${st.notifyHooked ? '✓' : '✗'} notify 回传钩子（兜底）\n`);
     stdout.write(`\n👉 ${codexNextStep(st)}\n`);
     return;
   }

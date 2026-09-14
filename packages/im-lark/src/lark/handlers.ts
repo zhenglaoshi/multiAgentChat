@@ -11,8 +11,8 @@ import { ragRecall, formatRagPrefix } from 'multiagent-orchestrator';
 import { pendingTracker, markRemoteWrite } from '../monitor/pending.js';
 import { healIfWedged } from '../monitor/stuck-shell.js';
 import { recordInbound } from '../monitor/ws-watchdog.js';
-import { captureScreen, closeTabGracefully, detectSelfTty, forceEnter, getHistory, getUserFocus, isScreenLocked, launchAgentInTab, launchClaudeInTab, listTabs, newTab, openPermissionPane, send, sendKeys, sendKeysRaw } from 'multiagent-host-mac';
-import { detectAgentFromProcs, listAgentAdapters, looksLikeAgentTask } from 'multiagent-orchestrator';
+import { captureScreen, closeTabGracefully, detectSelfTty, forceEnter, getHistory, getUserFocus, isScreenLocked, launchAgentInTab, launchDefaultAgentInTab, listTabs, newTab, openPermissionPane, send, sendKeys, sendKeysRaw } from 'multiagent-host-mac';
+import { detectAgentFromProcs, listAgentAdapters, looksLikeAgentTask, shouldSubmitPromptAfterSend } from 'multiagent-orchestrator';
 import type { HandoffStatus } from 'multiagent-orchestrator';
 
 // SYSTEM_GUIDANCE 的去重 — per-tab，每 tty 6h 内最多注入一次
@@ -20,41 +20,9 @@ import type { HandoffStatus } from 'multiagent-orchestrator';
 const SYSTEM_GUIDANCE_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const systemGuidanceShownAt = new Map<string, number>();
 
-const SYSTEM_GUIDANCE = [
-  '[系统提示 - 自动注入]',
-  '本对话来自飞书机器人 multiAgentChat。飞书侧通过 AppleScript 观测此 tab 的输出，但 **alt-screen TUI 模式下飞书看不见你的实时屏幕**。',
-  '',
-  '🔴 首要原则：**两个渠道并行输出，两边都能看到**',
-  '- 用户可能同时在飞书 & pc shell 面前 → 响应必须在 shell TUI 里**先完整回答一遍**（自然对话），**然后**用 `agent lark send-text` 推**同样一份**摘要给飞书',
-  '- 不要**只**推飞书不在 TUI 里说；也不要**只**在 TUI 里说不推飞书',
-  '- 长内容（>2000 字）：TUI 里完整、飞书推浓缩摘要；绝不能相反',
-  '',
-  '所以：',
-  '- 任务完成时先在 TUI 完整回答，然后**必须**调用 `agent lark send-text "结果摘要..."` 主动推送到飞书',
-  '- 长任务请每完成一步用 `agent lark send-text` 推送进度',
-  '- 文件产出用 `agent lark send-file <path>` 推送文件本体',
-  '- **要用户选一个（单选）→ 优先用原生 `AskUserQuestion`**：它在 shell 里弹上下键选择菜单（你人在电脑前可直接选），项目会自动把问题+选项**镜像成飞书按钮卡**（手机端点按钮 / 回裸数字即可，会经 pty 写数字直选那个原生菜单，锁屏也能答）。**电脑原生菜单 + 手机飞书卡，两边都能答，谁先答谁生效** —— 这正是"有时候用电脑、有时候用手机"两不误。',
-  '- 多选 / 多问题表单 / 自由长文本 → 用 `agent lark ask`（飞书交互更完整，弹卡手指点选；但**只走飞书、电脑端没有原生菜单**）。确定人在电脑前时也可继续用 AskUserQuestion（原生多选菜单，飞书端仅显示、不便点选）。用户不必手打命令。',
-  '    单选：`agent lark ask single --title "选哪个？" --options "选项A,选项B,选项C"`',
-  '    多选：`agent lark ask multi  --title "勾选多个" --options "1,2,3"`',
-  '    ⚠ 选项文本里**含逗号**时 `--options` 会被拆乱 → 改用 JSON 数组：`--options \'["含,逗号的选项","选项2"]\'`（或 `--options-json`），一个 flag 安全搞定',
-  '    输入：`agent lark ask input  --title "输入什么"`  （用户在飞书 chat 里直接回复文本即可）',
-  '    多问题表单：`agent lark ask form --title "标题" --spec-json \'{"questions":[{"title":"Q1","type":"single","options":["A","B"],"allowText":true},{"title":"Q2","type":"multi","options":["X","Y"]}]}\'` —— 一次问多个、每题单/多选、allowText 题可自由输入；stdout 返回 `{"status":"answered","type":"form","answers":[{"q":0,"kind":"single","index":0,"value":"A"},...]}`。**多问题表单场景用它**（AskUserQuestion 也能多问题，但飞书镜像对多选/多问题作答不便，表单走这个更顺）。',
-  '    stdout 示例：`{"status":"answered","type":"single","index":1,"value":"选项B"}`；status 也可能是 cancelled / timeout',
-  '    退出码：0=answered，1=cancelled，2=timeout',
-  '- 单选问题**优先原生 `AskUserQuestion`**（原生菜单自动镜像飞书、两边可答）；多选/表单/自由文本用 `agent lark ask`。别在裸 TUI 里 `read` 等键盘而不给任何飞书通道 —— 人在手机时会收不到。',
-  '- 高风险操作（写数据库 / git push --force / rm -rf / 改 .env）先 `agent request-approval --title --body` 等批准',
-  '- 不要直接调任何 webhook（功能弱、不支持文件）',
-  '- **「龙虾」= CareyClaw 平台**（bot.ihealthcn.com）。用户说「龙虾/careyclaw 有没有XX接口 / 这个接口怎么调 / 帮我拿XX数据」→ 触发已装的 **careyclaw-apis** 技能（检索/试调平台业务 API）；说「龙虾/careyclaw 部署/发布应用」→ 触发 **careyclaw-deploy** 技能。首次会给浏览器授权链接（用 `agent lark send-text` 把链接推给用户去点）。',
-  '',
-].join('\n');
-
-// 短提醒：claude TUI tab 每条消息末尾都注入（防止 6h 间隔的 SYSTEM_GUIDANCE 过期遗忘）
-const CLAUDE_TUI_REMINDER = [
-  '',
-  '---',
-  '⚠ 回到飞书 — 飞书看不见你的 TUI 屏幕。**先在 TUI 完整回答用户，然后再** `agent lark send-text "<同样一份摘要>"` 推到飞书（两个渠道并行，不能只推不答）。要用户**单选** → 优先原生 `AskUserQuestion`（shell 原生菜单 + 自动镜像飞书按钮卡，电脑/手机两边都能答）；**多选/表单/填文本** → `agent lark ask multi|form|input`（stdout 拿答案 JSON）。',
-].join('\n');
+// SYSTEM_GUIDANCE / 短提醒的文案已移入 AgentAdapter（orchestrator/agents/guidance.ts）：
+// claude 与 codex 的问答能力不同（claude 有原生 AskUserQuestion + 飞书镜像，codex 没有），
+// 必须按 tab 实际跑的 agent 分流，否则会教 codex 调一个不存在的工具、用户在手机端收不到选项。
 import { patchCard, sendCardReturnId, sendImage, sendCardMessage } from './api.js';
 import { ackCard, askCard, bareShellNoAgentCard, batchProgressCard, browseCard, careyclawKeyCard, careyclawKeyFormCard, chainProgressCard, closeIdleConfirmCard, closeTabConfirmCard, connectConfirmCard, connectFormCard, connectStatusCard, escapeLarkMd, permLevelCard, planCard, progressCard, receiptCard, tapdClaimCard, type BatchTaskItem, type ChainStepItem } from './cards.js';
 import { getCareyclawKeyStatus, setCareyclawKey } from 'multiagent-orchestrator';
@@ -889,37 +857,37 @@ async function dispatchSopExecute(
 
       await new Promise((r) => setTimeout(r, 1500));
       try {
-        // 用 launchClaudeInTab（会双 forceEnter 过"信任此文件夹?"trust 弹窗）——
+        // 用 launchDefaultAgentInTab（会双 forceEnter 过"信任此文件夹?"trust 弹窗）——
         // 原来的 raw send('claude') 不过 trust：新目录首启时 trust 弹窗会吃掉随后发的 SOP wrapper，
-        // claude 只收到空回车 → 回"收到一条空消息"。对齐 TAPD 认领的开工流程。
-        const r = await launchClaudeInTab(newTty, { continueSession: false });
+        // agent 只收到空回车 → 回"收到一条空消息"。对齐 TAPD 认领的开工流程。
+        const r = await launchDefaultAgentInTab(newTty, { continueSession: false });
         if (!r.ok) throw new Error(r.reason ?? 'launch failed');
       } catch (e) {
-        await replyText(client, ctx, `❌ 新 tab ${newTty} 起 claude 失败：${(e as Error).message}`);
+        await replyText(client, ctx, `❌ 新 tab ${newTty} 起 agent 失败：${(e as Error).message}`);
         return;
       }
 
-      // 轮询等 claude 进程真的起来（确认 launch 成功，不是盲等固定秒数），最多 ~18s。
-      // 注：hasTUI 只认 vim/htop，claude 不在其列，不能用它判就绪 → 用进程名判。
-      // launchClaudeInTab 已在轮询前双 forceEnter 过 trust。claude 进程在 = 已启动。
-      const isClaudeProc = (t: Awaited<ReturnType<typeof listTabs>>[number]) =>
-        t.processes.some((p) => p === 'claude' || p === 'claude-code' || /\/claude$/i.test(p) || p.toLowerCase().includes('claude'));
+      // 轮询等 agent 进程真的起来（确认 launch 成功，不是盲等固定秒数），最多 ~18s。
+      // 注：hasTUI 只认 vim/htop，claude/codex 都不在其列，不能用它判就绪 → 用进程名判（走 adapter）。
+      // launchDefaultAgentInTab 已在轮询前双 forceEnter 过 trust。agent 进程在 = 已启动。
+      const isAgentProc = (t: Awaited<ReturnType<typeof listTabs>>[number]) =>
+        detectAgentFromProcs(t.processes) !== null;
       let found: Awaited<ReturnType<typeof listTabs>>[number] | undefined;
       for (let i = 0; i < 12; i++) {
         await new Promise((r) => setTimeout(r, 1500));
         const tabsAfter = await listTabs();
         found = tabsAfter.find((t) => t.tty === newTty);
-        if (found && isClaudeProc(found)) break;
+        if (found && isAgentProc(found)) break;
       }
       if (!found) {
         await replyText(client, ctx, `❌ 新 tab ${newTty} spawn 后 listTabs 找不到`);
         return;
       }
-      if (!isClaudeProc(found)) {
-        await replyText(client, ctx, `⚠️ 新 tab ${newTty} 的 claude 还没起来（可能卡在 trust/登录）。SOP 未派发，避免发空消息——请去那个 tab 手动看一眼再重试。`);
+      if (!isAgentProc(found)) {
+        await replyText(client, ctx, `⚠️ 新 tab ${newTty} 的 agent 还没起来（可能卡在 trust/登录）。SOP 未派发，避免发空消息——请去那个 tab 手动看一眼再重试。`);
         return;
       }
-      // claude 进程在了 → 再给 2.5s settle，让它过完 trust/进主界面，再发 wrapper（否则可能撞上启动画面）
+      // agent 进程在了 → 再给 2.5s settle，让它过完 trust/进主界面，再发 wrapper（否则可能撞上启动画面）
       await new Promise((r) => setTimeout(r, 2500));
       tab = found;
       targetLabel = 'fresh';
@@ -1408,7 +1376,9 @@ async function dispatchSendToTab(
   });
 
   // 0. 裸 shell（没跑 agent）的特殊处理。
-  const hasAgent = detectAgentFromProcs(tab.processes) !== null;
+  // 留住 adapter 本身（不只是 boolean）：后面注入的 guidance / 短提醒要按 claude vs codex 分流。
+  const agent = detectAgentFromProcs(tab.processes);
+  const hasAgent = agent !== null;
   if (!hasAgent) {
     // 0a. 裸 agent 名 → 启动对应 CLI。
     //    这条消息正好是某个 agent 的名字（"codex" / "claude"）→ 意图是"进入该 CLI"而非"发 prompt"。
@@ -1494,15 +1464,15 @@ async function dispatchSendToTab(
   //      且 guidance 里含反引号/引号，灌进去必然把 shell 卡进续行 → 一律不注入。
   let guidance = '';
   let recallPrefix = '';
-  if (hasAgent) {
+  if (agent) {
     const now = Date.now();
     const lastShownAt = systemGuidanceShownAt.get(tab.tty);
     const shouldInjectGuidance =
       lastShownAt === undefined || now - lastShownAt >= SYSTEM_GUIDANCE_INTERVAL_MS;
-    guidance = shouldInjectGuidance ? SYSTEM_GUIDANCE : '';
+    guidance = shouldInjectGuidance ? agent.systemGuidance : '';
     if (shouldInjectGuidance) {
       systemGuidanceShownAt.set(tab.tty, now);
-      logger.info('system guidance injected (first time / 6h+)', { tty: tab.tty });
+      logger.info('system guidance injected (first time / 6h+)', { tty: tab.tty, agent: agent.kind });
     }
     // 检索相关历史 → 注入（跨会话 RAG-lite：BM25 over memories+knowledge，中文 bigram）
     try {
@@ -1524,27 +1494,23 @@ async function dispatchSendToTab(
     }
   }
 
-  // claude TUI 检测 — 决定是否在 prompt 末尾追加短提醒
-  const isClaudeTab = tab.processes.some((p) =>
-    /(^|\/)claude(-code)?$/i.test(p) || p.toLowerCase().includes('claude'),
-  );
 
   // 裸 shell：原样发用户输入，不加任何包装（guidance/recall/reminder 都是给 TUI agent 的）。
-  const finalText = hasAgent
+  const finalText = agent
     ? guidance +
       (recallPrefix || (guidance ? '[本次任务]\n' : '')) +
       text +
-      (isClaudeTab ? CLAUDE_TUI_REMINDER : '')
+      agent.tuiReminder
     : text;
 
   const result = await send(tab.tty, finalText);
   if (result.ok) markRemoteWrite(tab.tty); // 标记：本项目写过这个 tab（供卡死自愈只对远程写过的 tab 生效）
   logger.info('dispatchSendToTab: send result', { ok: result.ok, reason: result.reason, before: result.before });
 
-  // 对 claude TUI tab 补一次「回车」触发提交：do script 写进 pty 的是「文本+\r」整块，TUI 当粘贴处理、
+  // 对 Claude/Codex TUI tab 补一次「回车」触发提交：do script 写进 pty 的是「文本+\r」整块，TUI 当粘贴处理、
   // 块内 \r 只算换行；要再单独送一个 \r 才算真回车。forceEnter 默认走 pty 直写（空 do script），
   // 不依赖前台焦点——合盖锁屏 / 别的 app 在前台也照常提交（详见 host-mac forceEnter）。
-  if (result.ok && isClaudeTab) {
+  if (result.ok && shouldSubmitPromptAfterSend(tab.processes)) {
     // do script 已经把字符送进去，等 0.4s 让 TUI 先消化文本块（两块若被合并读取会整体当粘贴不提交）
     await new Promise((r) => setTimeout(r, 400));
     try {
@@ -1748,7 +1714,7 @@ async function finalizeTapdClaim(
     const primaryCwd = okRepos[0]!.cwd;
     const tty = await hm.newTab({ cwd: primaryCwd });
     await new Promise((r) => setTimeout(r, 1500));
-    await hm.launchClaudeInTab(tty, { continueSession: false });
+    await hm.launchDefaultAgentInTab(tty, { continueSession: false });
     await new Promise((r) => setTimeout(r, 1500));
 
     const tapdPrompt = buildTapdPrompt(claim, results);
@@ -1853,7 +1819,7 @@ async function openTaskWorktreeTab(opts: {
   }).catch((e) => logger.warn('saveWorkTask (perf) failed', { err: (e as Error).message }));
   const tty = await newTab({ cwd: ok.cwd });
   await new Promise((r) => setTimeout(r, 1500));
-  await hm.launchClaudeInTab(tty, { continueSession: false });
+  await hm.launchDefaultAgentInTab(tty, { continueSession: false });
   await new Promise((r) => setTimeout(r, 1500));
   await send(tty, opts.prompt);
   await new Promise((r) => setTimeout(r, 600));
@@ -1962,17 +1928,17 @@ async function openLetterWorkspace(
     await mkdir(dir, { recursive: true });
     tty = await newTab({ cwd: dir });
     await new Promise((r) => setTimeout(r, 1500));
-    const launched = await launchClaudeInTab(tty, { continueSession: false });
+    const launched = await launchDefaultAgentInTab(tty, { continueSession: false });
     if (!launched.ok) {
-      void sendText(client, chatId, `❌ 新 tab ${tty} 起 claude 失败：${launched.reason ?? '未知'}（公函未派发）`);
+      void sendText(client, chatId, `❌ 新 tab ${tty} 起 ${launched.kind} 失败：${launched.reason ?? '未知'}（公函未派发）`);
       return;
     }
-    // **必须确认 claude 进程真的起来了才能发正文**，不能盲等固定秒数。
-    // `launchClaudeInTab` 的 ok 只表示 `do script "claude"` 写成功，不代表进程起来了——
+    // **必须确认 agent 进程真的起来了才能发正文**，不能盲等固定秒数。
+    // `launchDefaultAgentInTab` 的 ok 只表示 `do script "<agent>"` 写成功，不代表进程起来了——
     // trust 弹窗卡住 / 登录态 / 机器负载都可能让它几秒内起不来。此时若照发，
     // 公函正文（外部第三方可控）就会连同回车落进一个**裸 shell**，等价于往终端粘贴多行命令，
     // 正文里任何一行合法 shell 命令都会当场执行 —— 与「复用旧 shell 不校验 agent」是同一个洞的
-    // 另一个入口，别只堵一边。判据用进程名（hasTUI 只认 vim/htop，claude 不在其列）。
+    // 另一个入口，别只堵一边。判据用进程名（hasTUI 只认 vim/htop，claude/codex 都不在其列）。
     let ready = false;
     for (let i = 0; i < 12; i += 1) {
       await new Promise((r) => setTimeout(r, 1500));
@@ -1984,7 +1950,7 @@ async function openLetterWorkspace(
       void sendText(
         client,
         chatId,
-        `⚠️ 新 tab ${tty} 的 claude 还没起来（可能卡在 trust/登录）。**公函未派发** —— 去那个 tab 看一眼再重试，避免正文落进裸 shell。`,
+        `⚠️ 新 tab ${tty} 的 agent 还没起来（可能卡在 trust/登录）。**公函未派发** —— 去那个 tab 看一眼再重试，避免正文落进裸 shell。`,
       );
       return;
     }
@@ -2017,7 +1983,7 @@ async function openLetterWorkspace(
   // **发送前的最后一道闸：确认这个 tty 上跑的确实还是 agent。**
   //
   // 两条路径都要过这道闸，而且必须在 `send` 紧邻之前重新取快照：
-  //  - 新开路径：`launchClaudeInTab` 之后有轮询 + 2.5s settle，settle 期间 claude 完全可能
+  //  - 新开路径：`launchDefaultAgentInTab` 之后有轮询 + 2.5s settle，settle 期间 agent 完全可能
   //    又崩回裸 shell（trust 二次确认失败 / 登录报错 / 进程挂）；
   //  - 复用路径：`canReuseSession` 判定之后到这里，中间还隔着一次 `readThread` 网络调用。
   // 拿更早的快照当准就等于没检查。一旦漏掉，公函正文（外部第三方可控）会连同回车落进裸 shell —
@@ -2030,7 +1996,7 @@ async function openLetterWorkspace(
     void sendText(
       client,
       chatId,
-      `⚠️ ${tty} 上已经不是 claude 了（可能退回了裸 shell）。**公函未派发** —— 去看一眼，或再点一次「确认，开工」让我开个新的。`,
+      `⚠️ ${tty} 上已经不是 agent 了（可能退回了裸 shell）。**公函未派发** —— 去看一眼，或再点一次「确认，开工」让我开个新的。`,
     );
     return;
   }
@@ -2235,7 +2201,8 @@ async function handleCardAction(
             `**${it.name}** 状态：`,
             `${st.installed ? '✅' : '⬜'} CLI 安装${st.binPath ? `（${st.binPath}）` : ''}`,
             `${st.loggedIn ? '✅' : '⬜'} 登录${st.loginDetail ? `（${st.loginDetail}）` : ''}`,
-            `${st.notifyHooked ? '✅' : '⬜'} notify 回传钩子`,
+            `${st.lifecycleHooked ? '✅' : '⬜'} lifecycle hooks（回传 + 高危审批；首次要在 codex 里 /hooks 批准）`,
+            `${st.notifyHooked ? '✅' : '⬜'} notify 回传钩子（兜底）`,
             '',
             `👉 ${codexNextStep(st)}`,
           ];

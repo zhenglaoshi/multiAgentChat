@@ -1,15 +1,20 @@
 #!/usr/bin/env node
 /*
- * multiAgentChat — Claude Code Stop hook
+ * multiAgentChat — Stop hook（claude + codex 共用）
  *
- * ~/.claude/settings.json 的 hooks.Stop 指向本脚本。Claude Code 每次
- * assistant 响应完成会调本脚本，stdin 是 JSON（含 last_assistant_message /
+ * 两处配置都指向本脚本：
+ *   - claude：~/.claude/settings.json 的 hooks.Stop
+ *   - codex ：~/.codex/config.toml 的 [[hooks.Stop]]（codex 0.154+）
+ * 能共用是因为 codex 的 hook 协议与 Claude Code **同构** —— stdin 收 JSON，字段名逐字相同
+ * （`last_assistant_message` / `cwd` / `session_id`），依据见 orchestrator/agents/codex.ts。
+ *
+ * agent 每次 assistant 响应完成会调本脚本，stdin 是 JSON（含 last_assistant_message /
  * cwd / session_id）。本脚本抽 last_assistant_message，通过
  * `bin/agent lark send-text --auto` 推到飞书；daemon 根据目标 chat 的
  * watchAllTabs 决定是否放行。
  *
  * Fire-and-forget：spawn detached，hook 立即 exit 0，
- * 不阻塞 Claude Code 的 Stop 流程。任何异常都吞掉（exit 0），
+ * 不阻塞 agent 的 Stop 流程。任何异常都吞掉（exit 0），
  * 避免 hook 报错影响用户 UI。
  *
  * 设 MCHAT_HOOK_DEBUG=1 打开 /tmp/mchat-stop-hook.log 调试。
@@ -22,6 +27,8 @@ import { spawn, execFileSync } from 'node:child_process';
 import { appendFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { shouldPush } from './lib/push-dedupe.mjs';
+import { looksHeadlessCommand } from './lib/headless.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MAX_TEXT_LEN = 3500;
@@ -59,7 +66,9 @@ function isHeadlessSession() {
     const cmd = execFileSync('ps', ['-o', 'command=', '-p', String(process.ppid)], {
       encoding: 'utf8',
     }).trim();
-    if (/(^|\s)(-p|--print)(\s|$)/.test(cmd)) return true;
+    // 判定逻辑（含 `claude -p` 与 `codex exec`）在 bin/lib/headless.mjs，有单测护着 ——
+    // 那段正则曾经因为漏了路径前缀而对 `codex exec` 永远不命中，见该文件注释。
+    if (looksHeadlessCommand(cmd)) return true;
   } catch {
     /* ps 失败 → 当作交互式，照旧推 */
   }
@@ -126,6 +135,15 @@ process.stdin.on('end', () => {
     }
     if (text.length > MAX_TEXT_LEN) {
       text = text.slice(0, MAX_TEXT_LEN) + '\n\n…(truncated)';
+    }
+    // 跨进程去重：codex 侧 legacy notify 与本 Stop hook 会对同一个 turn 都触发一次，
+    // 不去重就会在飞书上看到同一段结果两遍。
+    // 判据是「上一次是不是**另一条**通道推的」（见 bin/lib/push-dedupe.mjs）——
+    // 所以 claude（只有 Stop 这一条通道）**恒放行**，不会因为两轮文本恰好相同而被吞。
+    // session 传 ppid，隔开不同 tab。
+    if (!shouldPush(text, 'stop-hook', String(process.ppid))) {
+      dbg('skip: 同一个 turn 已由另一条通道（codex notify）推过');
+      return process.exit(0);
     }
     const agentBin = resolve(HERE, 'agent');
     // 传 ppid + cwd 让 daemon 反查触发本 hook 的 shell tab，加 [ttys004] 前缀区分

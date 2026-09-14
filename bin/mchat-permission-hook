@@ -1,8 +1,15 @@
 #!/usr/bin/env node
 /*
- * multiAgentChat — Claude Code PreToolUse hook (matcher=Bash)
+ * multiAgentChat — PreToolUse hook（claude + codex 共用）
  *
- * 用途：claude 要跑**高危** shell 命令(rm -rf / git push --force / sudo / 写.env / 删库…)时，
+ * 挂载点：
+ *   - claude：~/.claude/settings.json 的 hooks.PreToolUse，matcher=Bash（字面量工具名）
+ *   - codex ：~/.codex/config.toml 的 [[hooks.PreToolUse]]，matcher=".*"（正则，全匹配）
+ *     codex 的 shell 工具在 tool_name 里叫什么尚未真机确认 → 不赌工具名，全匹配后由
+ *     bin/lib/tool-command.mjs 按 payload 形状判断是不是 shell 调用（赌错工具名 = 闸门静默失效）。
+ * 两边的 payload / 返回格式同构（tool_name / tool_input / hookSpecificOutput.permissionDecision）。
+ *
+ * 用途：agent 要跑**高危** shell 命令(rm -rf / git push --force / sudo / 写.env / 删库…)时，
  * 抢在原生"Allow this tool?"提示前，把命令推成飞书审批卡阻塞等你点批准/拒绝：
  *   批准 → 返回 permissionDecision:allow(直接执行，不弹原生提示)
  *   拒绝 → permissionDecision:deny
@@ -21,6 +28,7 @@ import { spawnSync } from 'node:child_process';
 import { appendFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { extractShellCommand } from './lib/tool-command.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DEBUG = process.env['MCHAT_HOOK_DEBUG'] === '1';
@@ -46,10 +54,10 @@ process.stdin.on('error', () => process.exit(0));
 process.stdin.on('end', () => {
   try {
     const payload = raw.trim() ? JSON.parse(raw) : {};
-    if (payload?.tool_name !== 'Bash') return process.exit(0);
-    const command = payload?.tool_input?.command;
-    if (typeof command !== 'string' || !command.trim()) return process.exit(0);
-    // 廉价预筛：明显安全 → 直接放行(不给决定，走 claude 正常流程)
+    // 不是 shell 执行类调用（读写文件 / 搜索 / 出图…）→ 与本闸无关，放行
+    const command = extractShellCommand(payload);
+    if (!command) return process.exit(0);
+    // 廉价预筛：明显安全 → 直接放行(不给决定，走 agent 原生流程)
     if (!MAYBE_RISKY.test(command)) return process.exit(0);
 
     const agentBin = resolve(HERE, 'agent');
@@ -87,7 +95,7 @@ process.stdin.on('end', () => {
         }),
       );
     }
-    // passthrough → 无输出，回退 claude 原生提示
+    // passthrough → 无输出，回退 agent 原生提示
     process.exit(0);
   } catch (e) {
     dbg('caught: ' + (e && e.message));

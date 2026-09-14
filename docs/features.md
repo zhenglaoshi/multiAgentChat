@@ -988,21 +988,118 @@ perf 建议卡 [📋 认领并建需求]：建 TAPD 需求（创建人+开发负
 
 ---
 
-## 25. 多 agent 支持 · Codex CLI（对标 Claude Code）
+## 25. 多 agent 支持 · Codex CLI（与 Claude Code **能力打平**）
 
-> 团队里有人用 Claude Code、有人用 Codex CLI。本项目从"绑死 claude"解耦成"多 agent adapter 驱动"，Codex CLI 是一等公民（同宿主 Terminal.app）。设计见 `docs/codex-integration.md`。
+> 团队里有人用 Claude Code、有人用 Codex CLI。本项目从"绑死 claude"解耦成"多 agent adapter 驱动"，
+> Codex CLI 是一等公民（同宿主 Terminal.app）。**目标不是"能连上"，是"用起来和 claude 一样"。**
+> 设计与踩坑见 `docs/codex-integration.md`（§8 是打平那一章）。
 
-### 能力
-- **`AgentAdapter` 抽象**（`orchestrator/agents/`）：把"哪个 agent"的差异（进程识别 / 登录文案 / 启动·续接命令 / 内建 slash 白名单 / skill 目录 / 回传通道规格）收进一处。`claudeAdapter`（忠实还原现有行为，byte-identical）+ `codexAdapter` + registry（`detectAgentFromProcs`）。tab 状态、启动、slash 转发都按识别到的 agent 分派。
-- **回传通道**（alt-screen 下 agent 响应推回飞书）：claude 用 `~/.claude/settings.json` Stop hook（`mchat-stop-hook`）；**codex 用 `~/.codex/config.toml` 的 `notify`（`bin/mchat-codex-notify`）** —— turn 结束 codex 以 argv JSON 调脚本 → 抽 `last-assistant-message` → `agent lark send-text`。daemon 启动幂等 upsert（非破坏、备份 `.mchat.bak`）。
-- **`/connect` 加 codex 项**（`agentType`）：检测 CLI 装没装 / 登录没 / notify 钩子装没装 + 给下一步引导。`agent connect codex`（socket-free）同款。就绪 = 三者全绿。
-- **桌面版 Codex**：不驱动 GUI，走"桥接到 CLI"（同账号装 CLI）。完整 GUI 驱动（`host-codex-app`）记档不投机做。
+### 能力对照（codex vs claude）
+
+| 能力 | 怎么实现的 |
+|---|---|
+| 飞书发消息 → tab 执行 | 共用 `dispatchSendToTab`；发完文本补一个单独的回车（`shouldSubmitPromptAfterSend`，判据是"跑着 agent TUI"，与是哪个 agent 无关） |
+| 结果自动回传飞书 | `Stop` hook → `bin/mchat-stop-hook`（**与 claude 同一个脚本**）；legacy `notify` 作兜底 |
+| 高危命令飞书审批 | `PreToolUse` hook → `bin/mchat-permission-hook`（**与 claude 同一个脚本**） |
+| 注入的系统引导 | 按 agent 分流（`orchestrator/agents/guidance.ts`）：claude 教用原生 `AskUserQuestion`，codex 一律走 `agent lark ask` |
+| 进度卡 / 等输入判定 | `watcher`/`notifier` 走 `detectAgentFromProcs`，codex 与 claude 一视同仁 |
+| 原地重启 tab | `restartAgentInPlace` 按**重启前检测到的 agent** 原样拉起 |
+| 新开 tab 起哪个 agent | `MCHAT_DEFAULT_AGENT=claude\|codex`（未设 = claude），公函开工 / TAPD 认领 / perf 认领 / `/new` / 企微认领五个入口统一 |
+| `/xxx` 转发白名单 | 取所有 adapter 的并集（`isAgentNativeSlash`），codex 独有的 `/diff` `/mention` 不再被当未知命令 |
+| 交互问答 | codex **没有**可钩的原生问答事件 → 引导里明确要求走 `agent lark ask`（纯 CLI，两边都能跑） |
+
+### 为什么能复用同一批 hook 脚本
+
+codex CLI **0.154+** 内置了一套与 Claude Code **同构**的 lifecycle hooks。依据不是文档推测，是从
+codex 二进制里抽出的**内嵌 JSON Schema**（`<event>.command.input` / `.output`，`strings` 可抽）：
+
+- 事件名同名：`Stop` / `PreToolUse` / `PostToolUse` / `UserPromptSubmit` / `SessionStart` / …
+- 入参逐字相同：`hook_event_name` / `session_id` / `cwd` / `transcript_path` / `last_assistant_message` / `tool_name` / `tool_input`
+- 出参逐字相同：`hookSpecificOutput.{hookEventName,permissionDecision,permissionDecisionReason}`
+
+→ 同一批 `bin/mchat-*` 脚本两边复用，不必为 codex 重写。
+
+### ⚠ 三个「踩了就静默失效」的点
+
+1. **`matcher` 在 codex 是正则**（内部包 `\A(?:…)\z` 全值匹配），claude 是字面量工具名。
+   "全部"在 claude 写 `*`、在 codex 必须写 `.*` —— 原样搬过去是非法正则，这条 hook **一次都不跑**。
+2. **codex 的 hook 要用户一次性授信**（TUI 里 `/hooks` 批准，config 里存 `trusted_hash`），批准前不执行。
+   所以 legacy `notify` 保留作兜底；两条通道并存时靠 `bin/lib/push-dedupe.mjs` 去重。
+3. **审批闸不赌 codex 的 shell 工具叫什么名字**。`tool_name` 的实际取值至今没直接观察到，
+   赌错的后果是闸门**看起来装好了、实际一次都不拦**。所以 matcher 用 `.*` 全匹配，
+   再由 `bin/lib/tool-command.mjs` 按 payload 形状判断 —— 多问一次审批只是烦，漏掉一个 `rm -rf` 是事故。
+   真机已验证这条策略成立（从真实 payload 里抽出了 `curl --version`）。
+
+### 回传去重（两条通道并存时）
+
+判据是**「上一次是不是另一条通道推的」**，不是纯内容 —— 标记文件里记通道名。
+纯内容去重（哪怕加 ppid）会让同一个 tab 两次不同 turn 的相同文本被吞掉第二条，
+而「所有 substantive 回复都要推飞书」是硬约定。同通道重复再加一道时间分界
+（默认 2s 内判误触发）。全程 fail-open：判不出就推，重复一条远好过丢一条。
+
+### 真机验证结果（2026-09-14）
+
+`/hooks` 批准信任后跑真实 turn，codex 输出里出现 `hook: PreToolUse` / `hook: Stop`：
+
+- ✅ 两个 hook 都触发
+- ✅ `last_assistant_message` 字段名确认（拿到 `len=19`，正是回复 "curl version 8.7.1."）
+- ✅ 审批闸从真实 payload 抽出 `cmd=curl --version`，daemon 判 `passthrough`，未误弹卡
+- ✅ notify 同轮也抽出同一条消息
+- ✅ 两条通道 ppid 相同 → 去重设计的前提成立
+
+**同一轮暴露并修掉的两个 bug（静态审查与单测都看不出来）**：
+
+1. **信任记录会被下次 upsert 删掉。** codex 把 `[hooks.state]` / `trusted_hash` 写在**我们 END 哨兵之前**
+   （它把文件尾注释当尾注，新表插它前面）→ 落在托管区块**内部**。下次 daemon 重启整块替换就把它删了 →
+   hook 变回未信任、**静默不执行**，回传悄悄退回只剩 notify，用户毫无提示。
+   修法：`extractHooksState()` 把这段捞出来挪到区块**之外**。
+2. **`codex exec` 的 headless 判定永远不命中。** 真机父进程是 `node /Users/…/bin/codex exec …`，
+   `codex` 前面是 `/` 不是空格，而原正则写的是 `(^|\s)codex\s+(exec|e)` →
+   **后台自动化任务的输出会被推去飞书**。判定抽到 `bin/lib/headless.mjs`（允许路径前缀，真机样本单测）。
+
+### 仍是假设、没有实测的三处（别当已验证）
+
+1. **codex 退出手势**按双 Ctrl-C 处理（与 claude 共用）—— 是拍板不是实测。
+   故障表征：重启 codex tab 时返回「Ctrl-C N 次仍未退出」。
+2. **信任记录总贴在区块尾部** —— 本次观察，不是 codex 的承诺。若将来插到区块中间，
+   `extractHooksState` 会 fail loud（有校验），不会静默搬错。
+3. **headless 判定只验过两种调用链**（JS wrapper + 原生二进制）。再包一层不含 `codex` 字样的脚本仍会漏判。
 
 ### 状态
-C1（抽象）+ C2（回传通道）+ C3（/connect 引导）已完成，claude 行为始终不变。**唯一剩**：codex `login` 后跑一轮验 `notify` payload 字段名（`/tmp/mchat-codex-notify.log` 记原始 payload）→ 摘 `codexAdapter.unverified`。
+
+C1（抽象）+ C2（回传通道）+ C3（`/connect` 引导）+ **C5（能力打平）** 已完成，claude 行为始终 byte-identical
+（`systemGuidance` / `tuiReminder` 有 sha256 快照断言钉住）。桌面版 Codex 仍走"桥接到 CLI"，不驱动 GUI。
+
+### 用起来
+
+```bash
+# 1) 让 daemon 把 hooks 写进 ~/.codex/config.toml（重启即可，幂等 + 备份）
+launchctl kickstart -k gui/$(id -u)/com.multiagent-chat.daemon
+
+# 2) 开一个 codex tab，在 codex TUI 里批准信任（只需一次）
+codex
+/hooks
+
+# 3) 想让新开的 tab 默认起 codex
+echo 'MCHAT_DEFAULT_AGENT=codex' >> .env    # 改完要手动重启 daemon
+
+# 排查：hook 到底跑没跑
+MCHAT_HOOK_DEBUG=1 codex     # 然后看 /tmp/mchat-stop-hook.log / mchat-permission-hook.log
+```
+
+`/connect` 与 `agent connect codex` 会如实区分「hooks 已写入配置」与「已被批准信任、真正生效」两种状态。
 
 ### 底层
-`orchestrator/agents/`（`types`/`claude`/`codex`/`registry`/`codex-status`）；`bin/mchat-codex-notify`；daemon `installCodexNotify()`；`host-mac/status.ts`·`restart.ts`、`im-lark/commands.ts` 消费端；registry `agentType:'codex'` + `connectStatusCard`/`connect-config`/`agent connect codex`。
+
+- adapter：`orchestrator/agents/`（`types` 含 `AgentHookSpec`/`AgentHookInstall`、`claude`/`codex`、
+  `guidance`（文案分流）、`registry`（`resolveDefaultAgentKind`/`shouldSubmitPromptAfterSend`）、
+  `hook-install`（**纯逻辑**：claude JSON upsert + codex TOML 渲染/幂等/信任记录保全）、`codex-status`）
+- hook 脚本：`bin/mchat-stop-hook`、`bin/mchat-permission-hook`、`bin/mchat-codex-notify`、
+  `bin/lib/{push-dedupe,tool-command,headless}.mjs`
+- daemon：`installClaudeCodeHooks()`（改 spec 驱动）+ `installCodexHooks()` + `installCodexNotify()`
+- host：`host-mac/terminal/restart.ts`（`restartAgentInPlace` / `launchDefaultAgentInTab` / `isAgentTab`）
+- 消费端：`im-lark` 的 `handlers`/`watcher`/`notifier`/`commands`；`/connect` 的 `envfile`/`cli`
+- 测试：`tests/agents.test.ts`、`tests/agent-hook-install.test.ts`、`tests/hook-scripts.test.ts`、`tests/slash-whitelist.test.ts`
 
 ---
 

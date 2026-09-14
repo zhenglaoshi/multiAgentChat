@@ -18,6 +18,14 @@ import {
 } from 'multiagent-orchestrator';
 import type { CardSpec } from 'multiagent-framework';
 import { logger } from 'multiagent-orchestrator';
+import { claudeAdapter, getAgentAdapter, type AgentAdapter } from 'multiagent-orchestrator';
+import {
+  applyClaudeHooks,
+  renderCodexHooksBlock,
+  resolveHookSpecs as resolveHookSpecsPure,
+  upsertCodexHooksBlock,
+  type ResolvedHookSpec,
+} from 'multiagent-orchestrator';
 import { startHealthCheck } from 'multiagent-im-lark';
 import { startSystemEventsProbe } from 'multiagent-im-lark';
 import { startHostPermissionProbe } from 'multiagent-im-lark';
@@ -41,7 +49,7 @@ import {
   sendKeys,
   forceEnter,
   newTab,
-  launchClaudeInTab,
+  launchDefaultAgentInTab,
   listRecentCwds,
   prepareBugBranch,
   useCurrentBranch,
@@ -63,21 +71,39 @@ import { sanitizeTerminalOutput } from 'multiagent-im-lark';
 import { buildImagePromptPrefix, buildImageOnlyPrompt } from 'multiagent-im-lark';
 import { isIntegrationDisabled, INTEGRATIONS, ensureIntegrationSkills } from 'multiagent-orchestrator';
 
+/** bin/ 目录（hook 脚本都在这）。 */
+function mchatBinDir(): string {
+  const HERE = fileURLToPath(new URL('.', import.meta.url));
+  return resolve(HERE, '..', '..', '..', 'bin');
+}
+
+/** 把 adapter 的 hook 规格解析成「脚本绝对路径」，丢掉磁盘上不存在的（并告警）。 */
+function resolveHookSpecs(adapter: AgentAdapter): ResolvedHookSpec[] {
+  const binDir = mchatBinDir();
+  return resolveHookSpecsPure(adapter.hookInstall.specs, (script) => {
+    const command = resolve(binDir, script);
+    if (!existsSync(command)) {
+      logger.warn(`bin/${script} not found`, { command, agent: adapter.kind });
+      return undefined;
+    }
+    return command;
+  });
+}
+
 /**
  * Upsert Claude Code hooks 到 ~/.claude/settings.json。
  *
- * 装两个 hook：
- *  - Stop → bin/mchat-stop-hook：turn 结束时把 last_assistant_message 推飞书
- *  - PreToolUse (matcher=AskUserQuestion) → bin/mchat-pretooluse-hook：
- *      交互式选项弹出前先把 question+options 推飞书，否则手机端看不见选项
+ * 装什么由 `claudeAdapter.hookInstall.specs` 单一事实源决定（orchestrator/agents/claude.ts），
+ * 这里只负责「按 Claude Code 的 settings.json 格式落盘」。codex 侧走 installCodexHooks()，
+ * 两边共用同一批 bin/mchat-* 脚本 —— codex 0.154+ 的 hook 协议与 Claude Code 同构。
  *
- * 两个 hook 都由脚本内部 fire-and-forget spawn `agent lark send-text --auto`，
- * daemon 根据目标 chat 的 watchAllTabs gate。
+ * 所有 hook 脚本都 fire-and-forget spawn `agent ...`，daemon 再按目标 chat 的 watchAllTabs gate。
  *
- * 幂等：移除任何指向 mchat-* 的旧条目再追加当前绝对路径。保留用户其他 hook。
+ * 幂等：移除任何指向 mchat-* 的旧条目再按 spec 顺序追加当前绝对路径。保留用户其他 hook。
  */
 async function installClaudeCodeHooks(): Promise<void> {
-  const settingsPath = join(homedir(), '.claude', 'settings.json');
+  const adapter = claudeAdapter;
+  const settingsPath = join(homedir(), adapter.hookInstall.configPathFromHome);
   if (!existsSync(settingsPath)) {
     logger.info(
       'Claude Code settings.json not found — hooks 未安装 (需先跑一次 claude)',
@@ -85,113 +111,17 @@ async function installClaudeCodeHooks(): Promise<void> {
     );
     return;
   }
-  const HERE = fileURLToPath(new URL('.', import.meta.url));
-  const binDir = resolve(HERE, '..', '..', '..', 'bin');
-  const stopHookPath = resolve(binDir, 'mchat-stop-hook');
-  const preToolUseHookPath = resolve(binDir, 'mchat-pretooluse-hook');
-  const postToolUseHookPath = resolve(binDir, 'mchat-posttooluse-hook');
-  const permissionHookPath = resolve(binDir, 'mchat-permission-hook');
-  const taskHookPath = resolve(binDir, 'mchat-task-hook');
+  const specs = resolveHookSpecs(adapter);
+  if (specs.length === 0) return;
 
-  const stopOk = existsSync(stopHookPath);
-  const preOk = existsSync(preToolUseHookPath);
-  const postOk = existsSync(postToolUseHookPath);
-  const permOk = existsSync(permissionHookPath);
-  const taskOk = existsSync(taskHookPath);
-  if (!stopOk) logger.warn('bin/mchat-stop-hook not found', { stopHookPath });
-  if (!preOk) logger.warn('bin/mchat-pretooluse-hook not found', { preToolUseHookPath });
-  if (!postOk) logger.warn('bin/mchat-posttooluse-hook not found', { postToolUseHookPath });
-  if (!permOk) logger.warn('bin/mchat-permission-hook not found', { permissionHookPath });
-  if (!taskOk) logger.warn('bin/mchat-task-hook not found', { taskHookPath });
-  if (!stopOk && !preOk && !postOk && !permOk && !taskOk) return;
-
-  type HookEntry = {
-    matcher?: string;
-    hooks?: Array<{ type?: string; command?: string }>;
-  };
   try {
     const raw = await readFile(settingsPath, 'utf8');
-    const cfg = JSON.parse(raw) as {
-      hooks?: {
-        Stop?: HookEntry[];
-        PreToolUse?: HookEntry[];
-        PostToolUse?: HookEntry[];
-        [k: string]: HookEntry[] | undefined;
-      };
-      [k: string]: unknown;
-    };
-    if (!cfg.hooks || typeof cfg.hooks !== 'object') cfg.hooks = {};
-
-    /** 从某个 hook slot 里剔除指向 mchat-* 的旧条目，返回剔除数。 */
-    const stripOld = (slot: keyof NonNullable<typeof cfg.hooks>): number => {
-      const arr = cfg.hooks![slot];
-      if (!Array.isArray(arr)) {
-        cfg.hooks![slot] = [];
-        return 0;
-      }
-      const before = arr.length;
-      cfg.hooks![slot] = arr.filter((entry) => {
-        const hks = entry && Array.isArray(entry.hooks) ? entry.hooks : [];
-        return !hks.some(
-          (h) =>
-            h &&
-            typeof h.command === 'string' &&
-            (h.command.includes('mchat-stop-hook') ||
-              h.command.includes('mchat-pretooluse-hook') ||
-              h.command.includes('mchat-posttooluse-hook') ||
-              h.command.includes('mchat-permission-hook') ||
-              h.command.includes('mchat-task-hook') ||
-              h.command.includes('mchat-hook-echo')),
-        );
-      });
-      return before - cfg.hooks![slot]!.length;
-    };
-
-    const removedStop = stripOld('Stop');
-    const removedPre = stripOld('PreToolUse');
-    const removedPost = stripOld('PostToolUse');
-
-    if (stopOk) {
-      cfg.hooks.Stop!.push({
-        matcher: '*',
-        hooks: [{ type: 'command', command: stopHookPath }],
-      });
-    }
-    if (preOk) {
-      cfg.hooks.PreToolUse!.push({
-        matcher: 'AskUserQuestion',
-        hooks: [{ type: 'command', command: preToolUseHookPath }],
-      });
-    }
-    if (postOk) {
-      // AskUserQuestion PostToolUse → 本地作答后关卡（清 chat.askArm，见 bin/mchat-posttooluse-hook）
-      cfg.hooks.PostToolUse!.push({
-        matcher: 'AskUserQuestion',
-        hooks: [{ type: 'command', command: postToolUseHookPath }],
-      });
-    }
-    if (permOk) {
-      // Bash PreToolUse → 高危命令抢在原生提示前推飞书审批卡（见 bin/mchat-permission-hook）
-      cfg.hooks.PreToolUse!.push({
-        matcher: 'Bash',
-        hooks: [{ type: 'command', command: permissionHookPath }],
-      });
-    }
-    if (taskOk) {
-      // Task 工具 PreToolUse → SOP 阶段自动 --start（框架强制打点，见 bin/mchat-task-hook）
-      cfg.hooks.PreToolUse!.push({
-        matcher: 'Task',
-        hooks: [{ type: 'command', command: taskHookPath }],
-      });
-    }
-
+    const cfg = JSON.parse(raw) as Parameters<typeof applyClaudeHooks>[0];
+    const { removed } = applyClaudeHooks(cfg, specs);
     await writeFile(settingsPath, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
     logger.info('Claude Code hooks upserted', {
-      stopHookPath: stopOk ? stopHookPath : null,
-      preToolUseHookPath: preOk ? preToolUseHookPath : null,
-      postToolUseHookPath: postOk ? postToolUseHookPath : null,
-      permissionHookPath: permOk ? permissionHookPath : null,
-      removedOld: { Stop: removedStop, PreToolUse: removedPre, PostToolUse: removedPost },
+      installed: specs.map((s) => `${s.event}:${s.matcher} -> ${s.command}`),
+      removedOld: removed,
     });
   } catch (e) {
     logger.warn('failed to upsert Claude Code hooks', {
@@ -201,7 +131,55 @@ async function installClaudeCodeHooks(): Promise<void> {
 }
 
 /**
- * 幂等把 Codex CLI 的回传通道装到 ~/.codex/config.toml 的 `notify`（对标 claude 的 Stop hook）。
+ * 幂等把 codex 的 lifecycle hooks 装到 ~/.codex/config.toml（对标 claude 的 settings.json hooks）。
+ *
+ * codex 0.154+ 的 hook 协议与 Claude Code **同构**（事件名 / 入参出参字段逐字相同，
+ * 依据见 orchestrator/agents/codex.ts 的注释与 docs/codex-integration.md §8），所以复用同一批
+ * bin/mchat-* 脚本，codex 因此拿到与 claude 一样的：结果回传飞书 + 高危命令飞书审批。
+ *
+ * 写法上只动**哨兵区块**：区块存在则整块替换，不存在则追加到文件末尾。用户自己的 `[hooks]`
+ * 条目、`notify`、其余配置一律不碰 —— `[[hooks.X]]` 是 array-of-table，追加不会覆盖已有项。
+ *
+ * ⚠ 首次安装后 codex 会要求**一次性信任**这些 hook（TUI 里 `/hooks` 批准）。没批准前 hook 不跑，
+ *   回传仍走已装的 `notify` 兜底；两条通道都在时由脚本侧的内容去重防重复推送。
+ */
+async function installCodexHooks(): Promise<void> {
+  const adapter = getAgentAdapter('codex');
+  if (!adapter) return;
+  const configPath = join(homedir(), adapter.hookInstall.configPathFromHome);
+  if (!existsSync(configPath)) {
+    logger.info('Codex config.toml not found — hooks 未安装（codex CLI 未配置，跳过）', { configPath });
+    return;
+  }
+  const specs = resolveHookSpecs(adapter);
+  if (specs.length === 0) return;
+  try {
+    const raw = await readFile(configPath, 'utf8');
+    const next = upsertCodexHooksBlock(raw, renderCodexHooksBlock(specs));
+    if (next === raw) {
+      logger.info('codex hooks up-to-date', { configPath });
+      return;
+    }
+    // 备份名与 installCodexNotify 的 .mchat.bak 分开 —— 同一次启动两个函数都会改这个文件，
+    // 共用一个备份名会让后写的那个把「改动前」的快照覆盖掉。
+    await writeFile(configPath + '.mchat-hooks.bak', raw, 'utf8').catch(() => {});
+    await writeFile(configPath, next, 'utf8');
+    logger.info('codex hooks upserted 到 ~/.codex/config.toml（备份 .mchat-hooks.bak）', {
+      installed: specs.map((s) => `${s.event}:${s.matcher} → ${s.command}`),
+      note: '首次需在 codex TUI 里 /hooks 批准信任后才会生效',
+    });
+  } catch (e) {
+    logger.warn('failed to upsert codex hooks', { err: (e as Error).message });
+  }
+}
+
+/**
+ * 幂等把 Codex CLI 的 legacy `notify` 回传通道装到 ~/.codex/config.toml。
+ *
+ * 现在它是**兜底**而非主通道：主通道是 installCodexHooks() 装的 `Stop` hook（与 claude 同构、
+ * 同一个 bin/mchat-stop-hook）。保留 notify 的理由 —— codex 的 hook 首次需要用户手动批准信任，
+ * 没批准前 hook 不跑，notify 仍能把结果送回飞书。两条通道同时生效时可能推同一段文本两次，
+ * 由 bin/lib/push-dedupe.mjs 的内容去重兜住。
  * codex 未配置（无 ~/.codex/config.toml）→ 跳过。
  * TOML 顶层 key 必须在任何 [table] 之前 → notify 插到文件最前。
  * 幂等 + 非破坏：已是本脚本 → 跳过；无 notify → 插入；**已有别人的 notify → 只告警不覆盖**
@@ -213,9 +191,7 @@ async function installCodexNotify(): Promise<void> {
     logger.info('Codex config.toml not found — notify 未安装（codex CLI 未配置，跳过）', { configPath });
     return;
   }
-  const HERE = fileURLToPath(new URL('.', import.meta.url));
-  const binDir = resolve(HERE, '..', '..', '..', 'bin');
-  const notifyPath = resolve(binDir, 'mchat-codex-notify');
+  const notifyPath = resolve(mchatBinDir(), 'mchat-codex-notify');
   if (!existsSync(notifyPath)) {
     logger.warn('bin/mchat-codex-notify not found', { notifyPath });
     return;
@@ -1137,7 +1113,7 @@ async function runWeComTapdClaim(wecom: WeComTransport, chatId: string, claim: T
   }
   const tty = await newTab({ cwd: outcome.cwd });
   await new Promise((r) => setTimeout(r, 1500));
-  await launchClaudeInTab(tty, { continueSession: false });
+  await launchDefaultAgentInTab(tty, { continueSession: false });
   await new Promise((r) => setTimeout(r, 1500));
   await terminalSend(tty, buildTapdPrompt(claim, [outcome], 'wecom'));
   await new Promise((r) => setTimeout(r, 600));
@@ -1512,6 +1488,7 @@ async function main() {
   // skill 型对接（careyclaw 等）：缺失则幂等自动安装官方技能（失败静默，不阻塞启动）
   for (const it of INTEGRATIONS) if (it.skillType) void ensureIntegrationSkills(it);
   await installClaudeCodeHooks();
+  await installCodexHooks();
   await installCodexNotify();
   await ensureAgentOnPath();
 
