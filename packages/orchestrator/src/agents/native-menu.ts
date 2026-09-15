@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 /**
  * 从终端屏幕里认出「agent 的原生选择菜单」并解析出选项 —— **纯函数，宿主与传输无关**。
  *
@@ -93,17 +95,19 @@ function cleanLine(line: string): string {
   return line.slice(0, MAX_LINE_LEN).replace(ANSI_RE, '').replace(/\r/g, '').trimEnd();
 }
 
-/** 简易稳定哈希（零依赖）—— 只用于去重，不做安全用途。 */
+/**
+ * 菜单指纹 = **excerpt 的 SHA-256**。
+ *
+ * ⚠ 这里**不能**用自研的弱哈希（原先是个 32bit×2 的 FNV 变体）。它看着只是"去重"，
+ * 实际参与的是一个**安全相关**的判定：指纹相同 → 既不重推卡、也不 disarm →
+ * 飞书上停留的仍是上一次那张卡。security 评审 2026-09-15 指出的利用链：
+ * 若能让两段不同的 excerpt 碰撞（弱哈希输出空间小、实现公开、可离线暴搜），
+ * 就能让「无害命令 A 的卡片」配上「危险命令 B 的现场」—— 用户点"1"批准的是从未展示过的 B。
+ * 这恰恰是本轮修复要堵的「展示 ≠ 执行」，绝不能在防线自身留这个口子。
+ * excerpt 本身有界（≤40 行、每行 ≤1000 字），直接 sha256 成本可以忽略。
+ */
 function fingerprintOf(parts: string[]): string {
-  const s = parts.join(' ');
-  let h1 = 0x811c9dc5;
-  let h2 = 0x01000193;
-  for (let i = 0; i < s.length; i++) {
-    const c = s.charCodeAt(i);
-    h1 = Math.imul(h1 ^ c, 0x01000193) >>> 0;
-    h2 = Math.imul(h2 + c, 0x85ebca6b) >>> 0;
-  }
-  return `${h1.toString(36)}${h2.toString(36)}`;
+  return createHash('sha256').update(parts.join('\u0000')).digest('hex');
 }
 
 /**

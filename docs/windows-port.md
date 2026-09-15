@@ -132,12 +132,17 @@ readonly keyInjectionBlockedWhenLocked: boolean;
    重设到当前长度（回缩前那段内容确实已从快照里消失、找不回来，但后续增量能重新正确计算，而不是通道死掉）。
    macOS 下此分支永不触发。另 `notifier.ts` 四处消费 `taskOnlyTail` 的地方都带了 `|| outputTail` 兜底。
    **仍需真机确认**回缩的实际频率与幅度。
-5. WSL2 下 unix socket（`framework/control/protocol.ts:11` 的 `~/.multiagent-chat/agent.sock`）正常。
+5. **codex 的审批屏里有没有「每 tick 都在变」的元素**（spinner / 计时器 / 进度条）。
+   菜单指纹现在覆盖整段 excerpt，若屏幕里有持续重绘的元素，指纹会一直变 → 永远达不到
+   `STABLE_TICKS` → **该菜单不镜像**。退化方向是安全的（等于回到这个功能上线前的基线），
+   但目标就落空了。现有证据倾向于没有（真机截图样本里末尾是静态的 `Press enter to confirm`，
+   且 codex 弹菜单时是阻塞等 stdin），但**没有实测过连续多次审批 / 命令输出很长的情形**。
+6. WSL2 下 unix socket（`framework/control/protocol.ts:11` 的 `~/.multiagent-chat/agent.sock`）正常。
    ~~6. tmux 的 `;` 参数解析是否只把「整串恰好等于 `;`」当分隔符~~ ✅ **2026-09-14 已真机实测（tmux 3.7c）**：
    **不存在命令注入**（`hello; new-window` 整串原样敲进 pane，tmux 没有真的多开 window）；
    但**任何以裸 `;` 结尾**的字面文本都会被吞掉最后一个字符（`x;`→`x`，`;;`→`;`），
    `;` 在中间则完整无损。已据此把 `sendLiteral` 的处理从「整串等于 `;`」放宽成「剥掉结尾连续分号用 `-H` 补发」。
-6. Windows 侧：注销会杀 WSL2 VM、Windows Update 自动重启、重启后 WSL 不自启（见 §7）。
+7. Windows 侧：注销会杀 WSL2 VM、Windows Update 自动重启、重启后 WSL 不自启（见 §7）。
 
 ## 7. Windows 侧安装 / 配置清单
 
