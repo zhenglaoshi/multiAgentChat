@@ -17,8 +17,10 @@
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.40.0",
-    "multiagent-orchestrator": "workspace:*",
+    "multiagent-host-api": "workspace:*",
     "multiagent-host-mac": "workspace:*",
-    "multiagent-im-lark": "workspace:*"
+    "multiagent-host-tmux": "workspace:*",
+    "multiagent-im-lark": "workspace:*",
+    "multiagent-orchestrator": "workspace:*"
   }
 }

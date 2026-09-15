@@ -36,15 +36,17 @@ describe('parseSleepDisabled', () => {
   });
 });
 
+const INSTALL_CMD = 'sudo scripts/lid-awake.sh install';
+
 describe('buildLidAwakeNudge', () => {
   it('两种文案都带安装命令与关闭开关', () => {
     for (const sd of [true, false, null]) {
-      const t = buildLidAwakeNudge(sd);
+      const t = buildLidAwakeNudge(sd, INSTALL_CMD);
       expect(t).toContain('sudo scripts/lid-awake.sh install');
       expect(t).toContain('LID_AWAKE_NUDGE=0');
     }
-    expect(buildLidAwakeNudge(true)).toContain('拔电放包里也不会睡');
-    expect(buildLidAwakeNudge(false)).toContain('合盖就睡');
+    expect(buildLidAwakeNudge(true, INSTALL_CMD)).toContain('拔电放包里也不会睡');
+    expect(buildLidAwakeNudge(false, INSTALL_CMD)).toContain('合盖就睡');
   });
 });
 

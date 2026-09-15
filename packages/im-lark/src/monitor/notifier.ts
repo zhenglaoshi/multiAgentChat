@@ -27,7 +27,7 @@ import { memoryStore } from 'multiagent-orchestrator';
 import { tokenize } from 'multiagent-orchestrator';
 import { getHookSummary } from 'multiagent-orchestrator';
 import type { TaskMemory } from 'multiagent-orchestrator';
-import type { TerminalTab } from 'multiagent-host-mac';
+import type { TerminalTab } from 'multiagent-host-api';
 import { chainManager, type ChainState } from './chains.js';
 import { pendingTracker, type PendingOutput } from './pending.js';
 import { sanitizeTerminalOutput } from './sanitize.js';
@@ -388,7 +388,9 @@ export function attachWatcherToLark(larkClient: Lark.Client): void {
         await maybePatchBatchCard(
           pending,
           batchStatus,
-          sanitizeTerminalOutput(taskOnlyTail || ''),
+          // 与下面单卡路径同样的兜底（原本漏了这一条）：taskOnlyTail 在 tmux 宿主下可能为空，
+          // 批量卡里就会出现一个空白的「已完成」条目。maybePatchBatchCard 自己也不兜底。
+          sanitizeTerminalOutput(taskOnlyTail || outputTail || ''),
         );
       } else if (pending.chatId) {
         // 单任务/独立卡路径
@@ -413,8 +415,12 @@ export function attachWatcherToLark(larkClient: Lark.Client): void {
         if ((quietMode || pending.quietUntilDone) && !isFinal) {
           return;
         }
-        // 卡片只展示「本次任务新增」的输出，不含历史 scrollback
-        let tailForCard = trimTailForCard(taskOnlyTail || '');
+        // 卡片只展示「本次任务新增」的输出，不含历史 scrollback。
+        // ⚠ 本文件**四处**消费 taskOnlyTail 的地方都要带 `|| outputTail` 兜底（批量卡那处曾漏掉）：`taskOnlyTail` 是按字符偏移切的
+        // （`fullHist.slice(beforeCharLen)`），而 tmux 宿主的 getHistory 拿的是**屏幕快照、长度会回缩**，
+        // 回缩时 watcher 会返回空串 → 裸 shell 任务（没有 agent，也就没有下面那句 TUI 提示兜底）
+        // 会收到一张"已完成"但内容空白的卡。Mac 宿主单调增长，加这层兜底不改变其现有行为。
+        let tailForCard = trimTailForCard(taskOnlyTail || outputTail || '');
         // agent（claude/codex）的 alt-screen TUI 下 watcher 看不全屏幕；提示完整回复看 agent 主动推
         const agent = detectAgentFromProcs(tab.processes);
         if (agent) {

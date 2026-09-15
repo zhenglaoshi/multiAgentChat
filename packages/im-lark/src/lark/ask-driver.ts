@@ -1,4 +1,4 @@
-import { sendKeys, sendKeysRaw } from 'multiagent-host-mac';
+import { sendKeys, sendKeysRaw } from 'multiagent-host-api';
 import { logger } from 'multiagent-orchestrator';
 import { buildDownEnterSeq, buildPtyDigit, resolveAskDriveMode, type AskDriveMode } from './ask-drive.js';
 

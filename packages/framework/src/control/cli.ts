@@ -11,7 +11,7 @@ import { scrubSecrets, summarizeScrub } from 'multiagent-orchestrator';
 import { HANDOFF_STATUS_LABEL } from 'multiagent-orchestrator';
 import type { HandoffStatus, HandoffTask } from 'multiagent-orchestrator';
 import type { TaskState, TaskStatus } from 'multiagent-orchestrator';
-import type { TerminalTab } from 'multiagent-host-mac';
+import type { TerminalTab } from 'multiagent-host-api';
 import { SOCKET_PATH } from './protocol.js';
 import type {
   ApprovalListData,
@@ -1653,6 +1653,9 @@ async function cmdConnect(flags: Flags): Promise<void> {
 }
 
 async function cmdDoctor(): Promise<void> {
+  // doctor 跑在 CLI 进程（daemon 挂了也要能自检）→ 这里也是一个组装根，得先装宿主。
+  const { ensureHostRegistered } = await import('../host-bootstrap.js');
+  await ensureHostRegistered();
   const { runDoctor } = await import('./doctor.js');
   stderr.write('🩺 诊断中...\n\n');
   const report = await runDoctor({ repoRoot: procCwd() });

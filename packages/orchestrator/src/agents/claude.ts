@@ -23,6 +23,18 @@ export const claudeAdapter: AgentAdapter = {
     /run\s+`?claude\s+\/login/i,
     /run\s+`?claude\s+(auth|login)/i,
   ],
+  /**
+   * claude 的原生菜单用 `❯` 前缀 + 勾选框，通用判据（tab-status 的 WAITING_PATTERNS）已经覆盖，
+   * 这里留空。⚠ 留空是「通用判据够用」的判断，不是「claude 没有原生菜单」——
+   * 若发现某种 claude 菜单推不出提示，往这里加特征，别去放宽通用判据（那会抬高假阳性）。
+   */
+  /**
+   * 空 = **不启用**原生菜单镜像。claude 的 `AskUserQuestion` 已经有 PreToolUse hook 这条
+   * 结构化镜像通道（比屏幕识别可靠得多），不需要也不该再叠一层靠正则猜的注入路径。
+   * 它的原生 permission prompt 同理：措辞与正常回答难以区分，风险不划算。
+   */
+  nativeMenuPatterns: [],
+  waitingPatterns: [],
   // 对齐 host-mac/terminal/restart.ts:104
   launchCommand: (o) => (o?.continueSession ? 'claude --continue' : 'claude'),
   // 对齐 im-lark/lark/commands.ts 的 CLAUDE_CODE_NATIVE_SLASH

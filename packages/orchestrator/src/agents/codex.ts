@@ -26,6 +26,32 @@ export const codexAdapter: AgentAdapter = {
     /Authentication\s+required/i,
     /Not\s+(yet\s+)?authenticated/i,
   ],
+  /**
+   * codex 的**原生命令审批菜单**（`approval_policy` 触发，不经 hook，我们的审批闸看不到它）。
+   * 真机样本（2026-09-14 用户截图）：
+   *   Would you like to run the following command?
+   *   › 1. Yes, proceed (y)
+   *     2. No, and tell Codex what to do differently (esc)
+   *   Press enter to confirm or esc to cancel
+   * 这三条各自都足够特征化，不会被普通 scrollback 误触发（「等输入」假阳性在本项目有前科）。
+   */
+  /**
+   * 原生**命令审批**菜单的高置信特征 —— **两条必须同时命中**（AND）。
+   * 真机样本（用户截图）里这两句成对出现，而 assistant 在正常回答里同时逐字写出这两句
+   * 基本不可能；只靠其中任何一条都不够（`1. Yes, proceed` 这种写法模型自己也会用）。
+   *
+   * ⚠ 覆盖面有意窄：codex 若还有别的原生菜单（文件编辑审批等）措辞不同，**不会**被镜像 ——
+   * 宁可漏认（退回现状）也不能错认（往干活的 tab 注入数字）。要扩就往这里加成对特征。
+   */
+  nativeMenuPatterns: [
+    /Would\s+you\s+like\s+to\s+run\s+the\s+following\s+command/i,
+    /[Pp]ress\s+enter\s+to\s+confirm/i,
+  ],
+  waitingPatterns: [
+    /Would\s+you\s+like\s+to\s+run\s+the\s+following\s+command/i,
+    /\d+\.\s+Yes,\s*proceed/i,
+    /[Pp]ress\s+enter\s+to\s+confirm/i,
+  ],
   // 已验证：交互式 `codex`；续接 `codex resume --last`（picker 默认，--last 直接续上一个）
   launchCommand: (o) => (o?.continueSession ? 'codex resume --last' : 'codex'),
   // codex 内建 slash（待补/验证；先留常见项，C2 wiring 时核对）

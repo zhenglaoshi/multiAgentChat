@@ -4,7 +4,7 @@ import { copyFile, mkdir, readFile, symlink, unlink, writeFile } from 'node:fs/p
 import { homedir, platform } from 'node:os';
 import { delimiter, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { startControlServer, initRelay, loadRelayConfig, startRelayPoller, sendHandoffStatus } from 'multiagent-framework';
+import { startControlServer, initRelay, loadRelayConfig, startRelayPoller, sendHandoffStatus, ensureHostRegistered } from 'multiagent-framework';
 import { startLarkBot, listAllChats, sendCardReturnId, patchCard, handoffTaskCard, setHandoffStatusSender } from 'multiagent-im-lark';
 import { updateHandoffTask, type ApplyResult, type HandoffEnvelope } from 'multiagent-orchestrator';
 import { loadWeComConfig, WeComTransport, renderWeComCard } from 'multiagent-im-wecom';
@@ -36,6 +36,7 @@ import { startCareyclawKeyReminder } from 'multiagent-im-lark';
 import { startReportScheduler } from 'multiagent-im-lark';
 import { startSecretScrubScheduler } from 'multiagent-im-lark';
 import { startFleetMonitor } from 'multiagent-im-lark';
+import { startNativeMenuMirror } from 'multiagent-im-lark';
 import { startDogfoodScheduler } from 'multiagent-im-lark';
 import { attachWatcherToLark } from 'multiagent-im-lark';
 import { installWsWatchdog } from 'multiagent-im-lark';
@@ -44,16 +45,19 @@ import {
   captureScreen,
   getHistory,
   listTabs,
-  refreshDirIndex,
   send as terminalSend,
   sendKeys,
   forceEnter,
   newTab,
   launchDefaultAgentInTab,
+} from 'multiagent-host-api';
+// 工作目录/git 这几项与宿主无关，已下沉到 orchestrator（见 orchestrator/workspace）。
+import {
+  refreshDirIndex,
   listRecentCwds,
   prepareBugBranch,
   useCurrentBranch,
-} from 'multiagent-host-mac';
+} from 'multiagent-orchestrator';
 import type { IMMessageEvent } from 'multiagent-framework';
 import {
   handleCommand,
@@ -1348,6 +1352,17 @@ async function deliverHandoff(
 async function main() {
   // ---- Preflight（都是幂等 / 快速，早失败 hint 给用户） ----
   assertNodeVersion();
+  // 宿主装配必须最先做：watcher / control server / 所有 tab 操作都要经 HostController。
+  // 本机没有对应宿主实现（非 macOS）→ 早退并说清楚，别让后面每个调用点各炸一次。
+  if (!(await ensureHostRegistered())) {
+    logger.error(
+      `当前平台 ${process.platform} 没能装上宿主实现。\n` +
+      '  macOS → multiagent-host-mac（自动）；Linux / WSL2 → multiagent-host-tmux（**需要先装 tmux**：apt install tmux）。\n' +
+      '  终端控制 / tab 观测 / 按键注入全部依赖宿主层，无法启动。\n' +
+      '  要移植的话：实现 multiagent-host-api 的 HostController，并在 framework/src/host-bootstrap.ts 里加分支。',
+    );
+    process.exit(1);
+  }
   await ensureEnvFile();               // 缺 .env 时会 exit(1)
   emitMacPermissionHints();
 
@@ -1482,6 +1497,9 @@ async function main() {
   if (!isIntegrationDisabled('report')) startReportScheduler(lark.client);
   startSecretScrubScheduler(lark.client); // opt-in: 需 SECRET_SCRUB_ENABLED=1
   startFleetMonitor(lark.client); // 主动监控：卡住哨兵/闲置提议/每早摘要（FLEET_MONITOR_ENABLED=0 关）
+  // agent 自己弹的原生菜单（如 codex 的命令审批）不走 hook，只能从屏幕上看见 →
+  // 镜像成飞书卡并 arm，手机端才能看见选项并作答（NATIVE_MENU_MIRROR=0 关）
+  startNativeMenuMirror(lark.client);
   startDogfoodScheduler(lark.client); // 自审：/audit 手动 + 每周(DOGFOOD_ENABLED=1)
   await ensureSkillInstalled();
   await ensureAgentsInstalled();

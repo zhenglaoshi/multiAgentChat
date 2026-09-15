@@ -22,11 +22,9 @@ end tell
 return "ok"
 `;
 
-export interface SystemEventsProbeResult {
-  ok: boolean;
-  /** 失败时的 osascript stderr（截断 300 字）；ok 时为 undefined */
-  err?: string;
-}
+/** = host-api 的 KeyInjectionProbeResult（本宿主的按键通路就是 System Events）。 */
+export type { KeyInjectionProbeResult as SystemEventsProbeResult } from 'multiagent-host-api';
+import type { KeyInjectionProbeResult as SystemEventsProbeResult } from 'multiagent-host-api';
 
 /**
  * 跑一次探针。绝不真按键。ok=true 表示 System Events `key code` 按键通路可用（sendKeys / keystroke 兜底）。

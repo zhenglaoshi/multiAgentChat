@@ -26,7 +26,9 @@ const ROOT = resolve(HERE, '..');
  */
 const PACKAGE_ENTRIES = [
   'packages/orchestrator/src/index.ts',
+  'packages/host-api/src/index.ts',
   'packages/host-mac/src/index.ts',
+  'packages/host-tmux/src/index.ts',
   'packages/framework/src/index.ts',
   'packages/im-lark/src/index.ts',
   'packages/im-wecom/src/index.ts',

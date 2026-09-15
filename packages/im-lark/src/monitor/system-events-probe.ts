@@ -1,7 +1,6 @@
-import { platform } from 'node:os';
 import * as Lark from '@larksuiteoapi/node-sdk';
 import { logger } from 'multiagent-orchestrator';
-import { probeSystemEvents } from 'multiagent-host-mac';
+import { hostCapabilities, probeKeyInjection } from 'multiagent-host-api';
 import { listAllChats } from '../chats/store.js';
 import { sendTextMessage } from '../lark/api.js';
 
@@ -30,8 +29,9 @@ const ALERT_RECOVERED =
  * 这把原本只在 dev 日志里一条 WARN 的隐蔽故障（命令看着发了其实没回车）变成飞书显性告警。
  */
 export function startSystemEventsProbe(client: Lark.Client): void {
-  if (platform() !== 'darwin') {
-    logger.info('system-events probe skipped (non-darwin)');
+  // 没有按键注入通路的宿主（将来的 Windows ConPTY）没有这类术语故障，直接跳过。
+  if (!hostCapabilities().keyInjection) {
+    logger.info('system-events probe skipped（本宿主无按键注入通路）');
     return;
   }
 
@@ -58,7 +58,7 @@ export function startSystemEventsProbe(client: Lark.Client): void {
   };
 
   const tick = async (): Promise<void> => {
-    const { ok, err } = await probeSystemEvents();
+    const { ok, err } = await probeKeyInjection();
     const now = Date.now();
 
     if (!ok) {

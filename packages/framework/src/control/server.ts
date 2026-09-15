@@ -14,7 +14,8 @@ import { originShellPushCard, sendCardMessage, sendCardReturnId, sendFile, sendI
 import { loadClaim, saveClaim, TAPD_STAGE_LABEL, type TapdStage } from 'multiagent-orchestrator';
 import { logger } from 'multiagent-orchestrator';
 import { pendingTracker } from 'multiagent-im-lark';
-import { captureScreen, listRecentCwds, recordCwd, sendKeys } from 'multiagent-host-mac';
+import { captureScreen, sendKeys } from 'multiagent-host-api';
+import { listRecentCwds, recordCwd } from 'multiagent-orchestrator';
 import {
   createTask,
   getTask,
@@ -29,7 +30,7 @@ import {
   checkArtifact,
   eqStage,
 } from 'multiagent-orchestrator';
-import { send as terminalSend } from 'multiagent-host-mac';
+import { send as terminalSend } from 'multiagent-host-api';
 import { recallStageMemories } from 'multiagent-orchestrator';
 import {
   listSubagents,
@@ -44,10 +45,10 @@ import {
   isAgentTab,
   listTabs,
   newTab,
-  restartClaudeInPlace,
+  restartAgentInPlace,
   send,
   waitForOutput,
-} from 'multiagent-host-mac';
+} from 'multiagent-host-api';
 import type {
   ApprovalListData,
   ApprovalRequestData,
@@ -229,7 +230,7 @@ async function handleTabRestartClaude(
     // 串行重启：每个都会把 Terminal 拉到 frontmost，并行会互相抢焦点。
     const results: TabRestartClaudeData['targets'] = [];
     for (const t of targetsTabs) {
-      const r = await restartClaudeInPlace(t.tty, { continueSession });
+      const r = await restartAgentInPlace(t.tty, { continueSession });
       const entry: TabRestartClaudeData['targets'][number] = { tty: r.tty, ok: r.ok };
       if (r.cwd !== undefined) entry.cwd = r.cwd;
       if (r.reason !== undefined) entry.reason = r.reason;

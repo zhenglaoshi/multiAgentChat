@@ -17,7 +17,7 @@
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.40.0",
-    "multiagent-orchestrator": "workspace:*",
-    "multiagent-host-mac": "workspace:*"
+    "multiagent-host-api": "workspace:*",
+    "multiagent-orchestrator": "workspace:*"
   }
 }

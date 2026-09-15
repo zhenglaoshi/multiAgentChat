@@ -4,7 +4,7 @@ import { readdir } from 'node:fs/promises';
 import { connect } from 'node:net';
 import { homedir, platform } from 'node:os';
 import { join } from 'node:path';
-import { detectHostPermissions, detectLidAwake, getHostPermissionSpec, LID_AWAKE_INSTALL_CMD } from 'multiagent-host-mac';
+import { detectHostPermissions, detectKeepAwake, getHostPermissionSpec, hasHost, hostCapabilities, keepAwakeInstallCmd } from 'multiagent-host-api';
 
 /** 用 spawn（非 execSync）跑外部命令，避免 tsx 里 execSync spawnSync ETIMEDOUT 坑 */
 function runCommand(
@@ -63,17 +63,33 @@ function runNode(): DoctorResult {
   };
 }
 
+/**
+ * 平台 / 宿主。**判据是"有没有装上宿主实现"，不是"是不是 macOS"**。
+ *
+ * ⚠ 这条曾经写死只认 darwin，与启动链脱节：`host-bootstrap` 在非 macOS 上会装 tmux 宿主、
+ * daemon 其实能正常起来，而 `agent doctor` 却报 critical fail —— 诊断结论与真实能力矛盾，
+ * 会把 WSL2 用户引到错误的方向（评审 2026-09-15 指出）。
+ * doctor 跑在 CLI 进程，`cmdDoctor` 已先调过 `ensureHostRegistered()`，所以这里读 registry 即是真相。
+ */
 function runPlatform(): DoctorResult {
   const p = platform();
-  if (p === 'darwin') {
-    return { name: 'macOS', severity: 'critical', status: 'pass', message: 'darwin' };
+  if (!hasHost()) {
+    return {
+      name: '宿主实现',
+      severity: 'critical',
+      status: 'fail',
+      message: `${p} — 没装上宿主实现`,
+      hint: p === 'darwin'
+        ? 'macOS 宿主应自动装配，装不上多半是 multiagent-host-mac 加载失败，看 daemon 日志'
+        : 'Linux / WSL2 走 tmux 宿主 —— 先装 tmux（apt install tmux），见 docs/windows-setup.md',
+    };
   }
+  const caps = hostCapabilities();
   return {
-    name: 'macOS',
+    name: '宿主实现',
     severity: 'critical',
-    status: 'fail',
-    message: `${p} — 目前仅支持 macOS`,
-    hint: 'AppleScript / Terminal.app 是 macOS 独占',
+    status: 'pass',
+    message: `${caps.displayName}（${p}）`,
   };
 }
 
@@ -191,12 +207,25 @@ async function runSocketAndLark(): Promise<DoctorResult> {
  *   但关 tab / 回车提交其实是坏的。现在 Accessibility 单独一条、被拒即 fail。
  */
 async function runHostPermissions(): Promise<DoctorResult[]> {
-  if (platform() !== 'darwin') {
-    return [{ name: 'macOS 授权', severity: 'critical', status: 'skip', message: '非 macOS' }];
+  // 与三个探针统一：判据是「宿主有没有授权模型」，不是「是不是 macOS」。
+  if (!hasHost()) {
+    return [{ name: '宿主授权', severity: 'critical', status: 'skip', message: `平台 ${platform()} 暂无宿主实现` }];
+  }
+  if (!hostCapabilities().permissionModel) {
+    return [{ name: '宿主授权', severity: 'critical', status: 'skip', message: `${hostCapabilities().displayName} 无授权模型` }];
   }
   const statuses = await detectHostPermissions();
   return statuses.map((s) => {
     const spec = getHostPermissionSpec(s.id);
+    if (!spec) {
+      // 宿主报了一项我们没有规格描述的授权 —— 如实列出，别吞掉
+      return {
+        name: `未知授权项 ${s.id}`,
+        severity: 'important' as const,
+        status: s.granted ? ('pass' as const) : ('fail' as const),
+        message: s.granted ? '已授权' : '未授权',
+      };
+    }
     if (s.granted) {
       return { name: spec.name, severity: spec.severity, status: 'pass' as const, message: '已授权' };
     }
@@ -373,10 +402,15 @@ async function runCaffeinate(): Promise<DoctorResult> {
  */
 async function runLidAwake(): Promise<DoctorResult> {
   const name = '合盖远程 (插电不睡)';
-  if (platform() !== 'darwin') {
-    return { name, severity: 'optional', status: 'skip', message: '非 macOS' };
+  // 与 runHostPermissions 保持一致：「根本没装配宿主」和「有宿主但无此能力」是两回事，分开说
+  if (!hasHost()) {
+    return { name, severity: 'optional', status: 'skip', message: `平台 ${platform()} 暂无宿主实现` };
   }
-  const st = await detectLidAwake();
+  if (!hostCapabilities().keepAwake) {
+    return { name, severity: 'optional', status: 'skip', message: `${hostCapabilities().displayName} 无合盖不睡守护` };
+  }
+  const st = await detectKeepAwake();
+  const installCmd = keepAwakeInstallCmd() ?? '（本宿主无此守护）';
   const sd = st.sleepDisabled === null ? '?' : st.sleepDisabled ? '1' : '0';
   const state = `电源=${st.powerSource} SleepDisabled=${sd}`;
   if (!st.isLaptop) {
@@ -389,7 +423,7 @@ async function runLidAwake(): Promise<DoctorResult> {
         severity: 'optional',
         status: 'warn',
         message: `守护 plist 在，但 launchd 里没在跑（${state}）—— 合盖照样会睡`,
-        hint: `重装一次：${LID_AWAKE_INSTALL_CMD}；或 scripts/lid-awake.sh status 看日志`,
+        hint: `重装一次：${installCmd}；或 scripts/lid-awake.sh status 看日志`,
       };
     }
     if (st.powerSource === 'ac' && st.sleepDisabled === false) {
@@ -423,7 +457,7 @@ async function runLidAwake(): Promise<DoctorResult> {
       severity: 'optional',
       status: 'warn',
       message: `全局 disablesleep=1，但没装随电源自动切换的守护（${state}）`,
-      hint: `拔电放包里也不会睡（发热耗电）→ ${LID_AWAKE_INSTALL_CMD}（插电才禁睡），或 sudo pmset -a disablesleep 0`,
+      hint: `拔电放包里也不会睡（发热耗电）→ ${installCmd}（插电才禁睡），或 sudo pmset -a disablesleep 0`,
     };
   }
   return {
@@ -431,7 +465,7 @@ async function runLidAwake(): Promise<DoctorResult> {
     severity: 'optional',
     status: 'warn',
     message: `未装（${state}）—— 合盖即睡、Wi-Fi 断，手机发的命令收不到`,
-    hint: `${LID_AWAKE_INSTALL_CMD}（插电合盖不睡；拔电自动恢复默认睡眠）`,
+    hint: `${installCmd}（插电合盖不睡；拔电自动恢复默认睡眠）`,
   };
 }
 

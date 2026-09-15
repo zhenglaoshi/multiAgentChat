@@ -40,13 +40,8 @@ export function detectSelfTty(): string | undefined {
   return undefined;
 }
 
-export interface ExitAgentResult {
-  /** agent 已退出（或本来就没 agent）。 */
-  exited: boolean;
-  /** 关前 tab 里确实在跑 agent。 */
-  hadAgent: boolean;
-  kind?: AgentKind;
-}
+export type { ExitAgentResult } from 'multiagent-host-api';
+import type { ExitAgentResult } from 'multiagent-host-api';
 
 /**
  * 优雅退出 tab 里在跑的 agent（claude/codex）：连发 Ctrl-C（每次两下 —— claude 需"快速连按两次"
@@ -74,14 +69,8 @@ export async function exitAgentInTab(
   return { exited: false, hadAgent: true, kind };
 }
 
-export interface CloseTabResult {
-  ok: boolean;
-  closed: boolean;
-  hadAgent: boolean;
-  agentExited: boolean;
-  agentKind?: AgentKind;
-  reason?: string;
-}
+export type { CloseTabResult } from 'multiagent-host-api';
+import type { CloseTabResult } from 'multiagent-host-api';
 
 /**
  * 优雅关闭一个 tab：先退出 agent(claude/codex) 避免残留 CPU/内存，再关**单个** tab。
@@ -137,24 +126,12 @@ function describeCloseErr(e: unknown, tty: string): string {
   return `关闭 ${tty} 失败：${msg}`;
 }
 
-export interface RestartClaudeOptions {
-  /** true → 重启后 `claude --continue` 续上次会话；false → 全新 `claude`（默认，不带历史）。 */
-  continueSession?: boolean;
-  /** 每次 Ctrl-C 后等多久再查是否退出。默认 700ms。 */
-  settleMs?: number;
-  /** 最多发几次 Ctrl-C 尝试退出 claude TUI。默认 3。 */
-  maxInterrupts?: number;
-}
-
-export interface RestartClaudeResult {
-  ok: boolean;
-  tty: string;
-  cwd?: string;
-  /** 失败原因；ok 时 undefined */
-  reason?: string;
-  /** 实际重启用的命令（ok 时有） */
-  command?: string;
-}
+export type { RestartAgentOptions as RestartClaudeOptions } from 'multiagent-host-api';
+export type { RestartAgentResult as RestartClaudeResult } from 'multiagent-host-api';
+import type {
+  RestartAgentOptions as RestartClaudeOptions,
+  RestartAgentResult as RestartClaudeResult,
+} from 'multiagent-host-api';
 
 /**
  * 原地重启一个 agent tab（claude / codex 都走这条）：
@@ -212,12 +189,8 @@ export async function restartAgentInPlace(
   return { ok: true, tty, cwd, command: launched.command };
 }
 
-export interface LaunchClaudeOptions {
-  /** true → `claude --continue`；false → 纯 `claude`（默认，不带历史）。 */
-  continueSession?: boolean;
-  /** 启动后自动按 Return 接受首次的 trust 弹窗。默认 true。 */
-  acceptTrust?: boolean;
-}
+export type { LaunchAgentOptions as LaunchClaudeOptions } from 'multiagent-host-api';
+import type { LaunchAgentOptions as LaunchClaudeOptions } from 'multiagent-host-api';
 
 /**
  * 在一个已停在 shell prompt 的 tab 里启动指定 agent（claude/codex），并自动过掉首次的
@@ -253,7 +226,10 @@ export async function launchAgentInTab(
   return { ok: true, command };
 }
 
-/** launchAgentInTab 的 claude 特化（历史调用点保持不变）。 */
+/**
+ * launchAgentInTab 的 claude 特化。
+ * @deprecated 调用点已全部改走 HostController.launchAgentInTab；保留仅为兼容外部脚本。
+ */
 export async function launchClaudeInTab(
   tty: string,
   opts: LaunchClaudeOptions = {},
@@ -278,7 +254,7 @@ export async function launchDefaultAgentInTab(
 }
 
 /**
- * 历史别名 —— 老调用点（`tab.restart-claude` op 等）保持不变。
- * 行为已按 tab 实际跑的 agent 分流，不再写死 claude。
+ * 历史别名。行为已按 tab 实际跑的 agent 分流，不再写死 claude。
+ * @deprecated 调用点已全部改走 HostController.restartAgentInPlace；保留仅为兼容外部脚本。
  */
 export const restartClaudeInPlace = restartAgentInPlace;

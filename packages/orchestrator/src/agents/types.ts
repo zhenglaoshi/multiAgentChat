@@ -70,6 +70,35 @@ export interface AgentAdapter {
   detect(procLower: string): boolean;
   /** 登录态识别文案（历史屏幕里出现 = 需要登录） */
   loginPatterns: RegExp[];
+  /**
+   * 「这个 agent 正在等人选」的识别文案 —— 各 agent 的**原生**交互菜单长得不一样，
+   * 通用判据（勾选框 / y-n / press enter）盖不住。
+   *
+   * 真实教训：codex 的命令审批菜单（"Would you like to run the following command?" +
+   * "1. Yes, proceed (y)" + "Press enter to confirm"）**7 条通用判据一条都不命中**
+   * —— 小写的 `press enter` 撞上要求大写 `Enter` 的正则、选项前缀是 `›` 不在 `[❯>►▶]` 里、
+   * `(y)` 也不是 `(y/n)` 形式。结果是飞书连"codex 在等你选"这个提示都收不到。
+   * 空数组 = 该 agent 只靠通用判据。
+   */
+  waitingPatterns: RegExp[];
+  /**
+   * 「这一屏确实是该 agent 的**原生交互菜单**」的高置信特征 —— 语义**与 `waitingPatterns` 不同**：
+   *  - `waitingPatterns` 只驱动**显示**（推一句"⏳ 在等你选"），判错了最多是多推一条提示；
+   *  - `nativeMenuPatterns` 驱动**按键注入**（把用户选的数字写进 pty），判错了会**往正在干活的
+   *    tab 里注入一个数字**，可能被当成下一轮真实指令执行。代价完全不在一个量级。
+   *
+   * 因此这里的语义是 **全部命中（AND）**，且数组为空 = 该 agent 不启用原生菜单镜像。
+   *
+   * 真实教训（2026-09-15 评审）：最初把镜像的闸门接在 `waitingPatterns` + 通用判据的**并集**上，
+   * 结果一段完全正常的 assistant 回答就能骗过全部三道闸：
+   *     Do you want me to proceed with the fix?
+   *     1. Yes, proceed and apply the patch now.
+   *     2. No, show me the diff first...
+   *     Press enter to see more of the changed files...
+   * 「编号 1/2 + 是非问句 + press enter」在结构上与真菜单**完全同构**，而模型本来就常这么问问题。
+   * 所以判据必须落在**只有该 agent 的菜单才会有的成对措辞**上，而不是结构特征。
+   */
+  nativeMenuPatterns: RegExp[];
   /** 启动 / 续接命令（注入 tab 用） */
   launchCommand(opts?: { continueSession?: boolean }): string;
   /** 内建 slash 命令白名单（收到这些不当 mchat 未知命令，静默转发给 tab 里的 agent） */

@@ -1,7 +1,7 @@
 import type { ApprovalRequest, AskRequest, PerfItem, Plan, TapdItem, IntegrationStatus, Integration, WorkTask, HandoffTask, HandoffStatus, LetterNotification } from 'multiagent-orchestrator';
 import { tapdSummary, TAPD_KIND_LABEL, HANDOFF_STATUS_LABEL, allowedNextForRole } from 'multiagent-orchestrator';
-import { inferTabStatus, getHostPermissionSpec, type TabStatusInfo, type HostPermissionStatus } from 'multiagent-host-mac';
-import type { TerminalTab } from 'multiagent-host-mac';
+import { inferTabStatus, getHostPermissionSpec, type TabStatusInfo, type HostPermissionStatus } from 'multiagent-host-api';
+import type { TerminalTab } from 'multiagent-host-api';
 import { homedir } from 'node:os';
 
 function homeify(p: string, home: string): string {
@@ -3386,8 +3386,10 @@ export function tapdStatusPickCard(d: TapdStatusPickCardData) {
 export function hostPermissionCard(denied: HostPermissionStatus[]) {
   const blocks = denied.map((d) => {
     const spec = getHostPermissionSpec(d.id);
-    const affects = spec.affects.map((a) => `　· ${a}`).join('\n');
     const errTag = d.errNum !== undefined ? ` <font color='grey'>（错误 ${d.errNum}）</font>` : '';
+    // 宿主没给出这项的规格描述时退化成只报 id，别整张卡崩掉
+    if (!spec) return `**❌ ${d.id}**${errTag}`;
+    const affects = spec.affects.map((a) => `　· ${a}`).join('\n');
     return `**❌ ${spec.name}**${errTag}\n<font color='grey'>授权位置：${spec.macLocation}</font>\n受影响功能：\n${affects}`;
   });
   // 去重要开的面板：accessibility → 辅助功能；两个 automation → 自动化

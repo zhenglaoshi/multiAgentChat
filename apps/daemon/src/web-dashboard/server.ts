@@ -9,7 +9,7 @@ import {
   send as terminalSend,
   sendKeys,
   forceEnter,
-} from 'multiagent-host-mac';
+} from 'multiagent-host-api';
 import { pendingTracker, handleCommand } from 'multiagent-im-lark';
 import type { WebDashboardConfig } from './config.js';
 import { DASHBOARD_HTML } from './html.js';

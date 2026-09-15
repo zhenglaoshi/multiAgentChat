@@ -36,7 +36,14 @@ export interface ChatState {
    * 被应答（点选项 / 裸数字或选项文本回复）后清除；本地作答由 PostToolUse hook 走
    * `ask.disarm` 清除；超 ASK_ARM_TTL_MS 视为过期。options 为有序 label 列表，index 0-based。
    */
-  askArm?: { tty: string; options: string[]; at: number };
+  /**
+   * `source` 标记这把 arm 是谁设的：`ask`=AskUserQuestion（经 control socket）/
+   * `native-menu`=原生菜单镜像（屏幕识别）。**未标 = 历史数据，按 `ask` 处理**。
+   * 为什么需要它：两条通道共用这一个槽位，而原生菜单镜像会在「菜单消失」时主动 disarm ——
+   * 没有归属标记的话，同一个 tty 若在窄窗口内换了 agent 并立刻触发 AskUserQuestion，
+   * 那把刚设好的 arm 会被当成自己的清掉（评审 2026-09-15 指出的理论缺口）。
+   */
+  askArm?: { tty: string; options: string[]; at: number; source?: 'ask' | 'native-menu' };
   /**
    * askArm 期间用户发来的**非选项文本**（映射不到任何选项、也不是取消口令）。
    * 不能直接注入：pty 回车必提交 → 会被粘进原生菜单并默认选第 1 项、原话丢失。

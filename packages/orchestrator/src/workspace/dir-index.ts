@@ -4,7 +4,7 @@ import { dirname, join, resolve, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
-import { logger } from 'multiagent-orchestrator';
+import { logger } from '../logger.js';
 
 const execP = promisify(exec);
 
@@ -160,6 +160,10 @@ function topScanRoots(): string[] {
  * 排除 node_modules / Library 等噪音目录（`-prune`，见 EXCLUDE_DIR_NAMES）。
  */
 async function scanGitRepos(): Promise<string[]> {
+  if (!scanSupportedOnThisPlatform()) {
+    logger.warn('dir-index scan skipped：本平台没有 POSIX find，索引留空', { platform: process.platform });
+    return [];
+  }
   const results = new Set<string>();
   for (const abs of topScanRoots()) {
     for (const repo of await findRepoRoots(abs)) results.add(repo);
@@ -210,6 +214,15 @@ async function scanTopLevelContainers(): Promise<string[]> {
     }
   }
   return [...results];
+}
+
+/**
+ * ⚠ **扫描实现依赖 POSIX `find`**（`-prune` 那套是性能关键，见本文件顶部注释：全盘扫从分钟级
+ * 降到秒级）。Windows 上没有等价命令，届时要么换 Node 侧递归扫（要重新做那次性能调优），
+ * 要么由宿主层提供扫描能力。在那之前先如实返回空索引，而不是 spawn 一个不存在的命令。
+ */
+function scanSupportedOnThisPlatform(): boolean {
+  return process.platform !== 'win32';
 }
 
 export async function refreshDirIndex(force = false): Promise<DirIndexState> {

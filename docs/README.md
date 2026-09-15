@@ -29,6 +29,8 @@
 ## 🛠 我想改代码
 - **[architecture.md](architecture.md)** — 内部架构（monorepo 布局、依赖 DAG、数据流、IMTransport 抽象）
 - **[codex-integration.md](codex-integration.md)** — 多 agent · Codex CLI 集成方案（AgentAdapter 抽象 + 回传通道）
+- **[windows-setup.md](windows-setup.md)** — **Windows 对接**（WSL2 + tmux 装机步骤、电源/自启配置、现有功能说明、验收清单、排障）
+- **[windows-port.md](windows-port.md)** — Windows 支持的方案设计与取舍（为什么是 tmux 而不是 ConPTY）
 - **[../CONTRIBUTING.md](../CONTRIBUTING.md)** — 开发环境 setup、贡献流程
 
 ## 🎨 我想为特定域造一套 subagent

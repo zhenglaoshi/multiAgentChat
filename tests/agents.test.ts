@@ -7,6 +7,7 @@ import {
   codexAdapter,
   shouldSubmitPromptAfterSend,
   resolveDefaultAgentKind,
+  inferTabStatusFrom,
 } from '../packages/orchestrator/src/agents/index.js';
 
 describe('adapter.detect', () => {
@@ -214,5 +215,73 @@ describe('detectAgentFromProcs · 真实 listTabs 样本（防收窄回归）', 
     // 旧的宽松正则有 .includes('claude') 兜底，会把这些也算上
     expect(detectAgentFromProcs(['login', '-zsh', 'claude-hud'])).toBeNull();
     expect(detectAgentFromProcs(['login', '-zsh', 'my-claude-wrapper.py'])).toBeNull();
+  });
+});
+
+describe('codex 原生审批菜单必须被认成「等输入」（2026-09-14 真机截图回归）', () => {
+  // 用户截图里的真实屏幕：7 条通用判据当时一条都不命中 → 飞书连"在等你选"的提示都收不到
+  const CODEX_APPROVAL_SCREEN = [
+    'Would you like to run the following command?',
+    '',
+    'Environment: local',
+    '',
+    'Reason: 允许我继续使用一个独立命名的临时 tmux server',
+    '',
+    '$ set -e',
+    'sock="mchat-review-$$"',
+    '',
+    '› 1. Yes, proceed (y)',
+    '  2. No, and tell Codex what to do differently (esc)',
+    '',
+    'Press enter to confirm or esc to cancel',
+  ].join('\n');
+
+  it('跑着 codex 时识别为 claude-waiting', () => {
+    const st = inferTabStatusFrom({ processes: ['-zsh', 'codex'], busy: true }, CODEX_APPROVAL_SCREEN);
+    expect(st.kind).toBe('claude-waiting');
+  });
+
+  it('三条特征各自都能单独命中（任一行被截断也不至于漏判）', () => {
+    for (const line of [
+      'Would you like to run the following command?',
+      '› 1. Yes, proceed (y)',
+      'Press enter to confirm or esc to cancel',
+    ]) {
+      expect(inferTabStatusFrom({ processes: ['codex'], busy: true }, line).kind).toBe('claude-waiting');
+    }
+  });
+
+  it('小写 press enter 也要认（原来只认大写 Enter，这正是漏判的根因之一）', () => {
+    expect(inferTabStatusFrom({ processes: ['codex'], busy: true }, 'press enter to continue').kind)
+      .toBe('claude-waiting');
+  });
+
+  it('普通输出不误判成等输入（假阳性在本项目有前科）', () => {
+    const normal = '正在安装依赖...\nAdded 12 packages.\n1. 先跑 typecheck\n2. 再跑测试\nDone in 3.2s';
+    expect(inferTabStatusFrom({ processes: ['codex'], busy: true }, normal).kind).toBe('claude-active');
+  });
+});
+
+describe('状态判据的取景框必须有界（评审 2026-09-15 medium 回归）', () => {
+  // fleet-monitor 传的是 watcher 缓存的**完整历史**，tmux 的 capture-pane 还可能带很长 scrollback。
+  // 一次早已答完的审批若永远留在历史里，会让该 tab 长期显示"codex 等输入"——
+  // /shells 状态错，fleet-monitor 也不再按 claude-active 处理它、漏掉卡住检测。
+  const OLD_APPROVAL = [
+    'Would you like to run the following command?',
+    '› 1. Yes, proceed (y)',
+    '  2. No (esc)',
+    'Press enter to confirm or esc to cancel',
+    'yes',
+    '(command finished)',
+  ].join('\n');
+
+  it('陈旧审批 + 大量后续输出 → 不再误判成等输入', () => {
+    const hist = [OLD_APPROVAL, ...Array(120).fill('... 正常构建输出 ...')].join('\n');
+    expect(inferTabStatusFrom({ processes: ['codex'], busy: true }, hist).kind).toBe('claude-active');
+  });
+
+  it('审批就在尾部时仍然正确判为等输入（没有误伤真实场景）', () => {
+    const hist = [...Array(120).fill('... 正常构建输出 ...'), OLD_APPROVAL.split('\n').slice(0, 4).join('\n')].join('\n');
+    expect(inferTabStatusFrom({ processes: ['codex'], busy: true }, hist).kind).toBe('claude-waiting');
   });
 });

@@ -1,6 +1,7 @@
 # multiAgentChat
 
-> 本地跑的桥：**飞书 / 企业微信 ⇄ Mac Terminal.app** —— 从手机远程异步调度自己 Mac 上多个 Claude Code tab 完成并发任务。
+> 本地跑的桥：**飞书 / 企业微信 ⇄ 本机终端** —— 从手机远程异步调度自己电脑上多个 Claude Code / Codex tab 完成并发任务。
+> macOS 走 Terminal.app（AppleScript）；Windows 走 **WSL2 + tmux**（**不是原生 Windows**，见 [docs/windows-setup.md](docs/windows-setup.md)）。
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Status](https://img.shields.io/badge/status-beta-yellow.svg)](#当前状态)
@@ -112,9 +113,14 @@
 
 ## 平台
 
-- **运行平台**：macOS 13+（依赖 AppleScript / Terminal.app）
+- **运行平台**：
+  - **macOS 13+** —— 完整支持，宿主走 AppleScript / Terminal.app
+  - **Windows** —— 经 **WSL2 + tmux**，**不是原生 Windows 支持**：daemon、Node、tmux、Claude/Codex CLI 全部装在 WSL 里，
+    Windows 侧不装终端软件。截图、macOS TCC 授权卡这些能力没有（按能力声明自动跳过）。
+    **代码已实现但尚未在任何 Windows 机器上真机验证**，见 [docs/windows-setup.md](docs/windows-setup.md)
+  - **Linux** —— 同上走 tmux 宿主（同一份实现，同样未真机验证）
 - **Node**：≥ 22（daemon 启动会 assert）
-- **Claude Code**：最新版
+- **Claude Code / Codex CLI**：最新版（codex 需 0.154+ 才有 lifecycle hooks）
 - **IM**：飞书 P0 / 企微 P0 beta（选一或都装）
 
 ---

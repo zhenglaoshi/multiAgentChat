@@ -1,4 +1,4 @@
-import { getHistory, sendCtrlC } from 'multiagent-host-mac';
+import { getHistory, sendCtrlC } from 'multiagent-host-api';
 import { detectWedge, logger } from 'multiagent-orchestrator';
 
 /**

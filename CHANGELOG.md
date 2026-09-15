@@ -9,6 +9,104 @@
 ### 2026-09-14
 
 **新增**
+- **原生菜单镜像（方案 A）—— agent 自己弹的选择菜单也能在飞书作答**（`orchestrator/agents/native-menu.ts` + `im-lark/monitor/native-menu-watcher.ts`）。补的是上面那条缺口：`AskUserQuestion` 走 PreToolUse hook 能镜像，但 agent 的**原生**菜单不走 hook —— codex 的命令审批由它自己的 `approval_policy` 触发，我们的审批闸只在**自己的** riskTier 命中时才发卡，判为 passthrough 的命令就由 codex 自己弹菜单，而那个菜单**没有任何 hook 事件**，daemon 只能从屏幕上看见它。
+  - **不新造问答，全程复用既有机制**：屏幕识别 → `originShellPushCard` 的选项按钮（与 AskUserQuestion 同一张卡）→ `chat.askArm`（飞书点选项 / 直接回数字都能驱动）→ `driveAskSelect` 往 pty 写数字。答题路径与既有的远程作答**完全同源**，因此**锁屏一样可用**。
+  - **两道闸防误判**（错认的代价是往正在干活的 tab 里注入一个数字）：① 先要 `inferTabStatus` 判定这个 tab 真的在「等输入」才去解析；② 解析本身从严 —— 选项必须是**连续编号 1..N**（N≥2）、**行行相邻**、且落在屏幕**尾部窗口**内。再叠一层**稳定性确认**：连续 2 次看到同一个 fingerprint 才推（防半绘制的屏幕），同一个菜单只推一次。
+  - **推给人的与终端上的同源**：卡片正文直接放屏幕尾部原文（脱噪后），不重新拼一段"我以为的"菜单——与公函那条边界同一个道理。
+  - 目标 chat = `activeTty` 指向该 tab 的 + 开了 `/watch on` 的；都没有就不推（没人在看的 tab 不打扰）。零额外宿主调用（纯读 watcher 缓存，与 fleet-monitor 同一模式）。`NATIVE_MENU_MIRROR=0` 关闭。
+  - 22 条测试，含用户截图的真机样本、「宁可漏认」的结构反例，以及下面那条 critical 的回归。
+
+**评审修复**（第一轮 code-reviewer 报 1 critical + 2 high，security 报 1 medium，均已修 + 补回归）
+- **critical · 三道闸拦不住「assistant 自己写的编号式是非问句」**。reviewer 用编译产物真跑出了反例：
+  「Do you want me to proceed with the fix? / 1. Yes, proceed and apply the patch now. / 2. No, show me the diff first... / Press enter to see more of the changed files...」——
+  结构上与真菜单**完全同构**，而模型本来就常这么问问题；闸①（通用 WAITING_PATTERNS）被 "Press enter to see more" 直接命中，闸②结构判据本就照着这个形状设计、天然绕不过，闸③（连续 2 次同指纹）在"模型问完就停下等人"时形同虚设。一旦命中就会推卡 + arm，用户回的任意数字会被当成选项写进 pty，**可能被当成下一轮真实指令执行**。
+  修法：把「显示提示」和「按键注入」两个闸门**彻底分开** —— `AgentAdapter` 新增 `nativeMenuPatterns`（语义是**全部命中 AND**，空数组=不启用镜像），镜像只认它，**不再用 `inferTabStatus`/通用判据**。codex 填两条成对措辞（"Would you like to run the following command" + "Press enter to confirm"），模型在正常回答里同时逐字写出这两句基本不可能；单条（如 `1. Yes, proceed`）一律不够。claude 填空数组——它有 PreToolUse hook 这条结构化通道，不该再叠一层靠正则猜的注入路径。反例已进回归。
+- **high · `askArm` 被无条件抢占**。它是 per-chat 单槽位，本模块每 3 秒扫一遍所有 watched tab、命中就覆盖。真实场景：`/watch on` 同时盯着 tab A（claude 的 AskUserQuestion 正等答案）和 tab B（codex 弹审批），扫到 B 就把 A 的 arm 覆盖掉 —— 不只是"回的数字路由错 tab"，**A 那张卡的按钮会直接失效**（`driveAskSelectFromCard` 要求 `arm.tty === tty`），而 AskUserQuestion 没有"未作答"的补救路径，用户只能去电脑前手动操作。修法：arm 前先看该 chat 是否已有**未过期且指向别的 tty** 的 arm，有就跳过本轮（不推也不覆盖），并且**不置 `pushed`** → 对方答完/过期后下个 tick 自然补推，自愈。
+- **high · 本地作答后 arm 不解除**。AskUserQuestion 靠 claude 的 PostToolUse hook 调 `ask.disarm`，而 codex 的原生菜单**压根没有 hook**（这正是本功能存在的前提）。人在电脑前直接按键答掉菜单后，arm 会一直悬到 5 分钟 TTL，期间往该 chat 发的**任何一条纯数字消息**都会被注进这个已经翻篇的 tty。修法：`tick` 里检测到「推过卡 + 菜单消失（或菜单变了）」就主动清掉所有指向该 tty 的 askArm（进程内直接做，不绕 IPC）。
+- **security medium · 长命令会被截断 → 手机上等于盲批**。原实现卡片正文取"屏幕尾部固定 24 行"，而探测窗口是 40 行；codex 把**要执行的命令**打印在问句和选项之间，命令块一长，用户看到的就只剩选项。这与公函那条「内容必须先于确认按钮到人眼前」冲突。修法：`parseNativeMenu` 返回 `excerpt` —— **从提问行到屏幕末尾**的原文（命令块必在内），提问行回溯窗口放宽到 80 行；真超长时从顶部截断并**如实标注**"上方内容已省略"，不无声丢弃。
+- medium · per-tab 处理补 try/catch（一个 tab 抛错不再让同一 tick 里后面的 tab 全部漏检）；low · 日志里的 `question` 过一遍 `redact`（屏幕原文可能含凭证，与出站路径保持一致）；low · 解析前对单行长度做 1000 字截断（防御性，正则本身无嵌套量词、不构成 ReDoS）。
+**第三轮评审修复**（2026-09-15）
+- **high · 菜单指纹不含待执行命令 → 展示内容与实际执行内容可能不一致**。原指纹只算 `question + labels`，而 codex 审批菜单的问句与选项是**固定文案**（"Would you like to run the following command?" + "Yes, proceed (y)" / "No, and tell Codex..."）—— 也就是说**该 tab 每一次审批的指纹都相同**，不是"恰好撞上"的巧合而是必然。于是：上一个审批刚被答掉、下一个在同一个轮询间隔（3s）内弹出、watcher 没观察到"菜单消失"时，指纹相同 → 不重推、不 disarm → **飞书上还显示着上一条命令，用户点「1」批准的却是新的那条**。改成指纹覆盖**整段 `excerpt`**（= 推给用户看的那段原文本身），于是"指纹没变"与"用户看到的没变"成了同一件事。副作用是 excerpt 里若有每 tick 都变的元素（计时器/spinner）会永远达不到 `STABLE_TICKS` → 不推送 —— 那是安全的失败方向。
+- **medium · 状态判据的取景框无界 → tab 长期误显示「codex 等输入」**。`inferTabStatusFrom` 直接在调用方给的文本上匹配，而 fleet-monitor 传的是 watcher 缓存的**完整历史**（tmux 的 capture-pane 还可能带很长 scrollback）；一次**早已答完**的审批文案会永远留在历史里 → `/shells` 状态是错的，fleet-monitor 也不再按 `claude-active` 处理该 tab、**漏掉卡住检测**。修法：在 `inferTabStatusFrom` 内部统一收敛到尾部 40 行，一处修好所有调用点。这与原生菜单镜像那条 critical 是**同一类错误**（闸门取景框必须有界）—— 已在注释里点名关联，免得第三次再犯。
+- **medium · `agent doctor` 在 WSL2 下报平台 critical fail，与启动链矛盾**。`runPlatform` 写死只认 darwin，而 `host-bootstrap` 在非 macOS 上会装 tmux 宿主、daemon 其实能正常起来 —— 诊断结论与真实能力打架，会把 WSL2 用户引到错误方向。改成判据是「**有没有装上宿主实现**」而不是「是不是 macOS」：读 registry（`cmdDoctor` 已先调过 `ensureHostRegistered()`），装上就 pass 并显示宿主名（如 `tmux (WSL2)（linux）`），没装上才 fail 并按平台给不同 hint（macOS → 看 daemon 日志；Linux/WSL2 → 先装 tmux）。
+- 5 条新回归：指纹能区分"同问句同选项但命令不同"、同命令指纹稳定、指纹与 excerpt 同源；陈旧审批不再误判等输入、审批在尾部时仍正确判定。
+
+
+**用户复检修复**（2026-09-15，用户基于当前实现做的独立复检 + tmux 3.7c 黑盒验证）
+- **Windows 自启的 systemd unit 照抄会起不来**（文档 bug，high）。两处：① `ExecStart` 里的 `$(node -v)` 被我转义成了字面量，而 **systemd 不是 shell、不会展开 `$USER` / `$HOME` / `$(...)`** —— `User=$USER` 会被当成一个**名叫 "$USER" 的用户**，直接启动失败。改成在**写文件那一刻**由 shell 展开（未加引号的 heredoc + 预先算好的 `NODE_BIN="$(dirname "$(which node)")"`，顺带补 `Environment=PATH=`，因为 systemd 不读 `.bashrc`、nvm 装的 node 不在 `/usr/bin`）。② `ExecStartPre=/usr/bin/tmux new-session -d -s mchat` 在 session **已存在**时返回非零（daemon 重启时必然如此）→ systemd 判定启动失败、**根本不拉 daemon**；补上 `-` 前缀（"这条失败也继续"）。另加一步写完就 `systemctl cat mchat` 核对文件里没有残留 `$`。
+- **屏幕缓冲区回缩会让增量内容永久断供**（`watcher.ts`，medium）。macOS 的 `history of tab` 单调增长，而 tmux 的 `capture-pane` 是**当前屏幕快照**、长度会回缩；一旦回缩到 `beforeCharLen` 以下，`computeTaskOnlyTail` 会**永久**返回空串（基线不变、长度更小），这条 pending 的进度卡与任务 memory 就此都缺内容 —— 之前只在 notifier 加了 `|| outputTail` 兜底，没治根。现在检测到回缩就**重设基线**到当前长度：回缩前那段内容确实已从快照里消失、找不回来，但后续增量能重新正确计算，而不是通道死掉。macOS 下此分支永不触发。
+- **README 的平台描述会让人误以为支持原生 Windows**：标题和「平台」一节都只写 macOS / Terminal.app。改成分三档如实写明 —— macOS 完整支持；**Windows 是经 WSL2 + tmux，不是原生 Windows**（daemon/Node/tmux/CLI 全在 WSL 里，截图与 TCC 授权卡这些能力没有），且**尚未在任何 Windows 机器上真机验证**；Linux 同一份 tmux 实现。
+- 用户的 tmux 3.7c 黑盒验证**独立复现了「结尾分号被吞」**，与本轮早些时候 security-reviewer 的实测结论一致 —— 该修复（剥掉结尾连续分号走 `-H` 补发）当时已经落地，两边互为佐证。
+
+**第二轮评审修复**（两个 reviewer **各自独立**复现出同一个 critical，均已修 + 补回归）
+- **critical · 闸门的取景框与解析的取景框不一致 → 刚修好的 critical 原样复活**。`getCachedHistory` 给的是**全量 scrollback**，而我拿整屏去过成对措辞闸门、只拿尾部 40 行去做结构解析。后果：这个 tty 里只要**曾经**弹过一次真审批（正常使用几乎必然发生），那两句话就永久留在历史里 → 闸门**对该 tty 永久为真**，退化成只剩结构判据，而结构判据正是上一轮被证明挡不住「模型自己写的编号问句」的那个。**不需要攻击者，长会话里的正常先后顺序就会触发，且不会自愈**。门槛比想象的还低：这两句魔法短语**逐字写在本仓库的源码注释和测试常量里**，agent 在本仓库自审时 `cat` 一下就点燃了（而"用 codex 审这个 PR"恰恰是最可能发生的事）。修法：**先结构解析拿到有界的 `excerpt`，再用 excerpt 过闸**，两者取景框统一；并要求 `questionFound`（找不到提问行 = 命令块和问句都不在 excerpt 里，推出去就是让人盲批）→ 直接不镜像。
+- **high · 「已省略」提示掩盖了"内容全丢"**。提问行回溯窗口原为 80 行，超出就把 excerpt 退化成"只有选项"，而卡片仍只在斜体小字里写一句"上方内容已省略，完整命令请在本地终端查看"——手机端用户看到的是"选项 + 一句寻常提示"，无法分辨这是普通截断还是**100% 内容丢失的裸批准请求**；而"请去本地终端看"对这个功能的目标用户（人不在电脑前）根本不成立。修法见上（不镜像），另把回溯窗口放宽到 200 行让正常的长命令审批仍能被镜像。
+- **正文截断改成头尾都留、只省中间**。原先从顶部截断 = 攻击面是「在危险命令**后面**塞 N 行无害输出」把它挤出可见区（security PoC 给了具体构造）。现在保留头部 45 行（问句 + 紧随的命令块）+ 尾部 25 行（选项），中间省略处是**显式可见**的 `⚠️ 中间省略 N 行 —— 拿不准就别批准`，不是容易划过去的小字。
+- **`tick` 补重入守卫**（照 `watcher.ts` 的做法）。`sendCardMessage` 走 `withRetry`，飞书抖动时单次 tick 轻松超过 3s 的轮询间隔；没有守卫时两次 tick 拿到**同一个 MenuState 引用**，各自判定"该推了"→ 同一张卡推两遍、`askArm` 被覆写两次。
+- **`askArm` 加 `source` 归属标记**（`'ask' | 'native-menu'`）。两条通道共用同一个槽位，而本模块会在菜单消失时主动 disarm —— 没有归属标记的话，同一 tty 在窄窗口内换了 agent 并立刻触发 AskUserQuestion 时，那把刚设好的 arm 会被当成自己的清掉。现在只清自己设的。
+- **`pushedTo` 改成按 chat 记**（原来是一个全局 bool）。混合态（部分 chat 推成功、部分因"正等别的 tab 作答"被跳过）下，被跳过的 chat 对这个菜单**永久收不到卡**；按 chat 记就能只给漏掉的那些补推。
+- `truncatedAbove` 语义收紧为「没找到提问行」—— 原定义 `excerptFrom > 0` 在现实中几乎恒为 true，把"可能被截断"这个警示稀释成了噪音。
+- 新增 7 条回归，全部照 reviewer 给的 PoC 原样构造：scrollback 毒化（整屏过闸放行 / excerpt 过闸挡住 / 真菜单不误伤）、提问行超窗口时内容全丢、padding 把命令挤出可见区。
+
+- security 复审确认**无 high/critical**：卡片正文经 `sendCardMessage` → `redactCardMaybe` 深度脱敏，没有绕过；选项按钮走 `plain_text` 不渲染 markdown，无卡片注入；`askArm` 的 `tty` 只能来自 `watcher` 枚举出的真实 tab，两条消费路径都会重新核对并 fail-closed。
+- **tmux 宿主 `multiagent-host-tmux` —— Windows 支持的落地实现（P1，真机验证待做）**。目标是用户口径的硬要求：**不管什么情况下（锁屏 / 合盖 / 没人在电脑前 / 前台有弹框），飞书都能控制电脑里的 claude 和 codex**。方案是 WSL2 + tmux，不走 ConPTY 自托管，设计与待验清单见 docs/windows-port.md。
+  - **为什么不是 ConPTY**：本 daemon 会自杀重启（health-check 连续失败 / ws-watchdog 判 WS 死 / `/reload` / tsx watch）。pty 归 daemon 持有的话，**每次重启杀光所有正在跑的 agent 会话**；tmux server 是独立进程，重启无感 —— 这正是现在 Terminal.app 的性质，必须保住。
+  - **锁屏与回车这两个老问题被结构性消掉**：二者根因相同 —— macOS 的按键注入依赖 GUI 前台状态（焦点 / 未锁屏 / 无弹框遮挡）。`tmux send-keys` 由后台 server 直接往它持有的 pty 写字节，不经窗口系统 → Ctrl-C / Esc / 方向键**锁屏照送**（Mac 上这块是"假成功"重灾区），回车提交也**不会被前台弹框挡掉**（历史上"发了指令没反应"就是它）。
+  - **`send()` 的字节语义与 macOS 逐字对齐**（这次实现里最容易埋雷的一处）：Terminal 的 `do script X` 往 pty 写的是 `X + "\r"` **一整块** —— 裸 shell 直接执行、agent TUI 当粘贴不提交。若 tmux 侧只写文本不带 `\r`，**裸 shell 里发的命令会永远停在提示符上不执行**，而调用方并不会补回车（`shouldSubmitPromptAfterSend` 只在跑着 agent TUI 时才补），表现就是"发了命令没反应"。故 `sendKeysRaw` 一次性写「文本+`\r`」整块，`forceEnter` 则写单独一个 `\r`（与 macOS 的空 `do script` 同义）。
+  - ⚠ **仍要留 ≥400ms 间隔**：两次 pty 写入若被 TUI 一次 read 合并，会整块当粘贴而不提交 —— 这条与平台无关（见 host-mac/terminal/tabs.ts 的字节级实测记录），tmux **不免疫**，已写进注释与文档待验清单。
+  - `HostController` 27 个方法全部装配：`list-panes`/`capture-pane`/`send-keys`/`new-window`/`kill-pane` 打底，cwd 走 `#{pane_current_path}`（白送，不像 Mac 要为每个 tab 跑 lsof），进程列表**一次 `ps -e` 拿全机再按 tty 分组**（`listTabsRaw` 是 watcher 每 2s 的热路径，逐 pane spawn 会把 tick 吃满）。
+  - **安全底线**：所有 tmux 调用一律 `execFile('tmux', [...argv])`，绝不拼 shell 字符串 —— 送进 pane 的文本来自飞书消息 / 外部公函正文这类不可信输入。另特判了「整个参数恰好是 `;`」这个会被 tmux 命令解析器当分隔符吃掉的形状（改走 `-H` 按字节送，不是 shell 注入但会把一次 send 劈成两条命令）。
+  - `detectKeepAwake()` 在 WSL 下调 Windows 侧 `powercfg.exe` 读 AC 空闲睡眠超时。**用途不是帮用户设置**（那是一次性的 powercfg 命令），而是**发现设置被改回去**：OEM 电源软件（Lenovo Vantage / Dell Power Manager / MyASUS）、Windows 功能更新、公司组策略都会覆盖电源方案，而失败是静默的（手机发指令没反应，分不清是机器睡了还是 bot 挂了）。
+  - `MCHAT_HOST=mac|tmux` 可强制指定宿主（用于在 Mac 上验 tmux 宿主，不必等 Windows 机器）。
+  - 36 个新单测（`tests/host-tmux.test.ts`），含**「两个宿主的方法集合必须一致」**的对拍断言（漏装配一个方法上层会在运行时炸）。
+
+**修复**
+- **codex 的原生审批菜单在飞书完全没有存在感**（用户报，附真机截图）。两层原因要分开看：
+  - **能修的**：`inferTabStatus` 的 7 条通用「等输入」判据对那块屏幕**一条都不命中**（实测），所以飞书连"codex 在等你选"这个提示都收不到。三个根因：① `Press enter to confirm` 是**小写 enter**，而正则写的是大写 `Enter`；② 选项前缀 `›`(U+203A) 不在 `[❯>►▶]` 里；③ `(y)` 不是 `(y/n)` 形式。修法：`AgentAdapter` 加 `waitingPatterns`（与 `loginPatterns` 同一模式，各 agent 声明自己原生菜单的特征），codex 填三条真机样本特征；通用判据那条 press-enter 改 `/i` 并把 `›` 补进前缀集合。**刻意不去放宽通用判据来硬凑**——「等输入」假阳性在本项目有前科，agent 专属特征放进 adapter 才是对的地方。用截图原文做了回归，并加了一条"普通输出不误判"的反例。
+  - **设计边界（未修，需要决策）**：飞书的审批卡只在**我们自己的 riskTier 判定命中**时才发；截图里那条 tmux 命令是 passthrough，于是 `bin/mchat-permission-hook` 按设计"无输出 → 回退 agent 原生提示"，而 codex 的原生菜单由它自己的 `approval_policy` 触发、**没有对应的 hook 事件**，所以没有任何镜像通道。这不是 bug 是缺口，方案见下一条。
+- **机器门有个盲区：`tests/` 从来没进过 typecheck**（评审抓到，high）。根 tsconfig 的 references 只列 `packages/*` + `apps/daemon`，各包 `include` 又只有 `src/**/*` → `tests/**/*.ts` 不属于任何 project，`tsc -b` **从不检查测试文件**；vitest 走 esbuild 只转译不查类型。后果当场就有一个：这次给 `HostCapabilities` 加了必填字段 `keyInjectionBlockedWhenLocked`，`tests/host-registry.test.ts` 的假宿主漏补，**类型错误真实存在却 603 个用例全绿**（JS 读到 `undefined` 恰好按 falsy 跑过去）。修法：新增 `tests/tsconfig.json`（不用 composite，顺着相对 import 把包源码纳入程序做 noEmit 检查，测试里 `import '../packages/x/src/y.js'` 的写法不用改），`npm run typecheck` 串上这一步。装上后立刻又抓到三个错误：`tests/handoff-smoke.ts` 从 `types.js` 导入 `ApplyResult`（实际在 `store.ts`，一直是错的）、`footer-gate.test.ts` 三处联合类型直接断言、以及**本次新代码的真错误**（`buildTmuxErrorMessage` 用了 `NodeJS.ErrnoException`，而 `execFile` 给的 `ExecFileException.code` 是 `string | number | null`）。`oidc-smoke.ts` 因 import 平级仓库源码被 exclude（该仓库不一定存在于本机）。
+- **任务结果卡可能空白**（评审抓到，high + 复审补齐一处漏网）。`notifier.ts` 里消费 `taskOnlyTail` 的地方写法不一致，收尾卡与**批量卡**两处没带 `|| outputTail` 兜底。`taskOnlyTail` 是按字符偏移切的（`fullHist.slice(beforeCharLen)`），而 tmux 宿主的 `getHistory` 拿的是**屏幕快照、长度会回缩** → 裸 shell 任务（没有 agent，也就没有"TUI 屏幕不可见"那句兜底文案）会收到一张"已完成"但内容空白的卡。第一轮只修了收尾卡，复审指出批量任务走的是另一条分支、同样漏了 —— 现在四处统一。对 Mac 宿主零风险（单调增长，该分支走不到）。
+- **`HostCapabilities` 新增 `keyInjectionBlockedWhenLocked`，修掉一个会让 Esc 永久失效的判据错位**。`im-lark/lark/handlers.ts` 原先判的是 `isScreenLocked() !== false` 就拒发 Esc —— 这条对 macOS 是对的（System Events 锁屏假成功，读不到状态时保守拒绝才安全），但 tmux 宿主的 `isScreenLocked()` **恒为 null**（它确实不知道屏幕状态，不该撒谎返回 false），于是会一路走进「读不到锁屏状态，不敢盲发 Esc」→ **一个本来完全可用的功能被永久判死**。改成读能力位：Mac 标 true 保持原有保守逻辑，tmux 标 false 直接放行。这正是宿主抽象该兑现的事 —— **调用方读能力声明，不读平台专有状态**。
+
+**安全 / 评审修复**（两个 reviewer 各报一条 high，均已修 + 补回归测试）
+- **真机实测修正了 `;` 的处理范围**（security-reviewer 装上 tmux 后补做的对照实验，tmux 3.7c）。两个结论：① **证伪了命令注入** —— `hello; new-window` 整串原样敲进 pane，tmux 并没有真的多开 window（`list-windows` 核对过）；② 但原先「只有整串恰好等于 `;` 才危险」的判断**太窄**：只要字面文本**以裸 `;` 结尾**（`x;` / `;;` / `;x;`）tmux 就会吞掉最后一个字符，`;` 在中间（`a;b`）则完整无损。这是**数据保真**问题不是安全问题（送进终端的文本比原文少一个字符）。已把 `sendLiteral` 改成「剥掉结尾连续分号 → 正文走 `-l`，分号按 `-H 3b` 逐个补发」，4 条实测对照用例进回归。主路径 `sendKeysRaw` 因为永远追加 `\r`、天然不以分号结尾，本来就免疫；真正会命中的是 `/keys` 的字面文本分支。
+- **`waitForOutput` 退回走 `resolvePane`，放弃那次性能优化**（security-reviewer 复审给出具体绕过构造）。`#{pane_title}` 是 pane 内程序能用 OSC 序列自行设置的 —— 塞一个换行 + 6 个 0x1F 分隔的伪造字段，就能在 `list-panes -F` 输出里拼出一条**字段数恰好为 7、能通过全部校验的假行**；假行里的 paneId 若指向别的真实 pane，`capture-pane` 就会读到**另一个 pane 的屏幕**并当作本任务输出回传飞书（跨 pane 信息泄露）。我自己在注释里立了「paneId 只信 `pane.ts`」的纪律，却为省一次 `list-panes` 在这里破了例。纪律恢复：`resolvePane` 的格式串只有 `#{pane_tty} #{pane_id}`，无自由文本字段、天然不可伪造。
+- `TmuxError` 的 `argv` / `stderr` 用 `Object.defineProperty` 设为**不可枚举**：构造参数属性默认可枚举，哪天有人写成 `logger.error('x', e)`（传整个 Error 而非 `e.message`），`util.inspect` 会把送进终端的原文连同堆栈打进日志。现有调用点都只取 `.message`，但这条不变式不该只靠人守规矩。
+- **tmux 报错会把「送进终端的原文」带回飞书，绕过回显脱敏**（security-reviewer, high）。Node 的 `execFile` 默认错误消息是 `Command failed: <cmd> <argv…>`，而我们的 argv 里带着 `send-keys -l -- <字面文本>` —— `/keys '<原文>'` 的典型用法恰恰是替用户打登录口令。那条错误会被 `/keys` 的 catch 原样 `sendText` 回飞书，而脱敏引擎是**按已知模式**匹配的，**认不出不带上下文的裸口令** → 明文永久留在聊天记录里。改成只保留「命令名 + 退出码 + 截断 300 字的 stderr」，原文只留在不外传的 `TmuxError.argv` 字段；`runTmuxSoft` 的日志同样只记命令名（否则以后谁用它包一次带文本的调用，argv 就会明文落进本地日志）。补了断言「错误消息里不得出现口令」的回归测试。
+- **`parsePaneRow` 对不可信 title/cwd 加固**（security-reviewer, medium）。`#{pane_title}` 是 **pane 里跑的任意程序**都能用 OSC 转义序列设置的，属于威胁模型里的不可信输入。字段数从 `>= 7` 收紧成**严格等于 7**（title 里混进字面 0x1F 会让解构错位、真 cwd 被吞），并对 title/cwd 过滤控制字符。同时在注释里钉死一条纪律：**写操作的目标 pane 一律走 `pane.ts` 的 `resolvePane`**（格式串只有 `#{pane_tty} #{pane_id}`，两字段都由 tmux/内核分配、不可污染），别为省一次 tmux 调用把这条可污染路径接到「往哪个终端写」上。
+- **`sendLiteral` 补依赖注入 + argv 形状断言**（code-reviewer, medium）。`-l --` 与「裸 `;` 走 `-H`」这段是全包最脆弱、最难靠读代码确认的一处。顺带澄清一个容易误读的点：主发送路径 `sendKeysRaw` 传进来的永远是 `text + '\r'`，**天然命中不了 `;` 特判** —— 那条路径靠的是「永远带 `\r` 后缀」这个副作用，不是特判。另：「tmux 只把**整个参数恰好等于 `;`** 当分隔符」这条判断**尚未真机验证**，已进待验清单。
+- **TUI 名单的已知误判显式记录**（code-reviewer, medium）。basename 归一后撞名的正经 CLI 会被误当 TUI —— 最可能踩到的是 **`mc`**（原意 Midnight Commander，但 MinIO 的命令行客户端也叫 `mc`）。保留现状并补测试钉住这个取舍：误判是 **fail-safe**（拒绝发送、不弄坏终端），而漏判 vim/htop 会把人家的编辑器写乱。
+- **`newTab` 的 `mode` 参数此前被整个忽略**：`agent open --new-window` 会静默退化成开标签页。三种 mode 现在各走各的（`new-tab` → `new-window` 并切过去；`new-tab-background` → 加 `-d`；`new-window` → 另建独立 session，对应 Mac 的另开一个窗口）。参数被无声吞掉是最难排查的一类偏差。
+- `waitForOutput` 复用本 tick 已解析的 paneId，省掉每次轮询多余的一次 `list-panes`。**刻意不给 `resolvePane` 加缓存**：缓存过期 / tmux server 重启后 pane id 会重新分配，陈旧映射意味着**把文本或 Ctrl-C 写进别的终端** —— 宁可每次重新解析。
+- `procs.ts` 的 `SHELL_PROCS` 删掉 `'-zsh'`/`'-bash'` 两个死键（查表前已剥前导 `-`），`getUserFocus` 的「只有一个 session」前提写进注释。
+
+**改动**
+- **两处宿主无关的纯逻辑下沉 orchestrator，避免第二个宿主抄一份**（抄一份的后果是漂移：改了一边忘了另一边，表现为"同一个 tab 在两个宿主上状态显示不同"或"同一条按键指令在两台机器上行为不同"，都极难排查）：
+  - `agents/tab-status.ts`：tab 状态分类（判据只有进程名 + busy + 屏幕尾巴）。host-mac 的 `status.ts` 退化成 5 行适配。顺带把 host-mac 内部**原本各存一份**的两份 `TUI_PROCS` 名单（`status.ts` / `tabs.ts`，内容相同）也合并到这里。
+  - `keys/tokens.ts`：按键序列的 tokenize / 别名表 / 重复展开，产出中性 `KeyStep`；各宿主只做最后一跳映射（macOS = System Events key code，tmux = send-keys 按键名）。别名集合**逐字未动**（`d`=下、`e`=回车这些用户在用的捷径），既有 `tests/keys.test.ts` 全绿即是回归证据。
+- `TabStatusKind` / `TabStatusInfo` 的定义随之移入 orchestrator，`host-api/types.ts` 改为再导出（方向与该文件其余类型相反，因为这段本就不该住在宿主层）。
+- TUI 判定改用 basename 归一（`procBasename`）—— 带路径的 `/usr/bin/vim` 此前在 `TUI_PROCS.has()` 下认不出来。**这是一处行为变化**（更准），不是纯搬迁。
+- daemon 的"没有宿主实现"报错文案改成区分 macOS / Linux-WSL2 两条路，并明确 tmux 宿主**需要先装 tmux**。
+
+**文档**
+- **新增 `docs/windows-setup.md` —— Windows 对接文档**：架构图（东西都在哪、为什么只有出站连接、daemon 重启为什么不杀 agent 会话）、WSL2/Node/tmux/claude/codex 装机步骤、**电源三件套**（插电不睡 + 合盖不睡 + 关掉 Update 自动重启，外加「可以锁屏、不能注销」这条规矩）、systemd + 任务计划程序自启、**Windows 上现有实现功能说明**（完全可用 / 比 macOS 更好的三处 / 不可用降级项 / 行为差异四张表）、六条验收清单、排障表（含 WSL2 休眠后**时钟漂移**导致飞书 token 失败、代码放 `/mnt/c` 会让 inotify 失效这两个坑）、**已知未验项诚实清单**。
+- `.env.example` 补 `MCHAT_HOST` / `MCHAT_TMUX_SESSION` / `MCHAT_TMUX_HISTORY_LINES` 三个新 env 的说明。
+- `docs/README.md` 索引补 windows-setup / windows-port 两条。
+- 新增 `docs/windows-port.md`：目标与四类"什么情况"的验收标准、tmux vs ConPTY 的取舍论证、三条硬需求（锁屏 / 回车 / 防睡眠）各自怎么满足、`HostController` 逐方法映射表、**待真机验证清单**、Windows 侧安装与配置（含"可以锁屏、别注销"这条规矩）、分期。
+
+**新增**
+- **宿主抽象层 `multiagent-host-api`（HostController）** —— 为多平台（Windows / Linux）铺路的第一步，纯重构。**「零行为变化」只有一处例外**：`cancel-chain` 在目标 tab 不存在时由静默 no-op 变成抛错（被原有 catch 记 warn，详见下方 `handlers.ts` 那条）—— 单独列在这里，免得这个大标题把唯一的差异盖过去。此前 `multiagent-host-mac` 被 framework / im-lark / daemon **19 个文件、46 处**直接 import，等于把「AppleScript + Terminal.app」这套 macOS 实现焊死在业务代码里。现在拆成：
+  - `packages/host-api/`（新包，**零实现**）：`controller.ts` 的 `HostController` 接口（对标 `IMTransport`）+ `types.ts`（`TerminalTab` / `SendResult` / 各操作出入参，从 host-mac 上移，host-mac 改为 re-export 以保证上下同一批类型）+ `registry.ts`（进程级单例 `setHost`/`getHost`）+ `facade.ts`。
+  - **facade 是这次能低风险落地的关键**：把接口方法摊平成同名模块级函数（`listTabs()` / `send()` / …），所以 46 处调用点**只改 import 行、写法一字未动**，diff 可逐行核对。
+  - `host-mac/src/host.ts` 的 `macHost` 把本包函数装配成 `HostController`（只装配、无逻辑）；`framework/src/host-bootstrap.ts` 是全项目**唯一**一处按平台选实现的地方（动态 import，非 macOS 不加载 AppleScript 代码）。两个进程入口都要装配：daemon `main()` 最前，以及 CLI 跑 `agent doctor` 前（doctor 是在 CLI 进程里跑的，daemon 挂了也要能自检）。
+  - `HostCapabilities` 能力声明（`keyInjection` / `screenCapture` / `screenLockDetection` / `permissionModel` / `keepAwake`）取代散落的 `platform() !== 'darwin'`：三个探针（TCC 授权 / System Events 术语 / 合盖不睡）改成按能力跳过，宿主没这能力就不启动，也不再对用户提示装不存在的守护。
+  - 新增 `tests/host-registry.test.ts`（7 个用例，含假宿主验证 facade 派发、未注册时抛带指引的错、混用两套宿主要抛）。
+- **非宿主工具下沉 orchestrator** —— 宿主抽象的第二步，目标是让 `host-mac` 真正只剩 AppleScript。`bookmarks` / `recent-cwds` / `dir-index` / `git` / `task-workspace` / `report-repos` / `workspace`（→ `paths.ts`）七个模块只用 `node:fs` + `git` 子进程，与 Terminal.app 毫无关系，却一直长在 host-mac 里 —— 结果是 im-lark 为了拿一个书签就得依赖整包 AppleScript。现已整体搬到 `orchestrator/src/workspace/`，七个文件里有四个除 logger 的 import 路径外**逐字未动**。
+  - **`im-lark` 与 `apps/daemon` 已完全不依赖 `multiagent-host-mac`**（package.json 与 tsconfig references 都摘了）；全项目引用 host-mac 的只剩 `framework/src/host-bootstrap.ts` 一处动态 import。host-mac 导出从 78 个降到 51 个。
+  - **`activeReportRepos` 的 tab 数据源改成必填依赖注入**：它住进 orchestrator 后拿不到 tab，由调用方（im-lark，经 host-api facade）传 `tabCwds`。刻意**不给默认空实现** —— 漏传就静默少一整路数据源，而报告漏活这类 bug 极难发现（见 2026-09-09 那三个漏活根因），必填能让编译器替我们挡住。
+  - **`handlers.ts` 里那段内联 AppleScript 删了**：`cancel-chain` 自己写了一段「找 tab → System Events 打 Ctrl-C」，与 `HostController.sendCtrlC` 逐字同义，改走 facade（行为差异只有一处：目标 tab 不存在时从静默 no-op 变成抛错，被原有 catch 记 warn）。顺带清掉 8 处只为拿 `listRecentCwds`/`listBookmarks`/`getDirIndex` 而做的 `await import('multiagent-host-mac')`。
+  - **`dir-index` 的 POSIX 依赖如实标注**：扫描走 `find … -prune`（这套参数是性能关键），Windows 上没有等价命令 → `scanSupportedOnThisPlatform()` 直接返回空索引并 warn，而不是 spawn 一个不存在的命令。这是 Windows 宿主的已知待办，已写进 docs/architecture.md「已知设计缺陷」。
+  - ⚠ 排查记录：移动文件后 `tsc -b` 一度报 0 错误 —— 陈旧的 `tsconfig.tsbuildinfo` 让增量构建绕过了 34 个真实的「模块无此导出」错误（`tsc -b --force` 也没能戳穿）。**跨包移文件后要先删 `*.tsbuildinfo` 再 typecheck**，否则机器门会给出假绿。
 - **codex 与 claude 能力打平（C5）**（`orchestrator/agents/` + `apps/daemon` + `bin/` + `im-lark`，见 docs/codex-integration.md §8）。起点是一个此前不成立的新事实：**codex CLI 0.154+ 内置了与 Claude Code 同构的 lifecycle hooks**。顺着 `codex --help` 里的 `--dangerously-bypass-hook-trust` 挖到 codex 二进制**内嵌的 JSON Schema**（`<event>.command.input/.output`，`strings` 可抽），逐字比对确认：事件名同名（`Stop`/`PreToolUse`/`PostToolUse`/…）、入参同名（`hook_event_name`/`cwd`/`last_assistant_message`/`tool_name`/`tool_input`）、出参同名（`hookSpecificOutput.permissionDecision`）→ **同一批 `bin/mchat-*` 脚本两边复用，不用为 codex 重写**。于是 codex 拿到了和 claude 一样的**结果自动回传飞书** + **高危命令飞书审批闸**。
   - **两个会导致「静默失效」的差异已钉死**：① codex 的 `matcher` 是**正则**且全值匹配（内部包 `\A(?:…)\z`），claude 是字面量工具名 —— 「全部」在 claude 写 `*`、在 codex 必须写 `.*`，原样搬过去就是非法正则、这条 hook 一次都不跑（`tests/agents.test.ts` 有断言）。② codex 的 hook 要用户**一次性授信**（TUI 里 `/hooks` 批准，`trusted_hash`），批准前不跑 → legacy `notify` **保留为兜底**，两条通道并存时由 `bin/lib/push-dedupe.mjs` 按**内容指纹 + 45s TTL** 去重（用内容而非 turn_id：两条通道 payload 字段本就不同，notify 的格式还没真机核实过）。去重 fail-open —— 去重坏掉只是重复一条消息，fail-closed 是结果彻底丢失。
   - **审批闸刻意不赌工具名**：codex 的 shell 工具在 `tool_name` 里叫什么（`shell`/`exec_command`/`unified_exec`…）尚未真机确认，赌错的后果是闸门**看起来装好了、实际一次都不拦**。所以 matcher 用 `.*` 全匹配，再由 `bin/lib/tool-command.mjs` 按 payload 形状判断：先排除已知的非 shell 工具名，剩下只要能抽出命令就交给闸门 —— 多问一次审批只是烦，漏掉一个 `rm -rf` 是事故。它还把 codex 可能给的 argv 数组 `["bash","-lc","<script>"]` 还原成原始脚本（直接 join 会把引号和管道拍平，喂给风险判定就变了形）。

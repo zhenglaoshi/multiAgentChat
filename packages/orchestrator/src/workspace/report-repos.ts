@@ -1,7 +1,8 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { logger, listWorkTasks, collectSessionActivity } from 'multiagent-orchestrator';
-import { listTabs } from './terminal/tabs.js';
+import { logger } from '../logger.js';
+import { listWorkTasks } from '../worktasks/index.js';
+import { collectSessionActivity } from '../report/index.js';
 import { listRecentCwds } from './recent-cwds.js';
 import { getDirIndex, ensureDirIndexFresh, type DirEntry } from './dir-index.js';
 
@@ -33,7 +34,19 @@ async function gitRoot(dir: string): Promise<string | null> {
  * 传 `window` 时额外开两条**新鲜度**兜底（dir-index 有 24h TTL，只靠它会漏掉「当天新建」的仓库）：
  * 索引早于窗口起点就先刷新，再并入窗口内有真人会话的 cwd（连非 git 目录也覆盖到）。
  */
-export async function activeReportRepos(window?: { since: Date; until: Date }): Promise<string[]> {
+export interface ActiveReportReposDeps {
+  /**
+   * 当前终端 tab 的 cwd 列表 —— **宿主能力**，由调用方（im-lark，经 host-api facade）注入。
+   * 刻意**必填**：给默认空实现的话，调用方漏传就会静默少掉一整路数据源，
+   * 而报告漏活这类 bug 极难发现（见 CHANGELOG 2026-09-09 的三个漏活根因）。
+   */
+  tabCwds: () => Promise<string[]>;
+}
+
+export async function activeReportRepos(
+  window: { since: Date; until: Date } | undefined,
+  deps: ActiveReportReposDeps,
+): Promise<string[]> {
   const roots = new Set<string>();
 
   // 1) dir-index 全部 git 仓库 —— 覆盖「今天有活动」全量。dir-index 的 path 本身就是仓库根，
@@ -46,12 +59,12 @@ export async function activeReportRepos(window?: { since: Date; until: Date }): 
   // 2) tab / recent-cwds / worktasks 里的目录可能是仓库**子目录**或 dir-index 未收录的新 worktree，
   //    只对「不是已知仓库根」的那些跑 rev-parse 解析到根。
   const extras = new Set<string>();
-  const [tabs, recents, tasks] = await Promise.all([
-    listTabs().catch(() => []),
+  const [tabCwds, recents, tasks] = await Promise.all([
+    deps.tabCwds().catch(() => [] as string[]),
     listRecentCwds().catch(() => [] as string[]),
     listWorkTasks(40).catch(() => []),
   ]);
-  for (const t of tabs) if (t.cwd) extras.add(t.cwd);
+  for (const c of tabCwds) if (c) extras.add(c);
   for (const c of recents) if (c) extras.add(c);
   for (const t of tasks) {
     if (t.taskDir) extras.add(t.taskDir);

@@ -6,12 +6,12 @@ import { PENDING_ANSWER_TTL_MS, RECENT_REPLY_TTL_MS, ASK_ARM_TTL_MS, ASK_HELD_TT
 import { buildAskHoldNotice, isAskCancelWord, resolveAskAnswerIndex } from './ask-drive.js';
 import { driveAskSelect } from './ask-driver.js';
 import { logger } from 'multiagent-orchestrator';
-import { recordCwd } from 'multiagent-host-mac';
+import { recordCwd } from 'multiagent-orchestrator';
 import { ragRecall, formatRagPrefix } from 'multiagent-orchestrator';
 import { pendingTracker, markRemoteWrite } from '../monitor/pending.js';
 import { healIfWedged } from '../monitor/stuck-shell.js';
 import { recordInbound } from '../monitor/ws-watchdog.js';
-import { captureScreen, closeTabGracefully, detectSelfTty, forceEnter, getHistory, getUserFocus, isScreenLocked, launchAgentInTab, launchDefaultAgentInTab, listTabs, newTab, openPermissionPane, send, sendKeys, sendKeysRaw } from 'multiagent-host-mac';
+import { captureScreen, closeTabGracefully, detectSelfTty, forceEnter, getHistory, getUserFocus, hostCapabilities, isScreenLocked, launchAgentInTab, launchDefaultAgentInTab, listTabs, newTab, openPermissionPane, send, sendCtrlC, sendKeys, sendKeysRaw } from 'multiagent-host-api';
 import { detectAgentFromProcs, listAgentAdapters, looksLikeAgentTask, shouldSubmitPromptAfterSend } from 'multiagent-orchestrator';
 import type { HandoffStatus } from 'multiagent-orchestrator';
 
@@ -1290,10 +1290,14 @@ async function dispatchSendToTab(
           void flushAskHeld(client, ctx.chatId);
           return;
         }
-        // 取消口令 → Esc 关掉菜单。Esc 只能走 System Events：锁屏时送不进终端但 osascript 照样返回 ok（假成功），
-        // 所以**只有确认没锁屏（=== false）才发**；true / null（ioreg 超时等读不到）一律保守拒绝，不假装成功。
+        // 取消口令 → Esc 关掉菜单。
+        // ⚠ 判据是**宿主能力**不是屏幕状态：macOS 的 System Events 在锁屏时送不进终端却照样返回 ok（假成功），
+        // 所以那边必须先确认没锁屏才敢发；而 tmux 这类直写 pty 的宿主锁屏照送，且它的 isScreenLocked()
+        // 恒为 null（确实不知道屏幕状态）—— 若仍按"读不到就保守拒绝"处理，Esc 会被**永久判死**。
         if (isAskCancelWord(text)) {
-          const lockState = await isScreenLocked();
+          const lockState = hostCapabilities().keyInjectionBlockedWhenLocked
+            ? await isScreenLocked()
+            : false;   // 按键注入不受锁屏影响的宿主：直接放行
           if (lockState !== false) {
             await replyText(
               client,
@@ -1318,7 +1322,8 @@ async function dispatchSendToTab(
         // 映射不到选项的普通文本：**不注入**。pty 回车必提交 → 会被粘进菜单并默认选第 1 项、原话丢失
         // （2026-09-07 当天发生 3 次）。暂存，菜单处理完自动补发；已有存件则覆盖（保留最新一句）。
         // 超长文本不存：存件会明文落到 ./data/chats/<chatId>.json，截断又会毁掉补发的原文 → 不存并如实告知。
-        const locked = await isScreenLocked();
+        // 同上：不受锁屏影响的宿主直接按"没锁"渲染提示文案（否则会少提示「可以回取消」这条路）
+        const locked = hostCapabilities().keyInjectionBlockedWhenLocked ? await isScreenLocked() : false;
         if (text.length > ASK_HELD_MAX_LEN) {
           await replyText(
             client,
@@ -1621,15 +1626,23 @@ async function dispatchSendToTab(
   }
 }
 
+/**
+ * 当前所有 tab 的 cwd —— 报告候选仓库的一路数据源。
+ * `activeReportRepos` 住在 orchestrator（宿主无关），拿不到 tab，所以由这里经 host-api 注入。
+ */
+async function currentTabCwds(): Promise<string[]> {
+  const tabs = await listTabs().catch(() => []);
+  return tabs.map((t) => t.cwd).filter((c): c is string => !!c);
+}
+
 /** 候选 repo：书签(/pin) 优先，再 recent-cwd，去重。 */
-async function tapdRepoCandidates(
-  hm: typeof import('multiagent-host-mac'),
-): Promise<{ path: string; label: string }[]> {
+async function tapdRepoCandidates(): Promise<{ path: string; label: string }[]> {
+  const { listRecentCwds, listBookmarks, getDirIndex } = await import('multiagent-orchestrator');
   // 优先级：/pin 书签 → 最近用过的 cwd → 全机 git 仓库索引（新人装完即有，dir-index 自带后台刷新）
   const [recents, bms, index] = await Promise.all([
-    hm.listRecentCwds(),
-    hm.listBookmarks(),
-    hm.getDirIndex().catch(() => ({ dirs: [] as { path: string; name: string; isGitRepo: boolean }[] })),
+    listRecentCwds(),
+    listBookmarks(),
+    getDirIndex().catch(() => ({ dirs: [] as { path: string; name: string; isGitRepo: boolean }[] })),
   ]);
   const seen = new Set<string>();
   const out: { path: string; label: string }[] = [];
@@ -1673,7 +1686,6 @@ async function finalizeTapdClaim(
   chatId: string,
   claim: import('multiagent-orchestrator').TapdClaim,
 ): Promise<void> {
-  const hm = await import('multiagent-host-mac');
   const orch = await import('multiagent-orchestrator');
   const { sendCardMessage, sendTextMessage } = await import('./api.js');
   const { ackCard } = await import('./cards.js');
@@ -1681,17 +1693,17 @@ async function finalizeTapdClaim(
     const baseMode = claim.base ?? 'head';
     const id6 = claim.id.slice(-6);
     // kind：显式 claim.kind 优先（认领卡「🏷 类型」选），否则由 base/sop 派生（兼容旧 claim）
-    const kind: import('multiagent-host-mac').TaskKind = orch.resolveClaimKind(claim);
+    const kind: import('multiagent-orchestrator').TaskKind = orch.resolveClaimKind(claim);
     let results: { ok: boolean; repo: string; cwd: string; branch: string; action: string; reason?: string; note?: string }[] = [];
     let taskDir: string | undefined;
     if (kind === 'indev') {
       // 开发中的 bug：在各 repo 当前分支原地改（分支报告准确，不建目录）
-      for (const repo of claim.selectedRepos) results.push(await hm.useCurrentBranch(repo));
+      for (const repo of claim.selectedRepos) results.push(await orch.useCurrentBranch(repo));
     } else {
       // 线上bug/新需求：在 ~/ihealth-work/<fix|feature>_<id6>/ 下为每个 repo 建 worktree（本地有源）/ clone（无源）
       const base = baseMode === 'head' ? undefined : baseMode; // master/develop 从主干切；head 用 HEAD
       const repoPlans = claim.selectedRepos.map((p) => ({ name: p.split('/').filter(Boolean).pop() || p, sourcePath: p }));
-      const ws = await hm.prepareTaskWorkspace({ kind, id6, repos: repoPlans, ...(base ? { base } : {}) });
+      const ws = await orch.prepareTaskWorkspace({ kind, id6, repos: repoPlans, ...(base ? { base } : {}) });
       taskDir = ws.taskDir;
       results = ws.repos.map((r, i) => ({
         ok: r.ok,
@@ -1712,9 +1724,9 @@ async function finalizeTapdClaim(
       return;
     }
     const primaryCwd = okRepos[0]!.cwd;
-    const tty = await hm.newTab({ cwd: primaryCwd });
+    const tty = await newTab({ cwd: primaryCwd });
     await new Promise((r) => setTimeout(r, 1500));
-    await hm.launchDefaultAgentInTab(tty, { continueSession: false });
+    await launchDefaultAgentInTab(tty, { continueSession: false });
     await new Promise((r) => setTimeout(r, 1500));
 
     const tapdPrompt = buildTapdPrompt(claim, results);
@@ -1738,15 +1750,15 @@ async function finalizeTapdClaim(
         const mid = await sendCardReturnId(client, chatId, buildStageProgressCardFromTask(task, homedir()));
         if (mid) await setTaskProgressMessageId(task.taskId, mid);
       } catch { /* 降级：无进度卡 */ }
-      await hm.send(tty, buildSopWrapperPrompt(task, tapdPrompt));
+      await send(tty, buildSopWrapperPrompt(task, tapdPrompt));
       modeNote = `🎯 SOP 编排 · task \`${task.taskId}\`（after-architect 有审批 gate）`;
     } else {
       // 缺陷：普通任务，直接修
-      await hm.send(tty, tapdPrompt);
+      await send(tty, tapdPrompt);
       modeNote = '🔧 普通任务（直接修）';
     }
     await new Promise((r) => setTimeout(r, 600));
-    await hm.forceEnter(tty).catch(() => {});
+    await forceEnter(tty).catch(() => {});
     claim.status = 'working'; claim.tty = tty;
     claim.stage = 'fixing'; claim.chatId = chatId; // A 生命周期
     // B：记住该项目的 repo/基准/模式，下次认领自动预选
@@ -1804,10 +1816,9 @@ async function openTaskWorktreeTab(opts: {
   chatId: string; title: string; id: string; source: 'perf' | 'tapd'; tapdUrl?: string;
 }): Promise<{ isolated: boolean; tty?: string; taskDir?: string }> {
   if (!opts.localPath) return { isolated: false };
-  const hm = await import('multiagent-host-mac');
   const orch = await import('multiagent-orchestrator');
   const name = opts.localPath.split('/').filter(Boolean).pop() || opts.localPath;
-  const ws = await hm.prepareTaskWorkspace({ kind: opts.kind, id6: opts.id6, repos: [{ name, sourcePath: opts.localPath }] });
+  const ws = await orch.prepareTaskWorkspace({ kind: opts.kind, id6: opts.id6, repos: [{ name, sourcePath: opts.localPath }] });
   const ok = ws.repos.find((r) => r.ok);
   if (!ok) return { isolated: false };
   await orch.saveWorkTask({
@@ -1819,7 +1830,7 @@ async function openTaskWorktreeTab(opts: {
   }).catch((e) => logger.warn('saveWorkTask (perf) failed', { err: (e as Error).message }));
   const tty = await newTab({ cwd: ok.cwd });
   await new Promise((r) => setTimeout(r, 1500));
-  await hm.launchDefaultAgentInTab(tty, { continueSession: false });
+  await launchDefaultAgentInTab(tty, { continueSession: false });
   await new Promise((r) => setTimeout(r, 1500));
   await send(tty, opts.prompt);
   await new Promise((r) => setTimeout(r, 600));
@@ -2929,31 +2940,10 @@ async function handleCardAction(
     const currentStep = chain.steps[chain.currentIndex];
     if (currentStep?.tty) {
       try {
-        const { runScriptOrThrow } = await import('multiagent-host-mac');
-        const script = `
-on run argv
-  set targetTty to item 1 of argv
-  tell application "Terminal"
-    activate
-    repeat with w in windows
-      try
-        repeat with t in tabs of w
-          if (tty of t) is equal to targetTty then
-            set frontmost of w to true
-            set selected tab of w to t
-            tell application "System Events"
-              keystroke "c" using {control down}
-            end tell
-            return "ok"
-          end if
-        end repeat
-      end try
-    end repeat
-  end tell
-  return "not-found"
-end run
-`;
-        await runScriptOrThrow(script, [currentStep.tty]);
+        // 这里原本内联了一段 AppleScript 自己找 tab + System Events 打 Ctrl-C ——
+        // 与 HostController.sendCtrlC 逐字同义的重复实现，且是 im-lark 里最后一处直连 host-mac。
+        // 改走 facade：行为一致（找不到 tab 从「静默 no-op」变成抛错，被下面的 catch 记 warn）。
+        await sendCtrlC(currentStep.tty);
       } catch (e) {
         logger.warn('cancel-chain: ctrl-c failed', {
           chainId,
@@ -3028,9 +3018,8 @@ end run
       if (!result) return { toast: { type: 'error', content: `task ${taskId} 不存在` } };
       // 同样投递 🛑 到 tab
       if (result.tty) {
-        const { send: terminalSend } = await import('multiagent-host-mac');
         const banner = `\n\n🛑 [SOP 中止] task-id ${taskId} 已被中止${hard ? '（hard）' : '（soft）'}。停止 stage 协议。\n\n`;
-        void terminalSend(result.tty, banner).catch(() => {});
+        void send(result.tty, banner).catch(() => {});
       }
       return { toast: { type: 'success', content: `🛑 已中止 ${taskId}` } };
     } catch (e) {
@@ -3049,7 +3038,6 @@ end run
     void (async () => {
       try {
         const orch = await import('multiagent-orchestrator');
-        const hm = await import('multiagent-host-mac');
         const { tapdRepoPickerCard } = await import('./cards.js');
         const cfg = orch.loadTapdConfig();
         let description: string | undefined;
@@ -3076,7 +3064,7 @@ end run
           claim.sop = prev.sop;
         }
         await orch.saveClaim(claim);
-        const candidates = candidatesForClaim(await tapdRepoCandidates(hm), claim);
+        const candidates = candidatesForClaim(await tapdRepoCandidates(), claim);
         // 存卡 messageId：手输路径表单提交后回来 patch 这张 repo 卡
         const mid = await sendCardReturnId(client, chatId, tapdRepoPickerCard(claim, candidates, process.env['HOME'] ?? ''));
         if (mid) { claim.pickCardMessageId = mid; await orch.saveClaim(claim); }
@@ -3092,11 +3080,10 @@ end run
     const cwd = value['cwd'] as string | undefined;
     if (!id || !cwd) return { toast: { type: 'error', content: '缺 id/cwd' } };
     const orch = await import('multiagent-orchestrator');
-    const hm = await import('multiagent-host-mac');
     const { tapdRepoPickerCard } = await import('./cards.js');
     const claim = await orch.toggleRepo(id, cwd);
     if (!claim) return { toast: { type: 'error', content: '认领已失效' } };
-    const candidates = candidatesForClaim(await tapdRepoCandidates(hm), claim);
+    const candidates = candidatesForClaim(await tapdRepoCandidates(), claim);
     return patchOrReply(client, data, tapdRepoPickerCard(claim, candidates, process.env['HOME'] ?? ''));
   }
 
@@ -3104,13 +3091,12 @@ end run
     const id = value['id'] as string | undefined;
     if (!id) return { toast: { type: 'error', content: '缺 id' } };
     const orch = await import('multiagent-orchestrator');
-    const hm = await import('multiagent-host-mac');
     const { tapdRepoPickerCard } = await import('./cards.js');
     const claim = await orch.loadClaim(id);
     if (!claim) return { toast: { type: 'error', content: '认领已失效' } };
     claim.sop = !claim.sop;
     await orch.saveClaim(claim);
-    const candidates = candidatesForClaim(await tapdRepoCandidates(hm), claim);
+    const candidates = candidatesForClaim(await tapdRepoCandidates(), claim);
     return patchOrReply(client, data, tapdRepoPickerCard(claim, candidates, process.env['HOME'] ?? ''));
   }
 
@@ -3118,7 +3104,6 @@ end run
     const id = value['id'] as string | undefined;
     if (!id) return { toast: { type: 'error', content: '缺 id' } };
     const orch = await import('multiagent-orchestrator');
-    const hm = await import('multiagent-host-mac');
     const { tapdRepoPickerCard } = await import('./cards.js');
     const claim = await orch.loadClaim(id);
     if (!claim) return { toast: { type: 'error', content: '认领已失效' } };
@@ -3130,7 +3115,7 @@ end run
     if (next === 'indev') { claim.base = 'current'; claim.sop = false; }
     else { if (claim.base === 'current') claim.base = 'head'; claim.sop = next === 'feature'; }
     await orch.saveClaim(claim);
-    const candidates = candidatesForClaim(await tapdRepoCandidates(hm), claim);
+    const candidates = candidatesForClaim(await tapdRepoCandidates(), claim);
     return patchOrReply(client, data, tapdRepoPickerCard(claim, candidates, process.env['HOME'] ?? ''));
   }
 
@@ -3138,7 +3123,6 @@ end run
     const id = value['id'] as string | undefined;
     if (!id) return { toast: { type: 'error', content: '缺 id' } };
     const orch = await import('multiagent-orchestrator');
-    const hm = await import('multiagent-host-mac');
     const { tapdRepoPickerCard } = await import('./cards.js');
     const claim = await orch.loadClaim(id);
     if (!claim) return { toast: { type: 'error', content: '认领已失效' } };
@@ -3146,7 +3130,7 @@ end run
     const cur = order.indexOf((claim.base ?? 'head') as (typeof order)[number]);
     claim.base = order[(cur + 1) % order.length]!;
     await orch.saveClaim(claim);
-    const candidates = candidatesForClaim(await tapdRepoCandidates(hm), claim);
+    const candidates = candidatesForClaim(await tapdRepoCandidates(), claim);
     return patchOrReply(client, data, tapdRepoPickerCard(claim, candidates, process.env['HOME'] ?? ''));
   }
 
@@ -3155,11 +3139,10 @@ end run
     if (!id) return { toast: { type: 'error', content: '缺 id' } };
     const p = Number(value['page']);
     const orch = await import('multiagent-orchestrator');
-    const hm = await import('multiagent-host-mac');
     const { tapdRepoPickerCard } = await import('./cards.js');
     const claim = await orch.setPickPage(id, Number.isInteger(p) && p >= 0 ? p : 0);
     if (!claim) return { toast: { type: 'error', content: '认领已失效' } };
-    const candidates = candidatesForClaim(await tapdRepoCandidates(hm), claim);
+    const candidates = candidatesForClaim(await tapdRepoCandidates(), claim);
     return patchOrReply(client, data, tapdRepoPickerCard(claim, candidates, process.env['HOME'] ?? ''));
   }
 
@@ -3169,11 +3152,10 @@ end run
     const path = option?.startsWith('pick|') ? option.slice('pick|'.length) : undefined;
     if (!id || !path) return { toast: { type: 'error', content: '无效选择' } };
     const orch = await import('multiagent-orchestrator');
-    const hm = await import('multiagent-host-mac');
     const { tapdRepoPickerCard } = await import('./cards.js');
     const claim = await orch.toggleRepo(id, path);
     if (!claim) return { toast: { type: 'error', content: '认领已失效' } };
-    const candidates = candidatesForClaim(await tapdRepoCandidates(hm), claim);
+    const candidates = candidatesForClaim(await tapdRepoCandidates(), claim);
     return patchOrReply(client, data, tapdRepoPickerCard(claim, candidates, process.env['HOME'] ?? ''));
   }
 
@@ -3198,7 +3180,6 @@ end run
     const messageId = getMessageId(data);
     void (async () => {
       const orch = await import('multiagent-orchestrator');
-      const hm = await import('multiagent-host-mac');
       const { tapdRepoPickerCard } = await import('./cards.js');
       const home = process.env['HOME'] ?? '';
       // 回显进 lark_md 前转义（反引号/方括号/尖括号），防用户输入注入卡片格式（钓鱼链接等）
@@ -3230,7 +3211,7 @@ end run
       }
       // 回来 patch 原 repo 卡（如果还在），把新加的 repo 显示出来并勾上
       if (claim.pickCardMessageId) {
-        const candidates = candidatesForClaim(await tapdRepoCandidates(hm), claim);
+        const candidates = candidatesForClaim(await tapdRepoCandidates(), claim);
         void patchCard(client, claim.pickCardMessageId, tapdRepoPickerCard(claim, candidates, home)).catch(() => {});
       }
       if (messageId) void patchCard(client, messageId, receiptCard({ title: '✅ 已添加并勾选', detail: `\`${safeEcho(abs)}\``, template: 'green' })).catch(() => {});
@@ -3892,7 +3873,6 @@ export function buildEventDispatcher(client: Lark.Client): Lark.EventDispatcher 
           (async () => {
             try {
               const rest = text.trim().slice(cmdName.length + 1).trim();
-              const hm = await import('multiagent-host-mac');
               const orch = await import('multiagent-orchestrator');
               // 周期 + 日期锚点（'昨天' / '2026-09-01' / '2026-08'…）；没给日期 = 当天/当期
               const args = orch.parseReportArgs(rest);
@@ -3912,7 +3892,9 @@ export function buildEventDispatcher(client: Lark.Client): Lark.EventDispatcher 
               void sendText(client, chat_id, `📊 ${wLabel}（${spanLabel}）${asPptx ? 'PPT' : '简报'}生成中…（采集 git+任务记忆 → claude 合成，约 30-60s）${hint}`);
               // 报告候选仓库（dir-index 全量 ∪ tab/最近/worktasks ∪ 窗口内新鲜度兜底）；
               // 下游按时间窗+mtime 过滤只留窗内有活动的。
-              const repos = await hm.activeReportRepos({ since: w.since, until: w.until }).catch(() => [] as string[]);
+              const repos = await orch
+                .activeReportRepos({ since: w.since, until: w.until }, { tabCwds: currentTabCwds })
+                .catch(() => [] as string[]);
               // 复用上面那个 w：让候选仓库筛选与数据采集严格同窗，会话缓存才命中（否则白扫两遍）
               const collect = () =>
                 orch.collectWorkData(
@@ -3963,7 +3945,7 @@ export function buildEventDispatcher(client: Lark.Client): Lark.EventDispatcher 
               if (!goal) { void sendText(client, chat_id, '用法：`/plan <目标>` —— 我用 claude 把目标分解成可逐步派发的计划'); return; }
               void sendText(client, chat_id, `🧩 规划中…（claude 分解目标，约 30-90s）`);
               const tabs = await listTabs().catch(() => []);
-              const { getDirIndex } = await import('multiagent-host-mac');
+              const { getDirIndex } = await import('multiagent-orchestrator');
               const index = await getDirIndex().catch(() => ({ dirs: [] as { path: string; isGitRepo: boolean }[] }));
               const repos = index.dirs.filter((d) => d.isGitRepo).map((d) => d.path).slice(0, 40);
               const plan = await generatePlan(goal, {

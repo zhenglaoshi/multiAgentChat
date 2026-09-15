@@ -49,7 +49,8 @@ describe('appendFooterCard', () => {
 
   it('末尾是 note 灰字，含 🕐 时间', () => {
     const out = appendFooterCard(baseCard()) as ReturnType<typeof baseCard>;
-    const note = out.elements[out.elements.length - 1] as {
+    // 经 unknown 转一手：baseCard() 推导出的元素类型是联合类型，直接断言 TS 会拒（TS2352）
+    const note = out.elements[out.elements.length - 1] as unknown as {
       tag: string;
       elements: { tag: string; content: string }[];
     };
@@ -60,7 +61,7 @@ describe('appendFooterCard', () => {
 
   it('带 cwd → note 里含 📁 路径', () => {
     const out = appendFooterCard(baseCard(), `${homedir()}/proj`) as ReturnType<typeof baseCard>;
-    const note = out.elements[out.elements.length - 1] as { elements: { content: string }[] };
+    const note = out.elements[out.elements.length - 1] as unknown as { elements: { content: string }[] };
     expect(note.elements[0]!.content).toContain('📁 ~/proj');
   });
 
@@ -80,7 +81,7 @@ describe('appendFooterCard', () => {
     const out = appendFooterCard(baseCard(), `${homedir()}/ihealth-work/fix_005808`) as ReturnType<
       typeof baseCard
     >;
-    const note = out.elements[out.elements.length - 1] as { elements: { content: string }[] };
+    const note = out.elements[out.elements.length - 1] as unknown as { elements: { content: string }[] };
     expect(note.elements[0]!.content).toContain('fix\\_005808');
   });
 

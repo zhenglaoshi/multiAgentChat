@@ -32,9 +32,9 @@ importers:
       multiagent-framework:
         specifier: workspace:*
         version: link:../../packages/framework
-      multiagent-host-mac:
+      multiagent-host-api:
         specifier: workspace:*
-        version: link:../../packages/host-mac
+        version: link:../../packages/host-api
       multiagent-im-lark:
         specifier: workspace:*
         version: link:../../packages/im-lark
@@ -50,9 +50,15 @@ importers:
       '@larksuiteoapi/node-sdk':
         specifier: ^1.40.0
         version: 1.68.0
+      multiagent-host-api:
+        specifier: workspace:*
+        version: link:../host-api
       multiagent-host-mac:
         specifier: workspace:*
         version: link:../host-mac
+      multiagent-host-tmux:
+        specifier: workspace:*
+        version: link:../host-tmux
       multiagent-im-lark:
         specifier: workspace:*
         version: link:../im-lark
@@ -60,8 +66,26 @@ importers:
         specifier: workspace:*
         version: link:../orchestrator
 
+  packages/host-api:
+    dependencies:
+      multiagent-orchestrator:
+        specifier: workspace:*
+        version: link:../orchestrator
+
   packages/host-mac:
     dependencies:
+      multiagent-host-api:
+        specifier: workspace:*
+        version: link:../host-api
+      multiagent-orchestrator:
+        specifier: workspace:*
+        version: link:../orchestrator
+
+  packages/host-tmux:
+    dependencies:
+      multiagent-host-api:
+        specifier: workspace:*
+        version: link:../host-api
       multiagent-orchestrator:
         specifier: workspace:*
         version: link:../orchestrator
@@ -71,9 +95,9 @@ importers:
       '@larksuiteoapi/node-sdk':
         specifier: ^1.40.0
         version: 1.68.0
-      multiagent-host-mac:
+      multiagent-host-api:
         specifier: workspace:*
-        version: link:../host-mac
+        version: link:../host-api
       multiagent-orchestrator:
         specifier: workspace:*
         version: link:../orchestrator

@@ -20,7 +20,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { logger } from 'multiagent-orchestrator';
-import { inferTabStatus } from 'multiagent-host-mac';
+import { inferTabStatus } from 'multiagent-host-api';
 import { watcher } from './watcher.js';
 import { pendingTracker } from './pending.js';
 import { listAllChats } from '../chats/store.js';

@@ -2,7 +2,9 @@
   "files": [],
   "references": [
     { "path": "./packages/orchestrator" },
+    { "path": "./packages/host-api" },
     { "path": "./packages/host-mac" },
+    { "path": "./packages/host-tmux" },
     { "path": "./packages/im-lark" },
     { "path": "./packages/im-wecom" },
     { "path": "./packages/framework" },

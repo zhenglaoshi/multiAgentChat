@@ -7,8 +7,8 @@
   },
   "include": ["src/**/*"],
   "references": [
+    { "path": "../../packages/host-api" },
     { "path": "../../packages/orchestrator" },
-    { "path": "../../packages/host-mac" },
     { "path": "../../packages/im-lark" },
     { "path": "../../packages/im-wecom" },
     { "path": "../../packages/framework" }

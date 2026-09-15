@@ -1,7 +1,6 @@
-import { platform } from 'node:os';
 import * as Lark from '@larksuiteoapi/node-sdk';
 import { logger } from 'multiagent-orchestrator';
-import { detectHostPermissions, type HostPermissionStatus } from 'multiagent-host-mac';
+import { detectHostPermissions, hostCapabilities, type HostPermissionStatus } from 'multiagent-host-api';
 import { listAllChats } from '../chats/store.js';
 import { sendTextMessage, sendCardMessage } from '../lark/api.js';
 import { hostPermissionCard } from '../lark/cards.js';
@@ -27,8 +26,9 @@ const RECOVERED_ALERT =
  * 把原本"doctor 全绿但功能其实是坏的"这类隐蔽假绿，变成飞书显性、可行动的告警。
  */
 export function startHostPermissionProbe(client: Lark.Client): void {
-  if (platform() !== 'darwin') {
-    logger.info('host-permission probe skipped (non-darwin)');
+  // 用宿主能力声明代替 platform() 判断：没有 TCC 式授权模型的宿主（将来的 Windows）自动跳过。
+  if (!hostCapabilities().permissionModel) {
+    logger.info('host-permission probe skipped（本宿主无授权模型）');
     return;
   }
 

@@ -25,12 +25,16 @@ sudo scripts/lid-awake.sh install             # 插电合盖不睡、拔电自�
 
 ## 整体结构
 
-> **pnpm monorepo**（不再是单 `src/`）。一个 `apps/daemon` 组装入口 + 5 个 `packages/*`。
+> **pnpm monorepo**（不再是单 `src/`）。一个 `apps/daemon` 组装入口 + 7 个 `packages/*`。
 > 依赖 DAG（严格单向，以 package.json 为准，另见 docs/architecture.md）：
-> `daemon` → `framework` → `im-lark` → `host-mac` → `orchestrator`（叶子，无内部依赖）；
-> `framework` 还直接依赖 `host-mac`/`orchestrator`；`im-wecom` → `framework`+`orchestrator`。
-> `orchestrator` 传输无关+宿主无关（纯逻辑叶子）；`host-mac` 只依赖 orchestrator（用 logger 等）。
-> 包名：`multiagent-framework` / `multiagent-host-mac` / `multiagent-im-lark` / `multiagent-im-wecom` / `multiagent-orchestrator`。
+> `daemon` → `framework` → `im-lark` → `host-api` → `orchestrator`（叶子，无内部依赖）；
+> `im-wecom` → `framework`+`orchestrator`。
+> **`host-mac` / `host-tmux` 都只剩 `framework/src/host-bootstrap.ts` 一个依赖方**（按平台动态 import）——
+> im-lark / daemon 都已不依赖它们。`host-tmux` = Linux/WSL2 宿主（Windows 支持，见 docs/windows-port.md），
+> `MCHAT_HOST=mac|tmux` 可强制指定。
+> `orchestrator` 传输无关+宿主无关（纯逻辑叶子）；`host-api` 只有宿主**契约**（接口/类型/注册表，零实现）；
+> `host-mac` 是它的 macOS 实现，只有 `framework/src/host-bootstrap.ts` 按平台动态 import 它。
+> 包名：`multiagent-framework` / `multiagent-host-api` / `multiagent-host-mac` / `multiagent-host-tmux` / `multiagent-im-lark` / `multiagent-im-wecom` / `multiagent-orchestrator`。
 
 ```
 apps/
@@ -54,7 +58,14 @@ packages/
 │       ├─ im/              IMTransport 抽象接口（lark/wecom 都 implement；chatId 带 'lark:'/'wecom:' 前缀）
 │       └─ relay/            同事甩单 relay 客户端：client(RelayClient HTTP)/poller(startRelayPoller：poll→白名单闸门→去重→applyIncoming→投递飞书→ack)/config(RELAY_*/HANDOFF_*)；中转服务是独立项目 ../multiagent-relay/
 │
-├─ host-mac/                Mac 宿主能力（AppleScript 控制 Terminal.app）
+├─ host-api/                宿主契约（**零实现**：接口 + 类型 + 注册表 + facade）
+│   └─ src/
+│       ├─ types.ts         TerminalTab / SendResult / 各操作出入参（原在 host-mac，已上移）
+│       ├─ controller.ts    HostController 接口 + HostCapabilities（能力声明，调用方据此降级而不是写 platform() 分支）
+│       ├─ registry.ts      setHost/getHost 进程级单例（**只在组装根注册**：daemon main() / CLI 跑 doctor 前）
+│       └─ facade.ts        把接口方法摊平成 listTabs()/send()/... 模块级函数 → 调用点写法零改动
+│
+├─ host-mac/                Mac 宿主能力（AppleScript 控制 Terminal.app）—— HostController 的 macOS 实现
 │   └─ src/
 │       ├─ terminal/
 │       │   ├─ tabs.ts      listTabs / getHistory / send / forceEnter / newTab
@@ -65,13 +76,15 @@ packages/
 │       │   ├─ status.ts    inferTabStatus（走 AgentAdapter 识别 claude/codex；idle/busy/login/waiting/TUI）
 │       │   ├─ restart.ts   restart-all-claude-tabs（isClaudeTab + adapter.launchCommand，过 trust 弹窗）
 │       │   ├─ permissions.ts TCC 授权单一事实源：HOST_PERMISSION_SPECS + detectHostPermissions（无害探针）+ openPermissionPane
-│       │   └─ types.ts     TerminalTab 类型
-│       ├─ git.ts           gitWorkingState/useCurrentBranch/prepareBugBranch（旧脏策略，worktree 模式下停用）
-│       ├─ task-workspace.ts prepareTaskWorkspace（fix_/feature_<id6>/ worktree 隔离目录）+ taskWorkroot/taskDirName/taskBranchName
-│       ├─ workspace.ts     ./data 目录管理
-│       ├─ recent-cwds.ts   最近用过的 cwd（new-tab dropdown）
-│       ├─ dir-index.ts     后台 refreshDirIndex 建目录索引（open/new 时补全）
-│       └─ bookmarks.ts     常用目录书签
+│       │   └─ types.ts     re-export host-api 的类型（定义已上移，保证上下同一批类型）
+│       ├─ screen-lock.ts  isScreenLocked（ioreg 判锁屏）
+│       ├─ lid-awake.ts    detectLidAwake（pmset/launchctl 合盖不睡守护状态）
+│       └─ host.ts         **macHost**：把上面这些函数装配成 HostController（只装配、无逻辑）
+│
+├─ host-tmux/               tmux 宿主（Linux / WSL2 → Windows 支持）—— HostController 的第二个实现
+│   └─ src/                 tmux(CLI 封装，全部 execFile argv)/pane(tty→pane id)/tabs/keys/lifecycle/
+│                           procs(一次 ps -e 按 tty 分组)/keep-awake(WSL 调 powercfg.exe 查防睡眠漂移)/status/host
+│                           ⚠ send 写「文本+\r」整块，与 macOS do script 字节语义对齐；锁屏可用
 │
 ├─ im-lark/                 飞书 transport + tab 观测通知（monitor 与 lark cards/api 强耦合，暂同包）
 │   └─ src/
@@ -141,6 +154,9 @@ packages/
         │                   hook-install(纯逻辑：claude settings.json upsert + codex config.toml TOML 渲染/幂等/信任记录保全)/
         │                   codex-status。codex 0.154+ 的 hook 协议与 Claude Code 同构 → 复用同一批 bin/mchat-* 脚本。
         │                   见 docs/codex-integration.md §8 / features §25
+        ├─ workspace/       工作目录相关的**宿主无关**能力（原在 host-mac）：paths(cwd 解析)/recent-cwds/
+        │                   bookmarks/dir-index(⚠ 扫描走 POSIX find)/git(分支+worktree)/task-workspace/
+        │                   report-repos(activeReportRepos，tab 的 cwd 由调用方注入)
         └─ handoff/         同事任务甩单纯逻辑：types(HandoffEnvelope wire 协议)/state(状态机 canTransition)/envelope(build/validateIncoming)/store(requester+assignee 双视角 task + applyIncoming 幂等 + markProcessed 去重)；传输经 framework/relay + 独立 ../multiagent-relay/，见 docs/handoff-integration.md
 
 skills/multiagent-lark/SKILL.md    →  会 symlink/copy 到 ~/.claude/skills/

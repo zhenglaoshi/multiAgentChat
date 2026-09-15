@@ -16,21 +16,8 @@ import { runScript } from './applescript.js';
  * doctor / 启动探针 / 文档都从这里取，别再各写一份 osascript。
  */
 
-export type HostPermissionId = 'automation-terminal' | 'automation-system-events' | 'accessibility';
-
-export interface HostPermissionSpec {
-  id: HostPermissionId;
-  /** 简短名（告警/doctor 标题用） */
-  name: string;
-  /** 在 macOS 哪里授 */
-  macLocation: string;
-  /** critical = 缺了核心功能全废 */
-  severity: 'critical' | 'important';
-  /** 缺了会废哪些功能（人话，逐条，直接进告警/文档） */
-  affects: string[];
-  /** 授权步骤（dev / launchd 两种模式通用） */
-  grantSteps: string[];
-}
+export type { HostPermissionId, HostPermissionSpec } from 'multiagent-host-api';
+import type { HostPermissionId, HostPermissionSpec } from 'multiagent-host-api';
 
 /** launchd 模式下要授权的 node 真实路径（dev 模式则是 Terminal.app）。 */
 const NODE_PATH = process.execPath;
@@ -90,18 +77,12 @@ export const HOST_PERMISSION_SPECS: HostPermissionSpec[] = [
   },
 ];
 
-export function getHostPermissionSpec(id: HostPermissionId): HostPermissionSpec {
-  return HOST_PERMISSION_SPECS.find((s) => s.id === id)!;
+export function getHostPermissionSpec(id: HostPermissionId): HostPermissionSpec | undefined {
+  return HOST_PERMISSION_SPECS.find((s) => s.id === id);
 }
 
-export interface HostPermissionStatus {
-  id: HostPermissionId;
-  granted: boolean;
-  /** AppleScript error number（诊断用；-1743=Automation 被拒，-25211/1002=Accessibility 被拒） */
-  errNum?: number;
-  /** 原始 stderr / 返回片段（诊断用，截断 200） */
-  raw?: string;
-}
+export type { HostPermissionStatus } from 'multiagent-host-api';
+import type { HostPermissionStatus } from 'multiagent-host-api';
 
 /** 从 osascript stderr / 返回串里抠 AppleScript error number，形如 "...(-1743)"。 */
 function parseErrNum(s: string): number | undefined {

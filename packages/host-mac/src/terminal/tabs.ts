@@ -2,13 +2,9 @@ import { spawn } from 'node:child_process';
 import { runScript, runScriptOrThrow } from './applescript.js';
 import type { SendResult, TerminalTab } from './types.js';
 
-const TUI_PROCS = new Set([
-  'vim', 'vi', 'nvim', 'emacs', 'nano', 'pico', 'micro',
-  'less', 'more', 'man',
-  'top', 'htop', 'btop', 'atop',
-  'fzf', 'tmux', 'screen',
-  'mc', 'ranger', 'nnn', 'lf',
-]);
+// TUI 名单与 status.ts 原本各存一份（内容相同）—— 已统一到 orchestrator/agents/tab-status.ts，
+// 两个宿主 + 两处用途（hasTUI 标记 / send 拒绝）共用同一份，避免改了一处漏另一处。
+import { findTuiProc, hasTuiProc } from 'multiagent-orchestrator';
 
 const FS = String.fromCharCode(31); // field separator
 const RS = String.fromCharCode(30); // record separator
@@ -86,7 +82,7 @@ export async function listTabsRaw(): Promise<TerminalTab[]> {
       title: title ?? '',
       busy: busy === 'true',
       processes: procList,
-      hasTUI: procList.some((p) => TUI_PROCS.has(p.toLowerCase())),
+      hasTUI: hasTuiProc(procList),
     });
   }
   return tabs;
@@ -191,7 +187,7 @@ export async function send(tty: string, text: string): Promise<SendResult> {
   const tab = tabs.find((t) => t.tty === tty);
   if (!tab) return { ok: false, reason: `tab 不存在：${tty}` };
   if (tab.hasTUI) {
-    const tuiProc = tab.processes.find((p) => TUI_PROCS.has(p.toLowerCase()));
+    const tuiProc = findTuiProc(tab.processes);
     return {
       ok: false,
       reason: `tab ${tty} 当前在跑 ${tuiProc}（TUI），发字符会破坏，已拒绝。可在终端里退出后重试。`,
@@ -313,10 +309,8 @@ on run argv
 end run
 `;
 
-export interface NewTabOptions {
-  cwd?: string;
-  mode?: 'new-tab' | 'new-window' | 'new-tab-background';
-}
+export type { NewTabOptions } from 'multiagent-host-api';
+import type { NewTabOptions } from 'multiagent-host-api';
 
 /**
  * 开新 tab（默认在 front window 开），可选 cd。
@@ -494,20 +488,13 @@ export async function getUserFocus(): Promise<{
   }
 }
 
-/** 回车提交走哪条通道：pty（默认，空 do script 直写 \r）/ keystroke（System Events key code 36 兜底） */
-export type EnterMode = 'pty' | 'keystroke';
+/** 回车提交走哪条通道 —— 定义见 host-api（pty 直写 / keystroke 兜底）。 */
+export type { EnterMode } from 'multiagent-host-api';
+import type { EnterMode } from 'multiagent-host-api';
 
 /** forceEnter 的结果：区分「回车已发」「被前台弹框/锁屏挡住没敢发」「没找到 tab」。 */
-export interface ForceEnterResult {
-  /** Return 确实发出去了 */
-  ok: boolean;
-  /** 前台不是目标 tab（系统弹框/锁屏抢了焦点）→ 为防误触弹框默认按钮，没发回车。只有 keystroke 模式会出现 */
-  blocked: boolean;
-  /** blocked 时的前台 app 名（'' = 拿不到，多半是锁屏 loginwindow） */
-  frontApp?: string;
-  /** 实际走的通道 */
-  via?: EnterMode;
-}
+export type { ForceEnterResult } from 'multiagent-host-api';
+import type { ForceEnterResult } from 'multiagent-host-api';
 
 /**
  * 解析 `MCHAT_ENTER_MODE`：只认 `keystroke`（退回旧的键盘事件路径），其它值 / 未设 → `pty`。

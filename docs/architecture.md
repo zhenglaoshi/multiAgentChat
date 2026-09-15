@@ -21,17 +21,32 @@ multiAgentChat/                       # workspace root
 │   │       ├── presets/              # 任务模板（/template save）
 │   │       ├── memory/               # task + stage 双层 memory
 │   │       ├── approval/             # 审批 manager + gateContext
+│   │       ├── workspace/            # 工作目录（原在 host-mac，宿主无关）：paths /
+│   │       │                         #   recent-cwds / bookmarks / dir-index / git /
+│   │       │                         #   task-workspace / report-repos
 │   │       └── subagents/            # ~/.claude/agents/ 读写
 │   │
-│   ├── host-mac/                     # multiagent-host-mac
+│   ├── host-api/                     # multiagent-host-api（宿主契约，纯类型 + 注册表）
+│   │   └── src/
+│   │       ├── types.ts              # TerminalTab / SendResult / 各操作出入参
+│   │       ├── controller.ts         # HostController 接口 + HostCapabilities
+│   │       ├── registry.ts           # setHost / getHost（进程级单例）
+│   │       └── facade.ts             # 摊平成模块级函数，调用点零改动
+│   │
+│   ├── host-tmux/                    # multiagent-host-tmux（Linux / WSL2 宿主 → Windows 支持）
+│   │   └── src/                      # tmux/pane/tabs/keys/lifecycle/procs/keep-awake/status/host
+│   │                                 #   见 docs/windows-port.md
+│   │
+│   ├── host-mac/                     # multiagent-host-mac（HostController 的 macOS 实现）
 │   │   └── src/
 │   │       ├── terminal/             # AppleScript 控制 Terminal.app
 │   │       │   ├── tabs.ts           # listTabs / send / forceEnter / newTab
 │   │       │   ├── applescript.ts    # osascript runner
 │   │       │   ├── status.ts         # tab 状态推断
 │   │       │   └── types.ts
-│   │       ├── workspace.ts          # cwd 解析
-│   │       └── recent-cwds.ts        # ~/.multiagent-chat/ 最近 cwd
+│   │       ├── screen-lock.ts        # ioreg 判锁屏
+│   │       ├── lid-awake.ts          # pmset/launchctl 合盖不睡守护状态
+│   │       └── host.ts               # macHost：把本包函数装配成 HostController
 │   │
 │   ├── im-lark/                      # multiagent-im-lark
 │   │   └── src/
@@ -67,19 +82,20 @@ multiAgentChat/                       # workspace root
 ## 依赖 DAG（严格单向）
 
 ```
-daemon ──→ framework ──→ im-lark ──→ host-mac ──→ orchestrator
-                       ↘                        ↗
-                        ──→ orchestrator ──────
-                       ↘            ↗
-                        ──→ host-mac
+daemon ──→ framework ──→ im-lark ──→ host-api ──→ orchestrator
+                       ↘          ↘           ↗
+                        ──────────→ orchestrator
+                       ↘
+                        ──→ host-mac / host-tmux（**只有** host-bootstrap.ts 的动态 import，按平台二选一）
 ```
 
 - `orchestrator` 是叶子层：纯逻辑，无 IM / host 依赖
-- `host-mac` 只依赖 orchestrator（用 logger）
-- `im-lark` 依赖 orchestrator + host-mac
-- `framework` 依赖上面三个
+- `host-api` 只有**契约**（接口 + 类型 + 注册表），不含任何实现、不 spawn 任何进程；依赖 orchestrator 仅为取 `AgentKind`
+- `host-mac` 依赖 host-api（implement）+ orchestrator（logger / AgentAdapter）
+- `im-lark` 只依赖 host-api + orchestrator，**已完全不依赖 host-mac**；`daemon` 同样不再直接依赖它（宿主实现只经 framework 的 bootstrap 进来）
+- `framework` 依赖 host-api；对 host-mac 的依赖**收口在 `host-bootstrap.ts` 一个文件**（按平台动态 import 具体实现）
 - `im-wecom`（企微 transport，可选）依赖 framework + orchestrator
-- `daemon` 是唯一装配层，wire 全部（含可选 im-wecom）
+- `daemon` 是唯一装配层，wire 全部（含可选 im-wecom）；启动第一件事是 `ensureHostRegistered()`
 
 TypeScript project references 强制这个方向；跨包 relative import 会编译错。
 
@@ -219,12 +235,14 @@ getUserFocus() → { terminalFrontmost, tty of selected tab of front window }
 ## 扩展点
 
 - **新 IM**：新建 `packages/im-<name>/`，实现 SDK/client + api（sendCard/patch/sendFile）+ handlers（消息接入）+ cards。目前 im-lark 是"参考实现"，抽象接口尚未提炼（P2 会做）
-- **新 host**：新建 `packages/host-<name>/`。目前 host-mac 是唯一实现。抽象成 HostController 接口后可插 Linux tmux / SSH remote 等
+- **新 host**：新建 `packages/host-<name>/`，implement `multiagent-host-api` 的 `HostController`（照 `host-mac/src/host.ts` 的装配写法），再在 `framework/src/host-bootstrap.ts` 加一条平台分支 —— **业务代码一行不用改**。宿主没有的能力在 `capabilities` 里如实标 false，对应探针会自动跳过（授权探针 / System Events 探针 / 合盖守护探针）。
+  ⚠ Windows 的难点不在接口而在模型：Terminal.app 那套「从外部附身用户已开的 tab」（`do script` 写 pty + `history of tab` 读 scrollback）在 Windows 上没有等价能力，只能改成 daemon 用 ConPTY 自己托管 pty 会话 —— `/watch` 的「本地手敲也能看到」那条数据流要另行设计。
 - **新 subagent**：直接写 `.md` 到 `~/.claude/agents/`，或用 `/subagent gen`（推荐）
 - **新命令**：飞书 → `im-lark/lark/commands.ts` 加 handler；CLI → `framework/control/cli.ts` 加 case + protocol op
 
 ## 已知设计缺陷（诚实）
 
+0. **`dir-index` 的扫描仍是 POSIX 专有**：`orchestrator/workspace/dir-index.ts` 用 `find … -prune` 扫全机 git 仓库（这套参数是性能关键，见该文件注释：分钟级 → 秒级）。Windows 上没有等价命令，目前 `scanSupportedOnThisPlatform()` 直接返回空索引 —— 加 Windows 宿主时要么换 Node 侧递归扫（得重做那次性能调优），要么把「扫目录」提升成宿主能力挂进 `HostController`。
 1. **im-lark 和 monitor 深度耦合**：monitor/notifier 直接调 lark/api + cards + task-render；理论上应该走 IMTransport 接口抽象。P2 拆
 2. **AppleScript 权限依赖**：首次装用户要手动加 Accessibility 权限。目前只在 README 提醒
 3. **单进程 daemon**：dev/prod 都是一个 Node 进程，挂了就都挂

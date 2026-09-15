@@ -15,10 +15,10 @@
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.40.0",
     "dotenv": "^16.4.5",
-    "multiagent-orchestrator": "workspace:*",
-    "multiagent-host-mac": "workspace:*",
+    "multiagent-framework": "workspace:*",
+    "multiagent-host-api": "workspace:*",
     "multiagent-im-lark": "workspace:*",
     "multiagent-im-wecom": "workspace:*",
-    "multiagent-framework": "workspace:*"
+    "multiagent-orchestrator": "workspace:*"
   }
 }

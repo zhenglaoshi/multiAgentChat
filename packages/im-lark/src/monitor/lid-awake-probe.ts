@@ -1,9 +1,8 @@
-import { platform } from 'node:os';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import * as Lark from '@larksuiteoapi/node-sdk';
 import { logger } from 'multiagent-orchestrator';
-import { detectLidAwake, LID_AWAKE_INSTALL_CMD } from 'multiagent-host-mac';
+import { detectKeepAwake, hostCapabilities, keepAwakeInstallCmd } from 'multiagent-host-api';
 import { listAllChats } from '../chats/store.js';
 import { sendTextMessage } from '../lark/api.js';
 
@@ -43,22 +42,24 @@ function writeState(s: NudgeState): void {
 }
 
 /** 提示文案。纯函数，便于单测/复用。 */
-export function buildLidAwakeNudge(sleepDisabled: boolean | null): string {
+export function buildLidAwakeNudge(sleepDisabled: boolean | null, installCmd: string): string {
   const head = sleepDisabled
     ? '🔌 检测到你手动开了全局 disablesleep=1（合盖不睡），但没装随电源自动切换的守护——**拔电放包里也不会睡**，会发热耗电。'
     : '🔌 这台是笔记本，还没装「插电合盖也能远程」守护——**合盖就睡、Wi-Fi 断，手机发的命令收不到**。';
   return (
     `${head}\n` +
     `一次性装好（需要在 Mac 前输一次 sudo 密码，之后开机自启）：\n` +
-    `${LID_AWAKE_INSTALL_CMD}\n` +
+    `${installCmd}\n` +
     `效果：插电合盖只灭屏锁屏、不睡（配合回车 pty 直写，锁屏也照常执行）；拔电自动恢复默认合盖睡眠。\n` +
     `不想再看到这条：.env 里 LID_AWAKE_NUDGE=0`
   );
 }
 
 export function startLidAwakeProbe(client: Lark.Client): void {
-  if (platform() !== 'darwin') {
-    logger.info('lid-awake probe skipped (non-darwin)');
+  // 没有「合盖不睡」守护的宿主直接跳过（install 命令也会是 null）。
+  const installCmd = keepAwakeInstallCmd();
+  if (!hostCapabilities().keepAwake || !installCmd) {
+    logger.info('lid-awake probe skipped（本宿主无合盖不睡守护）');
     return;
   }
   if (process.env['LID_AWAKE_NUDGE'] === '0') {
@@ -67,7 +68,7 @@ export function startLidAwakeProbe(client: Lark.Client): void {
   }
   const timer = setTimeout(async () => {
     try {
-      const st = await detectLidAwake();
+      const st = await detectKeepAwake();
       if (!st.isLaptop) {
         logger.info('lid-awake probe：非笔记本，跳过');
         return;
@@ -92,7 +93,7 @@ export function startLidAwakeProbe(client: Lark.Client): void {
         logger.warn('lid-awake probe：无 chat 可推送（下次启动再试）');
         return;
       }
-      const text = buildLidAwakeNudge(st.sleepDisabled);
+      const text = buildLidAwakeNudge(st.sleepDisabled, installCmd);
       for (const chat of chats) {
         try {
           await sendTextMessage(client, chat.chatId, text);

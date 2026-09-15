@@ -1,0 +1,24 @@
+{
+  // 测试文件的类型检查 —— **刻意独立于根 `tsc -b` 的 project references**。
+  //
+  // 背景（2026-09-14 评审抓到的机器门盲区）：根 tsconfig 的 references 只列 packages/* 和 apps/daemon，
+  // 各包的 include 又只有 `src/**/*` —— 于是 `tests/**/*.test.ts` **不属于任何 project**，
+  // `npm run typecheck` 从不检查它们；vitest 走 esbuild 只转译不查类型。
+  // 结果：给 HostCapabilities 加了必填字段、假宿主的对象字面量漏补，
+  // 类型错误真实存在却 603 个用例全绿（JS 读到 undefined 恰好按 falsy 跑过去了）。
+  //
+  // 这里不用 composite/references，而是让 TS 从测试文件出发顺着相对 import 把包源码一起纳入程序，
+  // 只做 noEmit 检查 —— 测试直接 import `../packages/x/src/y.ts` 的写法因此不用改。
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "composite": false,
+    "declaration": false,
+    "sourceMap": false,
+    "types": ["node"]
+  },
+  "include": ["**/*.ts"],
+  // oidc-smoke.ts 直接 import 平级仓库 ../../multiagent-relay 的源码（那个仓库不一定存在于本机），
+  // 纳进来会让类型门因为"外部仓库缺失"而红，不是本仓库的问题 → 排除。
+  "exclude": ["oidc-smoke.ts"]
+}

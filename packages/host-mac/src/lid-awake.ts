@@ -12,19 +12,10 @@ export const LID_AWAKE_LABEL = 'com.multiagent-chat.lid-awake';
 export const LID_AWAKE_PLIST = `/Library/LaunchDaemons/${LID_AWAKE_LABEL}.plist`;
 export const LID_AWAKE_INSTALL_CMD = 'sudo scripts/lid-awake.sh install';
 
-export type PowerSource = 'ac' | 'battery' | 'unknown';
-
-export interface LidAwakeState {
-  /** `pmset -g batt` 里有 InternalBattery → 笔记本（台式机没有合盖问题） */
-  isLaptop: boolean;
-  /** 守护 plist 在 /Library/LaunchDaemons（已安装 ≠ 在跑，见 running） */
-  installed: boolean;
-  /** `launchctl print system/<label>` 显示 state = running（非 root 也能读）；null = launchctl 不可用 / 未安装 */
-  running: boolean | null;
-  /** `pmset -g` 的 SleepDisabled 生效值；null = 读不到 */
-  sleepDisabled: boolean | null;
-  powerSource: PowerSource;
-}
+/** = host-api 的 KeepAwakeState（本宿主的实现就是 pmset + launchd 守护）。 */
+export type { PowerSource } from 'multiagent-host-api';
+export type { KeepAwakeState as LidAwakeState } from 'multiagent-host-api';
+import type { KeepAwakeState as LidAwakeState, PowerSource } from 'multiagent-host-api';
 
 /** 解析 `pmset -g batt` 首行：Now drawing from 'AC Power' / 'Battery Power' / 'UPS Power'。纯函数。 */
 export function parsePowerSource(battOut: string): PowerSource {

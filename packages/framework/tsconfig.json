@@ -7,8 +7,10 @@
   },
   "include": ["src/**/*"],
   "references": [
+    { "path": "../host-api" },
     { "path": "../orchestrator" },
     { "path": "../host-mac" },
+    { "path": "../host-tmux" },
     { "path": "../im-lark" }
   ]
 }

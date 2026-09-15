@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { isHumanPrompt, isTrivialPrompt, type RawUserEntry } from '../packages/orchestrator/src/report/sessions.js';
-import { dedupeContainedRoots } from '../packages/host-mac/src/dir-index.js';
+import { dedupeContainedRoots } from '../packages/orchestrator/src/workspace/dir-index.js';
 
 /** 真人在终端里打进去的一条（字段照实测的 jsonl 取样）。 */
 function human(partial: Partial<RawUserEntry> = {}): RawUserEntry {

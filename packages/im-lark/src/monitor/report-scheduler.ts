@@ -5,7 +5,8 @@ import {
   logger, reportWindow, collectWorkData, generateBrief, generatePptxReport,
   type ReportWindow,
 } from 'multiagent-orchestrator';
-import { activeReportRepos } from 'multiagent-host-mac';
+import { activeReportRepos } from 'multiagent-orchestrator';
+import { listTabs } from 'multiagent-host-api';
 import { listAllChats } from '../chats/store.js';
 import { sendTextMessage, sendFile } from '../lark/api.js';
 
@@ -78,7 +79,10 @@ export function startReportScheduler(client: Lark.Client): void {
     // 报告候选仓库（dir-index 全量 ∪ tab/最近/worktasks ∪ 窗口内新鲜度兜底）；
     // 下游按时间窗+mtime 过滤只留今天有活动的。
     const w = reportWindow(s.kind, s.prev);
-    const repos = await activeReportRepos({ since: w.since, until: w.until }).catch(() => [] as string[]);
+    // tab 的 cwd 是宿主能力，orchestrator 拿不到 → 从 host-api 注入这一路数据源
+    const tabCwds = async (): Promise<string[]> =>
+      (await listTabs().catch(() => [])).map((t) => t.cwd).filter((c): c is string => !!c);
+    const repos = await activeReportRepos({ since: w.since, until: w.until }, { tabCwds }).catch(() => [] as string[]);
     // 复用上面那个 w（同 handlers）：两处同窗，会话采集才能命中缓存只扫一遍
     const collect = () => collectWorkData({ window: s.kind, repos, prev: s.prev, window_: w });
     if (s.format === 'pptx') {

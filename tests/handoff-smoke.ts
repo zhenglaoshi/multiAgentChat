@@ -7,7 +7,10 @@ import { join } from 'node:path';
 import { RelayClient, startRelayPoller } from '../packages/framework/src/relay/index.js';
 import type { RelayClientConfig } from '../packages/framework/src/relay/config.js';
 import { buildCreateEnvelope, buildStatusEnvelope, buildReplyEnvelope } from '../packages/orchestrator/src/handoff/envelope.js';
-import type { ApplyResult, HandoffEnvelope } from '../packages/orchestrator/src/handoff/types.js';
+import type { HandoffEnvelope } from '../packages/orchestrator/src/handoff/types.js';
+// ApplyResult 定义在 store.ts（不在 types.ts）—— 这条 import 一直是错的，
+// 只是 tests/ 从来没进过 typecheck 所以没人发现。
+import type { ApplyResult } from '../packages/orchestrator/src/handoff/store.js';
 
 // relay 项目目录（默认与本仓库平级的 ../multiagent-relay，可用 RELAY_PROJECT_DIR 覆盖）
 const RELAY_DIR = process.env['RELAY_PROJECT_DIR'] ?? join(process.cwd(), '..', 'multiagent-relay');

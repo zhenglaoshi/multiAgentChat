@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { logger, detectAgentFromProcs, detectWedge } from 'multiagent-orchestrator';
-import { enrichTabsWithCwd, getHistory, listTabsRaw, sendCtrlC } from 'multiagent-host-mac';
-import type { TerminalTab } from 'multiagent-host-mac';
+import { enrichTabsWithCwd, getHistory, listTabsRaw, sendCtrlC } from 'multiagent-host-api';
+import type { TerminalTab } from 'multiagent-host-api';
 import { detectWaitingForInput } from './detector.js';
 import { pendingTracker, recentlyRemoteWritten, forgetRemoteWrite, type PendingOutput } from './pending.js';
 
@@ -420,6 +420,24 @@ export class TabWatcher {
     };
 
     for (const p of pendings) {
+      // ── 屏幕缓冲区回缩时重设基线 ────────────────────────────────────────────
+      // macOS 的 `history of tab` 是单调增长的，但 tmux 宿主的 `capture-pane` 拿的是**当前屏幕快照**
+      // （见 host-tmux/src/tabs.ts 的 getHistory 说明）：窗口滚动 / TUI 重绘时**长度会回缩**。
+      // 一旦回缩到 baseline 以下，`computeTaskOnlyTail` 会**永久**返回空串（baseline 不变、长度更小），
+      // 这条 pending 的增量内容就此彻底断供 —— 进度卡和任务 memory 都会缺内容。
+      // 处理：把基线重设到当前长度。回缩之前那段内容确实已从快照里消失、找不回来了，
+      // 但至少后续增量能重新被正确计算，而不是通道死掉。macOS 下此分支永不触发。
+      if (p.beforeCharLen !== undefined && p.beforeCharLen > currentCharLen) {
+        logger.warn('屏幕缓冲区回缩，重设增量基线', {
+          tty: tab.tty,
+          was: p.beforeCharLen,
+          now: currentCharLen,
+        });
+        p.beforeCharLen = currentCharLen;
+        p.lastSeenCharLen = currentCharLen;
+        if (p.lastPatchedLen !== undefined && p.lastPatchedLen > currentLen) p.lastPatchedLen = currentLen;
+      }
+
       // hard timeout
       if (now - p.sentAt > PENDING_HARD_TIMEOUT_MS) {
         logger.warn('pending hard timeout, dropping', {

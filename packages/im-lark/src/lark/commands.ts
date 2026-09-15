@@ -30,10 +30,10 @@ import {
   savePreset,
   type Preset,
 } from 'multiagent-orchestrator';
-import { listRecentCwds } from 'multiagent-host-mac';
-import { getHistory, listTabs, newTab, detectSelfTty } from 'multiagent-host-mac';
-import { inferTabStatus, type TabStatusInfo } from 'multiagent-host-mac';
-import { resolveCdTarget } from 'multiagent-host-mac';
+import { listRecentCwds } from 'multiagent-orchestrator';
+import { getHistory, listTabs, newTab, detectSelfTty } from 'multiagent-host-api';
+import { inferTabStatus, type TabStatusInfo } from 'multiagent-host-api';
+import { resolveCdTarget } from 'multiagent-orchestrator';
 import {
   addBookmark,
   getBookmark,
@@ -43,7 +43,7 @@ import {
   refreshDirIndex,
   searchDirs,
   type DirEntry,
-} from 'multiagent-host-mac';
+} from 'multiagent-orchestrator';
 import {
   chooseDirCard,
   dashboardCard,
@@ -57,7 +57,7 @@ import {
   type TemplateListItem,
 } from './cards.js';
 import { getTask, listTasks, markTaskAborted } from 'multiagent-orchestrator';
-import { send as terminalSend } from 'multiagent-host-mac';
+import { send as terminalSend } from 'multiagent-host-api';
 import { buildStageProgressCardFromTask } from './task-render.js';
 
 export type ReplyAction =
@@ -1811,7 +1811,6 @@ export async function handleCommand(
       const m = rest.match(/-n\s+(\d+)/);
       return m ? Number(m[1]) : 60;
     })();
-    const { getHistory } = await import('multiagent-host-mac');
     const { sanitizeTerminalOutput } = await import('../monitor/sanitize.js');
     const full = await getHistory(chat.activeTty);
     const arr = full.split('\n');
