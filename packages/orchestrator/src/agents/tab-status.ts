@@ -93,18 +93,42 @@ const WAITING_PATTERNS: RegExp[] = [
  * 只是把入参从 `TerminalTab` 放宽成 `TabStatusInput`，让第二个宿主也能用。
  */
 /**
- * 文本判据只看**屏幕尾部这么多行**。
+ * 「在等输入」的判据只看**屏幕最末尾这几条非空行**。
  *
- * ⚠ 调用方传进来的 `historyTail` 未必真是"tail"：fleet-monitor 传的是 watcher 缓存的**完整历史**，
- * 而 tmux 的 `capture-pane` 还可能带很长的 scrollback。不收敛的话，一次**早已答完**的 codex 审批
- * （"Would you like to run the following command?" / "Press enter to confirm"）会永远留在历史里 →
- * 该 tab **长期显示"codex 等输入"**，`/shells` 状态是错的，fleet-monitor 也不再按 `claude-active`
- * 处理它、从而漏掉卡住检测（评审 2026-09-15 指出）。
- * 这与原生菜单镜像那条 critical 是同一类错误：**闸门的取景框必须有界**。
+ * ⚠ 为什么不是"尾部 40 行"（第一版就是这么写的，评审指出仍然不够）：
+ * 判据是按文本匹配的，而**菜单答完之后那几行文案还留在原地**。用户给的反例：
+ *     Press enter to confirm or esc to cancel
+ *     yes
+ *     command finished
+ * 菜单早就关了，但这三行都在 40 行窗口内 → 仍判「codex 等输入」→ `/shells` 状态是错的、
+ * fleet-monitor 也不再按 `claude-active` 处理它，从而漏掉卡住检测。
+ *
+ * 真正可靠的信号是**位置而不是存在**：菜单还活着时，它的提示行就是屏幕的**最后一行**；
+ * 一旦被答掉，后续输出会把它顶上去。所以只在「最末尾这几条非空行」里匹配。
+ *
+ * 取 **2** 行是实测定的：用户给的反例里菜单答完只追加了 `yes` + `command finished` 两行，
+ * 窗口放到 3 行就仍会命中 `Press enter to confirm`（它是菜单的最后一行）。2 行才能把它顶出去。
+ *
+ * **承认的代价**（宁可漏判，不可错判）：选项很多、且末尾没有提示行的菜单，
+ * 「等输入」可能识别不出来 → 只影响**显示**（`/shells` 显示成"跑着"而不是"等输入"），
+ * 不影响任何注入决策 —— 原生菜单镜像走的是自己那套独立且更严的闸门（见 native-menu.ts）。
+ * **残留局限**：答完后若**一行输出都没有**（命令无输出且瞬间结束），这一拍仍会判成等输入，
+ * 下一拍有输出就自愈 —— 静态快照下这个歧义无法根除，只能缩小窗口。
+ */
+const STATUS_TAIL_NONEMPTY_LINES = 2;
+
+/** 取最末尾若干条**非空**行 —— 状态判据一律基于它，不看整段历史、也不看整个 40 行窗口。 */
+function tailForWaiting(text: string): string {
+  const nonEmpty = text.split('\n').filter((l) => l.trim() !== '');
+  return nonEmpty.slice(-STATUS_TAIL_NONEMPTY_LINES).join('\n');
+}
+
+/**
+ * 登录态判据的窗口 —— 比「等输入」宽松：登录提示出现后不会被后续输出顶掉语义
+ * （没登录就是没登录），只要别在整段无界历史里匹配即可。
  */
 const STATUS_TAIL_LINES = 40;
 
-/** 取尾部若干行 —— 状态判据一律基于它，不看整段历史。 */
 function boundTail(text: string): string {
   const lines = text.split('\n');
   return lines.length <= STATUS_TAIL_LINES ? text : lines.slice(-STATUS_TAIL_LINES).join('\n');
@@ -115,6 +139,8 @@ export function inferTabStatusFrom(
   historyTailRaw?: string,
 ): TabStatusInfo {
   const historyTail = historyTailRaw === undefined ? undefined : boundTail(historyTailRaw);
+  // 「等输入」用更窄的窗口（见 tailForWaiting 的说明）
+  const waitingTail = historyTailRaw === undefined ? undefined : tailForWaiting(historyTailRaw);
   // agent 识别走 AgentAdapter registry：认 claude 与 codex
   const agent = detectAgentFromProcs(tab.processes);
 
@@ -135,7 +161,7 @@ export function inferTabStatusFrom(
         };
       }
       // 通用判据 + 该 agent 自己声明的原生菜单特征（各 agent 菜单长得不一样，见 AgentAdapter.waitingPatterns）
-      if ([...WAITING_PATTERNS, ...agent.waitingPatterns].some((re) => re.test(historyTail))) {
+      if (waitingTail && [...WAITING_PATTERNS, ...agent.waitingPatterns].some((re) => re.test(waitingTail))) {
         return {
           kind: 'claude-waiting',
           label: `⏳ ${agent.kind} 等输入`,

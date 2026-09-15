@@ -285,3 +285,44 @@ describe('状态判据的取景框必须有界（评审 2026-09-15 medium 回归
     expect(inferTabStatusFrom({ processes: ['codex'], busy: true }, hist).kind).toBe('claude-waiting');
   });
 });
+
+describe('菜单答完后不得继续显示「等输入」（评审 2026-09-15 第五轮回归）', () => {
+  // 上一版收敛到"尾部 40 行"仍不够：菜单文案答完后还留在原地，
+  // 只要后续输出少于 40 行就仍会命中。真正的信号是**位置**——菜单活着时提示行就是最后一行。
+  const LIVE_MENU = [
+    'Would you like to run the following command?',
+    '$ npm test',
+    '› 1. Yes, proceed (y)',
+    '  2. No, and tell Codex what to do differently (esc)',
+    'Press enter to confirm or esc to cancel',
+  ].join('\n');
+
+  it('菜单还在（提示行就是最后一行）→ 等输入', () => {
+    expect(inferTabStatusFrom({ processes: ['codex'], busy: true }, LIVE_MENU).kind)
+      .toBe('claude-waiting');
+  });
+
+  it('答完后只追加两行输出 → 不再判等输入（用户给的反例）', () => {
+    const answered = [LIVE_MENU, 'yes', 'command finished'].join('\n');
+    expect(inferTabStatusFrom({ processes: ['codex'], busy: true }, answered).kind)
+      .toBe('claude-active');
+  });
+
+  it('答完后追加大量输出同样不判等输入', () => {
+    const answered = [LIVE_MENU, ...Array(60).fill('... 测试输出 ...')].join('\n');
+    expect(inferTabStatusFrom({ processes: ['codex'], busy: true }, answered).kind)
+      .toBe('claude-active');
+  });
+
+  it('空行不算"被顶掉"（TUI 常在尾部留空行）', () => {
+    const withBlanks = [LIVE_MENU, '', '   ', ''].join('\n');
+    expect(inferTabStatusFrom({ processes: ['codex'], busy: true }, withBlanks).kind)
+      .toBe('claude-waiting');
+  });
+
+  it('登录提示用的是更宽的窗口，不受这条收窄影响', () => {
+    const hist = ['Sign in with ChatGPT', ...Array(20).fill('some output')].join('\n');
+    expect(inferTabStatusFrom({ processes: ['codex'], busy: true }, hist).kind)
+      .toBe('claude-login');
+  });
+});

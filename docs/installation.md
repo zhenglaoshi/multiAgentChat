@@ -5,7 +5,9 @@
 ## 你需要拥有
 
 ### 硬件
-- **macOS** 电脑（AppleScript / Terminal.app 是 host 层的底子；Linux/Windows 不支持）
+- **macOS** 电脑 —— 完整支持，宿主走 AppleScript / Terminal.app。本文其余步骤都按 macOS 写
+- **Windows / Linux** —— 经 **tmux 宿主**支持（Windows 需 WSL2，**不是原生 Windows**）。
+  装机步骤完全不同，见 [windows-setup.md](windows-setup.md)；**尚未在任何 Windows / Linux 机器上真机验证**
 - 稳定网络（会 WebSocket 长连到飞书服务器）
 
 ### 软件

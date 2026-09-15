@@ -236,7 +236,12 @@ getUserFocus() → { terminalFrontmost, tty of selected tab of front window }
 
 - **新 IM**：新建 `packages/im-<name>/`，实现 SDK/client + api（sendCard/patch/sendFile）+ handlers（消息接入）+ cards。目前 im-lark 是"参考实现"，抽象接口尚未提炼（P2 会做）
 - **新 host**：新建 `packages/host-<name>/`，implement `multiagent-host-api` 的 `HostController`（照 `host-mac/src/host.ts` 的装配写法），再在 `framework/src/host-bootstrap.ts` 加一条平台分支 —— **业务代码一行不用改**。宿主没有的能力在 `capabilities` 里如实标 false，对应探针会自动跳过（授权探针 / System Events 探针 / 合盖守护探针）。
-  ⚠ Windows 的难点不在接口而在模型：Terminal.app 那套「从外部附身用户已开的 tab」（`do script` 写 pty + `history of tab` 读 scrollback）在 Windows 上没有等价能力，只能改成 daemon 用 ConPTY 自己托管 pty 会话 —— `/watch` 的「本地手敲也能看到」那条数据流要另行设计。
+  ✅ **已有第二个实现：`packages/host-tmux/`**（Linux / WSL2 → Windows 支持，见 [windows-setup.md](windows-setup.md)）。
+  当初判断"Windows 的难点不在接口而在模型"（Terminal.app 那套「从外部附身用户已开的 tab」在 Windows 上没有等价能力）——
+  结论是**绕开这个模型**：不用 ConPTY 让 daemon 自己托管 pty（daemon 会自杀重启，那样每次重启都会杀光所有 agent 会话），
+  而是让 **tmux server** 持有 pane，daemon 只通过 tmux CLI 操作它 —— 等价于现在 Terminal.app 的性质，重启无感。
+  `/watch` 的「本地手敲也能看到」那条数据流因此也不用重做（`capture-pane` 照样读得到）。
+  ⚠ 该实现**尚未真机验证**，待验清单见 [windows-port.md](windows-port.md) §6。
 - **新 subagent**：直接写 `.md` 到 `~/.claude/agents/`，或用 `/subagent gen`（推荐）
 - **新命令**：飞书 → `im-lark/lark/commands.ts` 加 handler；CLI → `framework/control/cli.ts` 加 case + protocol op
 

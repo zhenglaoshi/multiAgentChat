@@ -1387,7 +1387,7 @@ high）：路径不变、内容随便换 —— 日常最容易踩的是「在�
 
 **不能做**（当前）：
 - 多平台 IM（企微 / Slack / Telegram / 钉钉等，P2 计划）
-- Linux / Windows host（AppleScript 锁死，P3 计划）
+- ~~Linux / Windows host（AppleScript 锁死，P3 计划）~~ → **已实现 `host-tmux`**（Windows 需 WSL2，不是原生 Windows；**尚未真机验证**，见 docs/windows-setup.md）
 - 团队多用户共享（单 chat 一个 user，无 auth）
 - 分布式部署（daemon 单机）
 
