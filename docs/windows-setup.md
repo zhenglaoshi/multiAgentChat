@@ -9,6 +9,130 @@
 
 ---
 
+## 0. 谁做哪一步（**先读这节**）
+
+这份文档**不能整份丢给 agent 自动跑完**。有四类事 agent 做不了，必须人来：
+
+| 必须人做 | 为什么 agent 做不了 |
+|---|---|
+| **装 WSL2 本身**（§2.1） | 要**管理员 PowerShell** + **重启**。而且这一步之前根本还没有 WSL —— agent 没有立足点，鸡生蛋 |
+| **电源策略**（§3）、**任务计划注册**（§4 Windows 侧） | 要**管理员**。WSL interop 继承的是当前用户权限、**没有管理员**；具体表现**未实测**（见 §3），按保守取值：必须在 Windows 侧管理员窗口做 |
+| **飞书凭证**（§2.5 的 `LARK_APP_ID` / `LARK_APP_SECRET`） | 只有你有。脚本**不会**去猜或代填 |
+| **claude / codex 登录** | 浏览器 OAuth，交互式 |
+
+除此之外（WSL 内的依赖、Node、项目安装、`.env` 骨架、tmux session、加载期冒烟）**都能自动化**，
+已经打包成一条命令：
+
+```bash
+bash scripts/wsl-setup.sh           # 装
+bash scripts/wsl-setup.sh --check   # 只自检，不改任何东西
+```
+
+它是**幂等**的（重复跑安全，已就绪的步骤打印 skip 跳过）、**失败即停**（卡在哪、下一步干什么都会说清楚），
+跑完会列出「还需要人做」的勾选清单。
+
+### 人工操作清单（复制即用）
+
+下面六条是**只能人做**的全部内容，每条都给了确切命令。agent 遇到这些**不要代劳，把对应那条贴给人**即可。
+
+**① 装 WSL2** 🧑 管理员 PowerShell，装完要重启
+
+```powershell
+wsl --install -d Ubuntu
+wsl --set-default-version 2
+# 重启 → 按提示创建 Linux 用户名/密码 → 验证：
+wsl -l -v          # 期望 Ubuntu  Running  2
+```
+
+**② 开 systemd** 🧑 WSL 内执行，之后要 `wsl --shutdown` 重启 WSL
+
+```bash
+sudo tee /etc/wsl.conf >/dev/null <<'EOF'
+[boot]
+systemd=true
+EOF
+# 回 PowerShell：wsl --shutdown，再 wsl 进去。验证：
+systemctl is-system-running    # 有输出即可（degraded 也算正常）
+```
+
+**③ 拉仓库到 WSL 文件系统内** 🧑 `<仓库地址>` 换成你的
+
+```bash
+cd ~ && git clone <仓库地址> multiAgentChat   # ⚠ 必须在 ~ 下，别放 /mnt/c
+```
+
+**④ 填飞书凭证** 🧑 值只有你有，脚本不会猜也不会代填
+
+```bash
+cd ~/multiAgentChat
+# 编辑 .env，把这两行的占位符换成真值（怎么拿见 docs/feishu-bot-setup.md）：
+#   LARK_APP_ID=cli_xxxxxxxxxxxxxxxx
+#   LARK_APP_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+chmod 600 .env
+```
+
+**⑤ 登录 claude（和 codex）** 🧑 浏览器 OAuth，无法自动化
+
+```bash
+npm i -g @anthropic-ai/claude-code
+claude          # 跑起来按提示完成登录，然后 /exit
+# 要用 codex 的话：装好后跑一次 codex 登录，并在 TUI 里 /hooks 批准（否则 hook 不生效）
+```
+
+**⑥ 电源 + 自启** 🧑 管理员 PowerShell（WSL interop 没有管理员权限，改电源方案必须在 Windows 侧做）
+
+```powershell
+# 电源：插电时永不睡、永不休眠、合盖不睡
+powercfg /change standby-timeout-ac 0
+powercfg /change hibernate-timeout-ac 0
+powercfg -setacvalueindex SCHEME_CURRENT SUB_BUTTONS LIDACTION 0
+powercfg -setactive SCHEME_CURRENT
+powercfg /a                      # 看本机支持哪些睡眠态（Modern Standby 机型差异大）
+
+# 自启：登录时把 WSL2 VM 拉起来（VM 一起来 systemd 就会带起 daemon）
+schtasks /Create /TN "mchat-wsl" /TR "wsl.exe -d Ubuntu -- true" /SC ONLOGON /RL HIGHEST /F
+```
+
+> 另外两件同等重要、但**不是命令能解决**的事：
+> **可以锁屏，别注销**（注销会把 WSL2 VM 连同 daemon 一起杀掉）；
+> **关掉 Windows Update 自动重启**（设置 → Windows 更新 → 高级选项 → 设置"使用时间"）。
+
+WSL 内的 systemd service（§4）虽然也要 `sudo`，但它是**非交互**的、可以让 agent 跑 —— 见 §4 的脚本。
+
+---
+
+### 推荐的分工顺序
+
+1. **人**：§2.1 装 WSL2（管理员 PowerShell + 重启 + 创建 Linux 用户）
+2. **人**：§2.2 开 systemd（`/etc/wsl.conf` + `wsl --shutdown`）——也需要重启 WSL，脚本跨不过这道
+3. **人**：把仓库拉到 WSL 文件系统内（`git clone` 到 `~/`，**别放 `/mnt/c`**）
+4. **agent 接手**：`bash scripts/wsl-setup.sh` —— 依赖 / Node / pnpm install / `.env` 骨架 / tmux / 冒烟
+5. **人**：填飞书凭证、跑一次 `claude` 登录
+6. **人**：§3 电源策略、§4 自启（都要管理员 PowerShell）
+7. **agent 收尾（只做「能不能起来 + 自检」）**
+   > ⚠ 下面写死的 `mchat` 是默认 session 名。**若你设过 `MCHAT_TMUX_SESSION`，把它换成你设的值** ——
+   > 或者更省事：直接抄 `scripts/wsl-setup.sh` 跑完时打印的那份命令，它已经按实际 session 名展开好了。
+   
+   ```bash
+   # ⚠ npm run dev 是 tsx watch，**永不退出** —— 千万别在前台直接跑，agent 会一直挂到超时。
+   # 丢进第 4 步建好的那个 tmux session 里后台跑：
+   tmux send-keys -t mchat 'cd ~/multiAgentChat && npm run dev' Enter
+   sleep 15                      # 等 daemon 起来（agent doctor 要连它的 unix socket）
+   agent doctor                  # 「宿主实现」应 pass 并显示 tmux
+   agent tabs                    # 应列出 tmux 的 pane
+   tmux capture-pane -p -t mchat -S -40   # 看 daemon 日志有没有报错
+   ```
+8. **人**：跑 §6 的验收清单 —— 那是**手机操作场景**（发指令 / Win+L 锁屏 / 合盖 / 重启），
+   **agent 替不了**，别让它以为自己验收完了
+
+### 把这份文档交给 agent 时，建议这么说
+
+> 我已经装好 WSL2、开了 systemd、把仓库 clone 到了 `~/multiAgentChat`。
+> 你从第 4 步开始：跑 `bash scripts/wsl-setup.sh`，然后按它列出的清单告诉我还需要我做什么。
+> 需要管理员权限或要我登录的事，**不要试图代劳，直接告诉我**。
+
+---
+
 ## 1. 架构：东西都在哪
 
 ```
@@ -42,7 +166,7 @@
 
 ## 2. 安装（全程在 Windows 上操作一次）
 
-### 2.1 装 WSL2
+### 2.1 装 WSL2（🧑 需要人 · 管理员 PowerShell + 重启）
 
 以管理员身份开 PowerShell：
 
@@ -57,7 +181,7 @@ wsl --set-default-version 2
 wsl -l -v          # 期望看到 Ubuntu  Running  2
 ```
 
-### 2.2 WSL 内开 systemd（给后面的自启用）
+### 2.2 WSL 内开 systemd（🧑 需要人 · 要 `wsl --shutdown` 重启 WSL）
 
 ```bash
 sudo tee /etc/wsl.conf >/dev/null <<'EOF'
@@ -69,6 +193,13 @@ EOF
 回 PowerShell 重启 WSL：`wsl --shutdown`，再 `wsl` 进去。验证 `systemctl is-system-running` 有输出即可。
 
 ### 2.3 装依赖（在 WSL 里）
+
+> 💡 **这几节里能自动化的部分已打包成 `bash scripts/wsl-setup.sh`**（幂等、自检、失败即停）。
+> 它**覆盖**：系统依赖（§2.3）、Node/pnpm（§2.3）、`pnpm install` 与 `.env` 骨架（§2.5 的一部分）、
+> tmux session（§2.6 的一部分）、加载期冒烟。
+> 它**不覆盖**：`git clone`（鸡生蛋 —— 脚本自己就在仓库里）、装/登录 claude（§2.4）、填飞书凭证、
+> 起 daemon。这几件见 §0 的人工操作清单。
+> 下面保留手动步骤，供排障时逐条核对。
 
 ```bash
 sudo apt update
@@ -84,7 +215,7 @@ npm i -g pnpm
 
 验证：`node -v`（≥22）、`pnpm -v`、`tmux -V`。
 
-### 2.4 装 agent（在 WSL 里，不是 Windows 里）
+### 2.4 装 agent（🧑 登录要人 · 浏览器 OAuth）
 
 ```bash
 npm i -g @anthropic-ai/claude-code     # claude
@@ -94,14 +225,14 @@ claude                                  # 首次跑起来完成登录
 
 ⚠ **必须装在 WSL 内**。Windows 侧装的 claude.exe 不在 tmux 的 pane 里，daemon 控制不到。
 
-### 2.5 拉本项目
+### 2.5 拉本项目（🧑 飞书凭证要人填）
 
 ```bash
 cd ~                      # ⚠ 放 WSL 文件系统，别放 /mnt/c（见 §7 性能坑）
 git clone <你的仓库地址> multiAgentChat
 cd multiAgentChat
 pnpm install
-cp .env.example .env
+install -m 600 .env.example .env   # 一步建好并设权限（别 cp 完再 chmod，中间有窗口期）
 ```
 
 编辑 `.env`，至少填三项：
@@ -137,11 +268,16 @@ agent tabs          # 应列出 tmux 的 pane
 
 ---
 
-## 3. 电源设置（**这一步不能跳**）
+## 3. 电源设置（**这一步不能跳**｜🧑 需要人 · 管理员 PowerShell）
 
 机器睡着 = 手机发指令石沉大海，而且**失败是静默的**：你分不清是机器睡了、WSL 挂了还是 bot 断线。
 
-以管理员身份开 PowerShell：
+以管理员身份开 PowerShell。
+
+⚠ **别从 WSL 里调 `powercfg.exe` 来做这件事**：WSL 的 interop 进程继承的是当前用户权限、**没有管理员**，
+改电源方案需要管理员。**具体表现未实测**（可能显式报错，也可能返回 0 但设置没生效），
+所以一律按「必须在 Windows 侧管理员窗口里做」处理 —— 这条是**保守取值**，不是实测结论。
+（只读的 `powercfg /query`、`powercfg /a` 从 WSL 调没问题，daemon 的 `detectKeepAwake()` 用的就是它们。）
 
 ```powershell
 powercfg /change standby-timeout-ac 0        # 插电时永不睡眠
@@ -164,7 +300,7 @@ powercfg /a                                   # 看本机支持哪些睡眠态�
 
 ---
 
-## 4. 开机自启
+## 4. 开机自启（🧑 需要人 · Windows 侧那半要管理员）
 
 WSL 不会自己起来，需要 Windows 侧拉一把。
 

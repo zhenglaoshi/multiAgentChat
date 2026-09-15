@@ -9,6 +9,23 @@
 ### 2026-09-14
 
 **新增**
+- **Windows 装机的「人机分工」补齐 + `scripts/wsl-setup.sh` 一键装机**。起因是用户问「这份对接文档直接给 claude 能不能一次性配置好」—— **不能**，而且卡点不是文档不够细，是**有四类事 agent 结构上做不了**：① 装 WSL2 要管理员 + 重启，而且那一步之前根本还没有 WSL，agent 没有立足点；② 电源策略与任务计划要管理员 —— **从 WSL 里调 `powercfg.exe` 拿不到管理员权限，会静默失败或被拒、看起来像成功了**（原文档完全没提这条，最坑）；③ 飞书凭证只有人有；④ claude/codex 登录是浏览器 OAuth。
+  - `docs/windows-setup.md` 新增 **§0「谁做哪一步」**：四类必须人做的事各自说明「为什么 agent 做不了」+ **「人工操作清单（复制即用）」**（六条，每条都带确切命令，含 `schtasks` 注册自启那条）+ 推荐分工顺序 + **一段可以直接复制给 agent 的话**（明确写「需要管理员权限或要我登录的事，不要试图代劳，直接告诉我」）。各节标题加 🧑 标记，扫一眼就知道哪步要人。
+  - `scripts/wsl-setup.sh`：把能自动化的部分（系统依赖 / Node / pnpm install / `.env` 骨架 / tmux session / 加载期冒烟）打包成一条命令。**幂等**（已就绪的打印 skip）、**失败即停**、`--check` 只自检不改任何东西。收尾**直接打印每条待办的可复制命令**而不只是列事项。
+  - **凭证只判断「是不是还是占位符」，绝不打印值**；`.env` 用 `install -m 600` 原子建立（不是 `cp` 再 `chmod` —— 那中间有个 umask 决定权限的窗口期；当下只是占位符不泄露真东西，但不能让这个模式被复制到将来会预填密钥的脚本里。security 评审建议）。
+  - **如实标注脚本能力边界**：它只能确认 claude「装没装」，**确认不了「登录没登录」**，所以那条待办写成「确认 claude 已登录（脚本只能看到它装了，看不到登录态）」而不是假装验过。
+  - **评审修复**（code-reviewer 1 high + 3 medium + 2 low，security 无 high/critical）：
+    - **high · §0 第 7 步会让 agent 真卡死** —— 原文写「agent 收尾：`npm run dev` + `agent doctor` + 跑 §6 验收清单」，但 `npm run dev` 是 `tsx watch`、**永不退出**，agent 前台跑会一直挂到超时，后面的 `agent doctor` 根本执行不到（而 doctor 又必须连上 daemon 的 unix socket 才有意义）；§6 那份清单更是**手机操作场景**（发指令 / Win+L / 合盖 / 重启），agent 替不了。改成：agent 用 `tmux send-keys` 把 daemon 丢进第 4 步建好的 session 后台跑 → `sleep 15` → `doctor`/`tabs`/`capture-pane` 自检；验收清单单列一步、明确交给人。脚本收尾同步。
+    - **medium · 文档-脚本漂移**：文档 §2.3 装 `build-essential` 而脚本没装（当前没有要 node-gyp 编译的依赖，所以不会炸，但违反了脚本注释「脚本做的就是这些事」的承诺；将来一旦引入原生依赖，全新环境会在 `pnpm install` 阶段报一个跟"环境没装好"毫不相干的编译错误）。脚本补上，并用 `dpkg-query` 判它（它是包名不是命令），非 dpkg 系统跳过不误报。
+    - **medium · 「2.3~2.6 都能用脚本代替」表述过宽**：脚本其实不装 claude、也不可能 `git clone`（鸡生蛋，它自己就在仓库里）。改成明确列出**覆盖**与**不覆盖**各是哪些。
+    - **low · 悬空的 `command -v tmux && ok ...`**：短路时不打印任何东西，与「每步都要说清楚」的体例不符（当前不构成吞错，因为执行到那行时 tmux 必然存在）。版本打印并入已有分支。
+    - **复审又抓到一处「只改了一半」**：那条「未实测」的措辞我**三个落点只改了一个**（§3 改了，§0 的分工表和脚本运行时提示仍是定论口吻）—— 同一份 diff 里 60 行之内出现两种确定性完全不同的表述，会把刚做的诚实修正本身的可信度也削掉。三处已统一。
+    - **复审新增 · 文档写死 session 名 `mchat`**：脚本内部用的是 `MCHAT_TMUX_SESSION:-mchat`、收尾打印会按实际值展开，但文档里的 `tmux send-keys -t mchat` 全是字面量，全文也没提过这个变量 —— 设过该变量的人照文档抄会连错 session。已加提示，并把「权威来源」锁到脚本输出（抄它打印的那份，已展开好）。
+    - **复审新增 · §2.5 手动步骤没跟上权限收紧**：脚本已改 `install -m 600`、§0 清单也补了 `chmod 600`，唯独 §2.5 还是裸 `cp` —— 同一个安全考虑改了两处漏第三处。已同步。
+    - **reviewer 用真实 tmux 3.7c 验证了** `tmux send-keys -t <sess> '<cmd>' Enter`（非 `-l` 形式）确实能把整条命令送进 pane 并执行 —— 这是本轮 high 修法的实测依据，不是推断。
+    - **low · 未验证的断言要标成未验证**：「从 WSL 调 `powercfg.exe` 会静默失败」是推断不是实测。改成如实写「WSL interop 没有管理员权限；**具体表现未实测**（可能报错也可能返回 0 但不生效），所以按保守取值处理」，并补一句只读的 `powercfg /query` 从 WSL 调没问题（`detectKeepAwake()` 用的就是它）。
+
+
 - **原生菜单镜像（方案 A）—— agent 自己弹的选择菜单也能在飞书作答**（`orchestrator/agents/native-menu.ts` + `im-lark/monitor/native-menu-watcher.ts`）。补的是上面那条缺口：`AskUserQuestion` 走 PreToolUse hook 能镜像，但 agent 的**原生**菜单不走 hook —— codex 的命令审批由它自己的 `approval_policy` 触发，我们的审批闸只在**自己的** riskTier 命中时才发卡，判为 passthrough 的命令就由 codex 自己弹菜单，而那个菜单**没有任何 hook 事件**，daemon 只能从屏幕上看见它。
   - **不新造问答，全程复用既有机制**：屏幕识别 → `originShellPushCard` 的选项按钮（与 AskUserQuestion 同一张卡）→ `chat.askArm`（飞书点选项 / 直接回数字都能驱动）→ `driveAskSelect` 往 pty 写数字。答题路径与既有的远程作答**完全同源**，因此**锁屏一样可用**。
   - **两道闸防误判**（错认的代价是往正在干活的 tab 里注入一个数字）：① 先要 `inferTabStatus` 判定这个 tab 真的在「等输入」才去解析；② 解析本身从严 —— 选项必须是**连续编号 1..N**（N≥2）、**行行相邻**、且落在屏幕**尾部窗口**内。再叠一层**稳定性确认**：连续 2 次看到同一个 fingerprint 才推（防半绘制的屏幕），同一个菜单只推一次。
