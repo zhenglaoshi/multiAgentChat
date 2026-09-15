@@ -1,7 +1,7 @@
 # Windows 支持方案 · WSL2 + tmux 宿主
 
 > 状态：**P1 已实现，真机验证待做**（2026-09-14）。
-> `packages/host-tmux/` 已落地（`HostController` 27 个方法全装配 + 36 个单测），
+> `packages/host-tmux/` 已落地（`HostController` 27 个方法全装配 + `tests/host-tmux.test.ts` 54 个用例），
 > `MCHAT_HOST=tmux` 可强制启用。**没有在任何 Windows / Linux 机器上真跑过** —— §6 的待验清单仍然全部有效。
 > 前置条件已具备：`multiagent-host-api` 的 `HostController` 抽象已落地（见 docs/architecture.md「扩展点 · 新 host」），
 > 加宿主只需新建包 + 在 `framework/src/host-bootstrap.ts` 加一条分支，**业务代码一行不用改**。

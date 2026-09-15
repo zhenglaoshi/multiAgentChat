@@ -3,7 +3,7 @@
 > **一句话**：Windows 侧不装任何终端软件，所有东西跑在 WSL2 里；终端由 tmux 托管，
 > daemon 通过 tmux 控制 pane 里的 claude / codex。手机飞书 → daemon → tmux → agent。
 >
-> ⚠ **现状（2026-09-14）**：代码已实现（`packages/host-tmux/`，603 个单测全过），
+> ⚠ **现状（2026-09-15）**：代码已实现（`packages/host-tmux/`，全套单测通过 —— `npm test`），
 > 但**没有在任何 Windows 机器上真跑过**。本文第 6 节是验收清单，第 8 节是已知未验项。
 > 设计与取舍论证见 [windows-port.md](windows-port.md)。
 

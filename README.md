@@ -5,7 +5,7 @@
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Status](https://img.shields.io/badge/status-beta-yellow.svg)](#当前状态)
-[![Platform](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](#平台)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20WSL2%2Btmux-lightgrey.svg)](#平台)
 [![Node](https://img.shields.io/badge/node-%E2%89%A522-brightgreen.svg)](#平台)
 [![IM](https://img.shields.io/badge/im-Lark%20%2B%20WeCom-blue.svg)](#im-平台支持)
 
