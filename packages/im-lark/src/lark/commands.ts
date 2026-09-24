@@ -603,6 +603,7 @@ async function buildDashboardCard(chatId: string): Promise<ReplyAction> {
   let shellBusy = 0;
   let claudeActive = 0;
   let claudeWaiting = 0;
+  let claudeIdle = 0;
   let claudeLogin = 0;
   let tui = 0;
   const attention: Array<{ tty: string; statusLabel: string; cwd: string }> = [];
@@ -613,6 +614,7 @@ async function buildDashboardCard(chatId: string): Promise<ReplyAction> {
       case 'shell-idle': shellIdle++; break;
       case 'shell-busy': shellBusy++; break;
       case 'claude-active': claudeActive++; break;
+      case 'claude-idle': claudeIdle++; break;
       case 'claude-waiting':
         claudeWaiting++;
         attention.push({
@@ -677,6 +679,7 @@ async function buildDashboardCard(chatId: string): Promise<ReplyAction> {
       shellBusyTabs: shellBusy,
       claudeActiveTabs: claudeActive,
       claudeWaitingTabs: claudeWaiting,
+      claudeIdleTabs: claudeIdle,
       claudeLoginTabs: claudeLogin,
       tuiTabs: tui,
       pendingItems,

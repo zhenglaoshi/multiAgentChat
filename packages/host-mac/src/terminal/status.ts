@@ -16,5 +16,5 @@ export function inferTabStatus(
   tab: TerminalTab,
   historyTail?: string,
 ): TabStatusInfo {
-  return inferTabStatusFrom({ processes: tab.processes, busy: tab.busy }, historyTail);
+  return inferTabStatusFrom({ processes: tab.processes, busy: tab.busy, title: tab.title }, historyTail);
 }

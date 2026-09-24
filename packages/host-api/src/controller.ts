@@ -38,6 +38,8 @@ import type {
   SendKeysOptions,
   SendResult,
   TabStatusInfo,
+  SnapshotTabsOptions,
+  TabsSnapshot,
   TerminalTab,
   UserFocus,
   WaitForOutputOptions,
@@ -92,6 +94,12 @@ export interface HostController {
   getCwd(tty: string): Promise<string | undefined>;
   /** 取 scrollback 全文。⚠ 变化检测一律用字符数不是行数（见 CLAUDE.md） */
   getHistory(tty: string): Promise<string>;
+  /**
+   * 列 tab + 顺带取 busy tab（及 opts.historyTtys）的 history，**一次宿主调用**完成。
+   * watcher 每 tick 走这里：macOS 上每起一个 osascript 进程 tccd 都要重验一次签名，
+   * 按 tab 逐个 getHistory 会把 tccd 顶到 15%+ CPU（5 个 claude tab、2s tick 实测）。
+   */
+  snapshotTabs(opts?: SnapshotTabsOptions): Promise<TabsSnapshot>;
   /** daemon 自己所在的 tty（用于拒绝自杀式操作） */
   detectSelfTty(): string | undefined;
   /** 前台焦点状况 */

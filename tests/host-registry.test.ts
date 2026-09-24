@@ -47,6 +47,7 @@ function makeFakeHost(overrides: Partial<HostController> = {}): HostController {
     enrichTabsWithCwd: async (tabs) => tabs,
     getCwd: async () => undefined,
     getHistory: async () => '',
+    snapshotTabs: async () => ({ tabs: [TAB], histories: new Map() }),
     detectSelfTty: () => undefined,
     getUserFocus: async () => ({ terminalFrontmost: false, tty: null }),
     isScreenLocked: async () => null,

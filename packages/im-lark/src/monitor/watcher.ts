@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { logger, detectAgentFromProcs, detectWedge } from 'multiagent-orchestrator';
-import { enrichTabsWithCwd, getHistory, listTabsRaw, sendCtrlC } from 'multiagent-host-api';
+import { enrichTabsWithCwd, getHistory, sendCtrlC, snapshotTabs } from 'multiagent-host-api';
 import type { TerminalTab } from 'multiagent-host-api';
 import { detectWaitingForInput } from './detector.js';
 import { pendingTracker, recentlyRemoteWritten, forgetRemoteWrite, type PendingOutput } from './pending.js';
@@ -85,9 +85,11 @@ export class TabWatcher {
   private cachedTabs: TerminalTab[] = [];
   private cachedHistories = new Map<string, string>();
   private cacheUpdatedAt = 0;
-  // cwd cache：idle 且已知 cwd 的 tab 不再每 tick 重刷（省 ps+lsof）
-  // 只在 tab busy / 有 pending / 首次见 / TTL 过期 时重取
-  private cwdCache = new Map<string, { cwd: string; updatedAt: number }>();
+  // cwd cache：已知 cwd 的 tab 不再每 tick 重刷（省 ps+lsof）
+  // 只在 首次见 / busy 状态翻转 / TTL 过期 时重取。
+  // 不再「busy 就每 tick 刷」：跑着 claude 的 tab 永远 busy，而 shell 的 cwd 在前台程序运行期间不会变
+  // （cd 只能在 shell 提示符下发生）；idle→busy 翻转那一下刷一次就能接住「cd 完再起 claude」。
+  private cwdCache = new Map<string, { cwd: string; updatedAt: number; busy: boolean }>();
   private static readonly CWD_STALE_MS = 5 * 60 * 1000; // 5min TTL 兜底
 
   // 卡死自愈状态（per-tty）：上次查的时刻 / 上次 history 长度（稳定性判断）/ 已 Ctrl-C 过（防反复）
@@ -124,22 +126,24 @@ export class TabWatcher {
     if (this.running) return;          // 上一次还没跑完，跳过
     this.running = true;
     try {
-      const tabs = await listTabsRaw();
+      // 一次宿主调用拿 tab 列表 + busy/pending tab 的 history（macOS 上 = 1 个 osascript/tick，
+      // 原来是 1 + N 个；每个 osascript 进程 tccd 都要重验签名，5 个 claude tab 能把 tccd 顶到 15% CPU）
+      const { tabs, histories } = await snapshotTabs({ historyTtys: pendingTracker.ttys() });
       // 异步并发拿 cwd（cache 用，dashboard 看到的 tab 含 cwd）
       const tabsWithCwd = await this.enrichForCache(tabs);
       this.cachedTabs = tabsWithCwd;
       this.cacheUpdatedAt = Date.now();
       const seenTtys = new Set<string>();
-      // 并发处理所有 tab（每个 tab 一次 osascript，但 idle 直接 skip）
-      // 注：processTab 内部用 listTabsRaw 拿到的 tab（无 cwd），cache 自己增强 cwd 不影响这里
+      // 并发处理所有 tab：history 已在上面的快照里一次带回，这里不再逐 tab 起 osascript
+      // 注：processTab 用的是快照里的 tab（无 cwd），cache 自己增强 cwd 不影响这里
       await Promise.all(
         tabs.map((tab) => {
           seenTtys.add(tab.tty);
           return Promise.all([
-            this.processTab(tab).catch((e) => {
+            this.processTab(tab, histories.get(tab.tty)).catch((e) => {
               logger.warn('processTab failed', { tty: tab.tty, err: (e as Error).message });
             }),
-            this.maybeHealStuckShell(tab).catch((e) => {
+            this.maybeHealStuckShell(tab, histories.get(tab.tty)).catch((e) => {
               logger.warn('maybeHealStuckShell failed', { tty: tab.tty, err: (e as Error).message });
             }),
           ]);
@@ -174,7 +178,8 @@ export class TabWatcher {
     }
   }
 
-  private async processTab(tab: TerminalTab): Promise<void> {
+  /** @param snapHist 本 tick 快照里带回的 history（busy / 有 pending 的 tab 才有；没有 = 这轮没取到） */
+  private async processTab(tab: TerminalTab, snapHist: string | undefined): Promise<void> {
     if (tab.hasTUI) {
       this.snapshots.set(tab.tty, {
         tty: tab.tty,
@@ -191,13 +196,11 @@ export class TabWatcher {
     let fullHist = '';
     let arr: string[] = [];
     if (hasPending || tab.busy) {
-      try {
-        fullHist = await getHistory(tab.tty);
-        arr = fullHist.split('\n');
-        this.cachedHistories.set(tab.tty, fullHist);
-      } catch {
-        return;
-      }
+      // 快照里没有 = 这轮取失败（或 pending 刚加、还没进 historyTtys）→ 与原来 getHistory 抛错一样跳过本轮
+      if (snapHist === undefined) return;
+      fullHist = snapHist;
+      arr = fullHist.split('\n');
+      this.cachedHistories.set(tab.tty, fullHist);
     }
 
     if (hasPending) {
@@ -293,7 +296,7 @@ export class TabWatcher {
    * ③ 要求 history 长度 ~10s 没变（稳定卡死，不是用户正在手打多行）才动手；④ 解过一次就不再反复按，
    * 直到卡死解除。可 `MCHAT_AUTO_UNWEDGE=0` 关。
    */
-  private async maybeHealStuckShell(tab: TerminalTab): Promise<void> {
+  private async maybeHealStuckShell(tab: TerminalTab, snapHist: string | undefined): Promise<void> {
     if (!this.autoUnwedge) return;
     if (tab.hasTUI) return;
     if (detectAgentFromProcs(tab.processes)) return;      // 跑着 claude/codex → 不碰
@@ -306,11 +309,16 @@ export class TabWatcher {
     if (now - last < HEAL_CHECK_INTERVAL_MS) return;
     this.stuckLastCheck.set(tab.tty, now);
 
+    // 快照里有就复用；裸 shell 卡在续行提示时通常不 busy、不在快照里 → 才单独取（每 tab ≤ 每 10s 一次）
     let hist: string;
-    try {
-      hist = await getHistory(tab.tty);
-    } catch {
-      return;
+    if (snapHist !== undefined) {
+      hist = snapHist;
+    } else {
+      try {
+        hist = await getHistory(tab.tty);
+      } catch {
+        return;
+      }
     }
     const { wedged, prompt } = detectWedge(hist);
     if (!wedged) {
@@ -541,10 +549,10 @@ export class TabWatcher {
    *
    * 优化：只对**需要**重取 cwd 的 tab 调 ps+lsof：
    *   - 首次见（cache 无记录）
-   *   - tab 当前 busy（可能刚 cd）
-   *   - 有 pending（该 tab 是任务派发目标）
+   *   - busy 状态翻转（idle→busy 那一下接住「cd 完再起 claude」；前台程序运行期间 shell 的 cwd 不会变）
    *   - cache 过期（超过 5min，兜底）
-   * idle 且已缓存的 tab 直接复用，省 2 个 spawn/tab/tick。
+   * 其余直接复用，省 2 个 spawn/tab/tick（跑 claude 的 tab 恒 busy，原来每 tick 都白刷一遍）。
+   * 只影响展示层（/shells、fleet）；任务派发走 listTabs() 现拉，不经这份 cache。
    *
    * 极端场景：用户在 idle shell 手动 cd 又不跑命令 → dashboard 看到旧 cwd，
    * 但 5min TTL 会自然纠正；tab busy 后也立刻纠正。
@@ -554,9 +562,8 @@ export class TabWatcher {
     const needsRefresh: TerminalTab[] = [];
     for (const t of tabs) {
       const cached = this.cwdCache.get(t.tty);
-      const hasPending = pendingTracker.forTty(t.tty).length > 0;
       const stale = !cached || now - cached.updatedAt > TabWatcher.CWD_STALE_MS;
-      if (!cached || t.busy || hasPending || stale) {
+      if (!cached || stale || cached.busy !== t.busy) {
         needsRefresh.push(t);
       }
     }
@@ -564,7 +571,7 @@ export class TabWatcher {
     try {
       const refreshed = await enrichTabsWithCwd(needsRefresh);
       for (const t of refreshed) {
-        if (t.cwd) this.cwdCache.set(t.tty, { cwd: t.cwd, updatedAt: now });
+        if (t.cwd) this.cwdCache.set(t.tty, { cwd: t.cwd, updatedAt: now, busy: t.busy });
       }
     } catch {
       // 失败就 fallback 到 cache

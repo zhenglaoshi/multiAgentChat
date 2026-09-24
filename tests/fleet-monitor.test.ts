@@ -56,3 +56,4 @@ describe('digestDue / localDayStr — 每早摘要到点', () => {
     expect(localDayStr(new Date(2026, 0, 5, 0, 0, 0).getTime())).toBe('2026-01-05');
   });
 });
+

@@ -998,6 +998,8 @@ export interface DashboardCardData {
   shellBusyTabs: number;
   claudeActiveTabs: number;
   claudeWaitingTabs: number;
+  /** 空闲等人发话的 claude（标题 ✳）；可选，老调用方不传即不显示 */
+  claudeIdleTabs?: number;
   claudeLoginTabs: number;
   tuiTabs: number;
   pendingItems: DashboardPendingItem[];
@@ -1048,6 +1050,7 @@ export function dashboardCard(data: DashboardCardData) {
   const statParts: string[] = [`📊 **${data.totalTabs}** tab`];
   if (data.claudeActiveTabs) statParts.push(`🤖 ${data.claudeActiveTabs} claude 跑`);
   if (data.claudeWaitingTabs) statParts.push(`⏳ ${data.claudeWaitingTabs} claude 等输入`);
+  if (data.claudeIdleTabs) statParts.push(`💬 ${data.claudeIdleTabs} claude 空闲`);
   if (data.claudeLoginTabs) statParts.push(`🔐 ${data.claudeLoginTabs} 待登录`);
   if (data.shellBusyTabs) statParts.push(`⚙️ ${data.shellBusyTabs} shell 跑命令`);
   if (data.shellIdleTabs) statParts.push(`💤 ${data.shellIdleTabs} idle`);

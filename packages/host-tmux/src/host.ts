@@ -28,6 +28,7 @@ import {
   waitForOutput,
 } from './tabs.js';
 import { sendCtrlC, sendKeys } from './keys.js';
+import { snapshotTabs } from './snapshot.js';
 import { inferTabStatus } from './status.js';
 import { detectSelfTty } from './procs.js';
 import { detectKeepAwake, isWSL, WSL_KEEP_AWAKE_CMD } from './keep-awake.js';
@@ -67,6 +68,7 @@ export const tmuxHost: HostController = {
   enrichTabsWithCwd,
   getCwd,
   getHistory,
+  snapshotTabs,
   detectSelfTty,
   getUserFocus,
   // tmux 不知道屏幕锁没锁 —— 如实返回 null（未知），而不是撒谎说 false。

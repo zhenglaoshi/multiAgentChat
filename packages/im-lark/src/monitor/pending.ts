@@ -75,6 +75,11 @@ class PendingTracker {
     return this.items.get(tty) ?? [];
   }
 
+  /** 当前有 pending 的 tty（watcher 用来点名要带回 history 的 tab） */
+  ttys(): string[] {
+    return [...this.items.keys()];
+  }
+
   remove(tty: string, sentAt: number): void {
     const arr = this.items.get(tty);
     if (!arr) return;

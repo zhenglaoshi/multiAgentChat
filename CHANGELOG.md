@@ -6,6 +6,15 @@
 
 ## [未发布]
 
+### 2026-09-24
+
+**修复**
+- **tccd 常驻 ~15% CPU（用户报障，日志定位到 daemon）**。watcher 每 tick 起 1 个 osascript 列 tab + 每个 busy tab 各 1 个 osascript 读 history；跑 claude 的 tab 因 MCP 子进程恒为 busy → 5 个 tab、2s tick 就是 3 个进程/秒，而每个 osascript 进程 tccd 都要对 node 重验一次签名。新增 `HostController.snapshotTabs`：macOS 上**一个** osascript 同时带回 tab 列表 + busy / 有 pending tab 的 history（随机 boundary 分隔，scrollback 里什么控制字符都可能有，不能用 RS/FS），每 tick 恒为 1 个进程；真机对比新旧取法结果一致，单次耗时 817ms → 231ms。tmux 宿主无 TCC，直接复用 listTabsRaw + getHistory。
+  - **评审收紧（code-reviewer 2 high + security 1 medium，均已修）**：① 合并后各 tab 的 history 在脚本里**串行**读、耗时累加，共用 10s 超时一旦超时整轮都丢 history → 快照单独给 30s（watcher 有重入守卫，慢 tick 只跳拍不堆积），>3s 打 warn；② 但 30s 不能套到只列 tab 的 `listTabsRaw`（它是 `send()` 的第一步，授权弹框卡住时要 10s 内报错）→ 按 mode 分开；③ 分隔 history 的随机 boundary 原经 argv 传入，同用户进程 `ps -ww` 可见，tab 里的程序拿到后能伪造「别的 tty 的 history」→ 改为内插进脚本正文经 stdin 送入，解析时再只认本轮真实存在的 tty、每 tty 只认第一帧。`LIST_SCRIPT` 删除，`listTabsRaw` 与快照共用同一段脚本（记录拼装 / 分隔符剥离只维护一份）。
+- **cwd 缓存不再「busy 就每 tick 刷」**：claude tab 永远 busy → 每 tick 每 tab 一次 ps+lsof 白跑。改为首次见 / busy 状态翻转 / 5min TTL 才重取（shell 的 cwd 在前台程序运行期间不会变）。
+- **空闲的 claude 被当成「跑着」→ Fleet 卡住哨兵误报 +`/shells` 状态错（用户报障：ttys000 用完晾着就反复收到「可能卡住」）**。`inferTabStatus` 对 agent tab 没有「空闲」档，屏幕文本也分不出空闲和真卡住（都是静止的）。新增状态 `claude-idle`，判据读 tab 标题（`agentIdleByTitle`，orchestrator 单一事实源）：Claude Code 空闲时标题为 `✳ <话题>`、干活时是转动的 `◐◓◑◒`。`/shells` 显示「💬 claude 空闲」，`/dashboard` 多一项空闲计数，卡住哨兵只盯 `claude-active` 因而天然排除空闲。真卡住（命令挂死 / API 不回）时标题仍在转，照常告警；等输入判据优先于空闲；codex 标题约定未验证，保持原行为。标题可被 tab 内程序经 OSC 改写，只用于显示/提醒，不参与任何注入决策。
+- **安全加固（评审 medium）**：tab 标题 / 进程名里剥掉 RS/FS 分隔符（`LIST_SCRIPT` 与新 `SNAPSHOT_SCRIPT` 都改），防一个伪造标题在输出里拼出一条 tty 任选的 tab 记录、进而让 history 被挂到别的 tty 上。
+
 ### 2026-09-15
 
 **修复**

@@ -1,71 +1,23 @@
 import { spawn } from 'node:child_process';
 import { runScript, runScriptOrThrow } from './applescript.js';
+import { randomBytes } from 'node:crypto';
 import type { SendResult, TerminalTab } from './types.js';
+import type { SnapshotTabsOptions, TabsSnapshot } from 'multiagent-host-api';
 
 // TUI 名单与 status.ts 原本各存一份（内容相同）—— 已统一到 orchestrator/agents/tab-status.ts，
 // 两个宿主 + 两处用途（hasTUI 标记 / send 拒绝）共用同一份，避免改了一处漏另一处。
-import { findTuiProc, hasTuiProc } from 'multiagent-orchestrator';
+import { findTuiProc, hasTuiProc, logger } from 'multiagent-orchestrator';
 
 const FS = String.fromCharCode(31); // field separator
 const RS = String.fromCharCode(30); // record separator
 
-const LIST_SCRIPT = `
-set fs to character id 31
-set rs to character id 30
-set out to ""
-set frontWin to missing value
-tell application "Terminal"
-  try
-    set frontWin to id of front window
-  end try
-  set wList to windows
-  set wCount to count of wList
-  repeat with wIdx from 1 to wCount
-    try
-      set w to item wIdx of wList
-      set wId to id of w
-      set isFront to "false"
-      if frontWin is not missing value then
-        if wId is equal to frontWin then set isFront to "true"
-      end if
-      set tList to tabs of w
-      set tCount to count of tList
-      repeat with tIdx from 1 to tCount
-        try
-          set t to item tIdx of tList
-          set theTty to (tty of t) as text
-          set theTitle to ""
-          try
-            set theTitle to (custom title of t) as text
-          end try
-          set theBusy to "false"
-          try
-            if (busy of t) then set theBusy to "true"
-          end try
-          set theProcs to ""
-          try
-            set procList to processes of t
-            set p2 to ""
-            repeat with p in procList
-              if p2 is equal to "" then
-                set p2 to (p as text)
-              else
-                set p2 to p2 & "," & (p as text)
-              end if
-            end repeat
-            set theProcs to p2
-          end try
-          set out to out & (wId as text) & fs & isFront & fs & (tIdx as text) & fs & theTty & fs & theBusy & fs & theTitle & fs & theProcs & rs
-        end try
-      end repeat
-    end try
-  end repeat
-end tell
-return out
-`;
 
 export async function listTabsRaw(): Promise<TerminalTab[]> {
-  const out = await runScriptOrThrow(LIST_SCRIPT);
+  // 与 snapshotTabs 共用同一段脚本（mode=none 不带 history）—— 记录拼装 / stripSeps 只维护一份
+  return (await runSnapshot('none', [])).tabs;
+}
+
+function parseTabRecords(out: string): TerminalTab[] {
   const tabs: TerminalTab[] = [];
   for (const rec of out.split(RS)) {
     if (!rec) continue;
@@ -86,6 +38,158 @@ export async function listTabsRaw(): Promise<TerminalTab[]> {
     });
   }
   return tabs;
+}
+
+/**
+ * 列 tab 的唯一脚本：一个 osascript 进程列完 tab，mode=busy 时顺带把 busy tab
+ * （以及 argv 里点名的 tty）的 history 一并带回；listTabsRaw 用 mode=none。
+ *
+ * 为什么要合并：每起一个 osascript 进程，tccd 都要对 node 重做一次签名校验（15–30ms）。
+ * watcher 原来每 tick「1 次列 tab + 每个 busy tab 1 次 getHistory」，5 个 claude tab、2s tick
+ * 就是 3 个进程/秒，tccd 常驻 ~15% CPU。合并后每 tick 恒为 1 个进程。
+ *
+ * 输出格式：先是 RS/FS 分隔的 tab 记录，然后每条 history 前面加一行
+ * `<boundary><tty>\n`。boundary 是调用方每次随机生成的，history 正文里不可能恰好撞上
+ * （96 bit 随机，碰撞概率可忽略；不能用 RS/FS 分隔 history —— scrollback 里什么控制字符都可能出现）。
+ * 拼接用 list + text item delimiters，别在循环里 `out & 大字符串`（反复拷贝，O(n²)）。
+ */
+const SNAPSHOT_SCRIPT = `
+on run argv
+  set fs to character id 31
+  set rs to character id 30
+  -- boundary 由 JS 每次生成后直接写进脚本正文（经 stdin 送给 osascript），**不走 argv**：
+  -- argv 对同用户进程 \`ps -ww\` 可见，tab 里的程序拿到它就能在自己的 scrollback 里伪造「别的 tty 的 history」
+  set boundary to (character id 29) & "__MCHAT_BOUNDARY__"
+  -- mode: "busy" = busy tab + extraTtys 带回 history；"none" = 只列 tab（listTabsRaw）
+  set wantHist to ((item 1 of argv) is "busy")
+  set extraTtys to {}
+  if (count of argv) > 1 then set extraTtys to items 2 thru -1 of argv
+  set metaParts to {}
+  set histParts to {}
+  set frontWin to missing value
+  tell application "Terminal"
+    try
+      set frontWin to id of front window
+    end try
+    set wList to windows
+    set wCount to count of wList
+    repeat with wIdx from 1 to wCount
+      try
+        set w to item wIdx of wList
+        set wId to id of w
+        set isFront to "false"
+        if frontWin is not missing value then
+          if wId is equal to frontWin then set isFront to "true"
+        end if
+        set tList to tabs of w
+        set tCount to count of tList
+        repeat with tIdx from 1 to tCount
+          try
+            set t to item tIdx of tList
+            set theTty to (tty of t) as text
+            set theTitle to ""
+            try
+              set theTitle to my stripSeps((custom title of t) as text)
+            end try
+            set theBusy to "false"
+            try
+              if (busy of t) then set theBusy to "true"
+            end try
+            set theProcs to ""
+            try
+              set procList to processes of t
+              set p2 to ""
+              repeat with p in procList
+                if p2 is equal to "" then
+                  set p2 to (p as text)
+                else
+                  set p2 to p2 & "," & (p as text)
+                end if
+              end repeat
+              set theProcs to my stripSeps(p2)
+            end try
+            set end of metaParts to (wId as text) & fs & isFront & fs & (tIdx as text) & fs & theTty & fs & theBusy & fs & theTitle & fs & theProcs & rs
+            if wantHist and (theBusy is "true" or extraTtys contains theTty) then
+              try
+                set end of histParts to boundary & theTty & linefeed & ((history of t) as text)
+              end try
+            end if
+          end try
+        end repeat
+      end try
+    end repeat
+  end tell
+  set AppleScript's text item delimiters to ""
+  return (metaParts as text) & (histParts as text)
+end run
+-- 标题可被 tab 内程序经 OSC 转义任意设置：剥掉记录分隔符 RS/FS，
+-- 否则一个标题就能在输出里伪造出一条 tty 任选的 tab 记录（安全评审 2026-09-24）
+on stripSeps(s)
+  set oldDelims to AppleScript's text item delimiters
+  repeat with c in {character id 30, character id 31}
+    set AppleScript's text item delimiters to (c as text)
+    set parts to text items of s
+    set AppleScript's text item delimiters to ""
+    set s to parts as text
+  end repeat
+  set AppleScript's text item delimiters to oldDelims
+  return s
+end stripSeps
+`;
+
+/** 解析 SNAPSHOT_SCRIPT 的 stdout。导出只为单测。 */
+export function parseSnapshotOutput(stdout: string, boundary: string): TabsSnapshot {
+  // osascript 会给返回值补一个 \n —— 先去掉，下面再给每条 history 各补一个，
+  // 与单独 getHistory(tty)（原样返回 osascript stdout）的字节语义保持一致
+  const out = stdout.endsWith('\n') ? stdout.slice(0, -1) : stdout;
+  const chunks = out.split(boundary);
+  const tabs = parseTabRecords(chunks[0] ?? '');
+  const histories = new Map<string, string>();
+  // 纵深：帧头的 tty 必须是本轮真实列出的 tab、且每个 tty 只认第一帧（AppleScript 每 tab 至多输出一帧）
+  const known = new Set(tabs.map((t) => t.tty));
+  for (const chunk of chunks.slice(1)) {
+    const nl = chunk.indexOf('\n');
+    if (nl <= 0) continue;
+    const tty = chunk.slice(0, nl);
+    if (!known.has(tty) || histories.has(tty)) continue;
+    histories.set(tty, chunk.slice(nl + 1) + '\n');
+  }
+  return { tabs, histories };
+}
+
+/**
+ * 合并后各 tab 的 `history of t` 在脚本里是**串行**读的（原来是 N 个 osascript 并发），耗时是累加的，
+ * 所以不能共用全局 10s 默认超时 —— scrollback 越攒越大，超时一次就是这轮所有 tab 都拿不到 history。
+ * 放宽到 30s：watcher 有重入守卫，慢 tick 只会跳过后续几拍，不会堆积。
+ * 不改全局 MCHAT_OSASCRIPT_TIMEOUT_MS：那个改大会拖慢 forceEnter 等对超时敏感的路径。
+ * 实测（5 个 claude tab，最大一条 1.5MB）一次 ~230ms；超过 SLOW_WARN_MS 打 warn 便于观察逼近程度。
+ */
+const SNAPSHOT_TIMEOUT_MS = 30_000;
+const SNAPSHOT_SLOW_WARN_MS = 3_000;
+
+async function runSnapshot(mode: 'busy' | 'none', historyTtys: string[]): Promise<TabsSnapshot> {
+  // 只含 [A-Za-z0-9-:]，可安全内插进 AppleScript 字符串字面量；GS 前缀在脚本里拼（character id 29）
+  const token = `MCHAT-HIST-${randomBytes(12).toString('hex')}:`;
+  const boundary = `${String.fromCharCode(29)}${token}`;
+  const script = SNAPSHOT_SCRIPT.replace('__MCHAT_BOUNDARY__', token);
+  const started = Date.now();
+  // 只有真要串行读 history 的 mode=busy 才放宽到 30s；mode=none（listTabsRaw，send() 的第一步）
+  // 不读 history，保持全局默认超时 —— 授权弹框卡住时飞书发命令仍是 10s 内报错，而不是 30s
+  const r = await runScript(script, [mode, ...historyTtys], mode === 'busy' ? SNAPSHOT_TIMEOUT_MS : undefined);
+  if (r.code !== 0) throw new Error(`osascript exit ${r.code}: ${r.stderr || r.stdout}`);
+  const snap = parseSnapshotOutput(r.stdout, boundary);
+  const ms = Date.now() - started;
+  if (mode === 'busy' && ms > SNAPSHOT_SLOW_WARN_MS) {
+    logger.warn('snapshotTabs 偏慢（history 串行读取，逼近超时会让整轮拿不到 history）', {
+      ms, timeoutMs: SNAPSHOT_TIMEOUT_MS, tabs: snap.tabs.length, histories: snap.histories.size,
+      chars: [...snap.histories.values()].reduce((n, h) => n + h.length, 0),
+    });
+  }
+  return snap;
+}
+
+export async function snapshotTabs(opts: SnapshotTabsOptions = {}): Promise<TabsSnapshot> {
+  return runSnapshot('busy', opts.historyTtys ?? []);
 }
 
 function execCapture(cmd: string, args: string[]): Promise<string> {

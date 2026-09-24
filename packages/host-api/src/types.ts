@@ -31,6 +31,21 @@ export interface TerminalTab {
   hasTUI?: boolean;         // 是否在跑 vim/htop 等会被 do script 弄坏的程序
 }
 
+/**
+ * 一次性拿到「tab 列表 + 需要的 history」（watcher 每 tick 用）。
+ * histories 覆盖：所有 busy 的 tab + 调用方额外点名的 tty；取失败的 tab 不在 map 里。
+ * 每条 history 的字节语义与单独调 `getHistory(tty)` 一致（含尾部换行），beforeCharLen 偏移才对得上。
+ */
+export interface TabsSnapshot {
+  tabs: TerminalTab[];
+  histories: Map<string, string>;
+}
+
+export interface SnapshotTabsOptions {
+  /** 除 busy tab 外，还要带回 history 的 tty（例如有 pending 但此刻不 busy 的 tab） */
+  historyTtys?: string[];
+}
+
 export interface TerminalWindow {
   windowId: number;
   frontmost: boolean;

@@ -8,6 +8,7 @@ import {
   shouldSubmitPromptAfterSend,
   resolveDefaultAgentKind,
   inferTabStatusFrom,
+  agentIdleByTitle,
 } from '../packages/orchestrator/src/agents/index.js';
 
 describe('adapter.detect', () => {
@@ -324,5 +325,35 @@ describe('菜单答完后不得继续显示「等输入」（评审 2026-09-15 �
     const hist = ['Sign in with ChatGPT', ...Array(20).fill('some output')].join('\n');
     expect(inferTabStatusFrom({ processes: ['codex'], busy: true }, hist).kind)
       .toBe('claude-login');
+  });
+});
+
+describe('claude-idle：靠标题识别「空闲等人发话」（/shells 显示 + 卡住哨兵排除误报）', () => {
+  const CLAUDE = { processes: ['login', '-zsh', 'claude'], busy: true };
+
+  it('标题 ✳ 开头 → claude-idle（真机样本）', () => {
+    expect(inferTabStatusFrom({ ...CLAUDE, title: '✳ CPU降频检查' }, 'some output').kind).toBe('claude-idle');
+    expect(agentIdleByTitle('claude', '  ✳ 过去2小时慢查询')).toBe(true);
+  });
+
+  it('标题是转动的 spinner → 仍是 claude-active（真卡住照常告警）', () => {
+    for (const g of ['◐', '◓', '◑', '◒']) {
+      expect(inferTabStatusFrom({ ...CLAUDE, title: `${g} multiAgentChat daemon` }, 'x').kind).toBe('claude-active');
+    }
+  });
+
+  it('不传标题 → 退回原判定（老调用方 / 拿不到标题的宿主不受影响）', () => {
+    expect(inferTabStatusFrom(CLAUDE, 'x').kind).toBe('claude-active');
+  });
+
+  it('弹着菜单时即使标题是 ✳ 也显示等输入（等输入优先）', () => {
+    expect(inferTabStatusFrom({ ...CLAUDE, title: '✳ foo' }, '❯ 1. Yes').kind).toBe('claude-waiting');
+  });
+
+  it('只认 claude：codex / 非 agent / 普通标题 都保持原行为', () => {
+    expect(inferTabStatusFrom({ processes: ['codex'], busy: true, title: '✳ foo' }, 'x').kind).toBe('claude-active');
+    expect(agentIdleByTitle(undefined, '✳ foo')).toBe(false);
+    expect(agentIdleByTitle('claude', 'my build tab')).toBe(false);
+    expect(agentIdleByTitle('claude', undefined)).toBe(false);
   });
 });

@@ -16,6 +16,7 @@ export type TabStatusKind =
   | 'shell-busy'       // shell 跑别的命令（npm/git/...）
   | 'claude-active'    // agent 在跑（thinking / 执行 tool）
   | 'claude-waiting'   // agent 等用户输入（与 watcher needsInput 信号叠加）
+  | 'claude-idle'      // agent 空着、等人发下一条（一轮答完晾着）—— 目前只 claude 能识别，见 agentIdleByTitle
   | 'claude-login'     // agent 需要登录
   | 'tui'              // vim/htop 等独占
   | 'unknown';
@@ -28,10 +29,28 @@ export interface TabStatusInfo {
   detail?: string;
 }
 
-/** 推断只需要这三样 —— 宿主把自己的 tab 模型摊平成这个形状即可。 */
+/** 推断只需要这几样 —— 宿主把自己的 tab 模型摊平成这个形状即可。 */
 export interface TabStatusInput {
   processes: string[];
   busy: boolean;
+  /** tab 标题（识别 agent 空闲用；拿不到就不传，退回原判定） */
+  title?: string;
+}
+
+/**
+ * 靠 tab 标题判断 agent 是否**空闲、等人发下一条**。
+ *
+ * 为什么需要：屏幕文本分不出「空闲」和「在干活只是这会儿没输出」——两者都是静止的。
+ * 没有这一档时空闲的 claude 一律归 `claude-active`：`/shells` 显示「跑着」，fleet 卡住哨兵
+ * 晾 8 分钟就报「可能卡住」（用户真机报障：用完 ttys000 晾着就反复收到）。
+ *
+ * 信号：Claude Code 空闲时把终端标题设成 `✳ <话题>`，干活时（含 tool 执行、等 API）是转动的
+ * `◐◓◑◒`。真卡住（命令挂死 / API 不回）时标题仍在转 → 仍是 active，卡住告警不受影响。
+ * 只认 claude：codex 的标题约定没验证过，保持原行为（宁可误报卡住，不可漏报）。
+ * 标题可被 tab 内程序用 OSC 转义改写 —— 所以它只用于显示 / 提醒，**不得**用于任何注入决策。
+ */
+export function agentIdleByTitle(agentKind: string | undefined, title: string | undefined): boolean {
+  return agentKind === 'claude' && (title ?? '').trimStart().startsWith('✳');
 }
 
 /**
@@ -168,6 +187,10 @@ export function inferTabStatusFrom(
           icon: '⏳',
         };
       }
+    }
+    // 放在登录 / 等输入之后：弹着菜单时标题也可能是 ✳，那时该显示「等输入」
+    if (agentIdleByTitle(agent.kind, tab.title)) {
+      return { kind: 'claude-idle', label: `💬 ${agent.kind} 空闲`, icon: '💬' };
     }
     return { kind: 'claude-active', label: `🤖 ${agent.kind} 跑着`, icon: '🤖' };
   }

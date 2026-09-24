@@ -114,6 +114,7 @@ async function monitorTick(client: Lark.Client): Promise<void> {
     const kind = inferTabStatus(tab, hist).kind;
 
     // ① 卡住哨兵：claude 忙 + 有缓存 history + 停滞
+    // 空闲的 claude 是 `claude-idle`（在等人说话，不是卡住）→ 走 else 清停滞快照，下次开工重新计时
     if (kind === 'claude-active' && typeof hist === 'string') {
       const dec = stuckDecision(stall.get(tab.tty), hist.length, now, STUCK_MS);
       stall.set(tab.tty, dec.state);
