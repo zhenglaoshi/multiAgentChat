@@ -27,6 +27,7 @@
  *  NATIVE_MENU_STABLE_TICKS=2  连续几次看到同一个菜单才推（默认 2，防半绘制的屏幕）
  */
 import * as Lark from '@larksuiteoapi/node-sdk';
+import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import {
   logger,
@@ -46,12 +47,20 @@ import { ASK_ARM_TTL_MS } from '../chats/types.js';
 const POLL_MS = 3_000;
 /** watcher 缓存超过这个久 → 视为它没在跑，跳过（别拿陈旧屏幕推卡） */
 const CACHE_STALE_MS = 60_000;
-/** 卡片正文最多带多少行（excerpt 通常远小于此） */
-const BODY_MAX_LINES = 80;
-/** 超长时保留的头部行数（问句 + 紧随其后的命令块） */
-const BODY_HEAD_LINES = 45;
-/** 超长时保留的尾部行数（选项 + 提交提示） */
-const BODY_TAIL_LINES = 25;
+/**
+ * 审批正文的展示预算 —— **超出就 fail-closed（发无按钮的提示卡、不 arm），绝不截断展示**。
+ *
+ * 早先是「>80 行则留头 45 + 尾 25、中间显式省略」。两位 reviewer 2026-09-15 各用真代码证明任何截断都能被
+ * 模型可控的命令体利用：诱饵头行放很上面把 excerpt 撑长 / 命令前后各塞几十行 → 真命令恰好落进省略区，
+ * 卡片按钮照常可点 = 盲批。所以现在只有两种结果：整段 excerpt 原样进卡片，或明确告诉人"太长看不全，去电脑前"。
+ * 行数预算 ≥ SNAPSHOT_SLACK（80）+ 一段正常审批 + 选项尾窗（40），正常永远够用；超预算多半是扫全屏兜到了大段旧历史。
+ * 字节预算按 **UTF-8 字节**算（中文一个字 3 字节）：飞书交互卡整卡 JSON 上限 30KB，正文之外还有页脚、
+ * 按钮（`value.label` 带完整选项原文 ×3）、脱敏后可能变长的占位；12KB 给正文留足余量。
+ * 数字有没有事实依据是 code-reviewer 2026-09-15 追问的点：早先写 2 万**字符**，中文按字节早已顶破 30KB，
+ * 而发送失败会被吞成一条 warn、用户什么都收不到 —— 比"提示看不了"更糟。已用真实 chat 发一张 ~12KB 的卡验证。
+ */
+const BODY_MAX_LINES = 260;
+const BODY_MAX_BYTES = 12_000;
 
 function envNum(name: string, def: number): number {
   const n = Number(process.env[name]);
@@ -76,6 +85,110 @@ interface MenuState {
 /** per-tty 状态。菜单消失就删掉，于是下一个菜单能重新推。 */
 const states = new Map<string, MenuState>();
 
+/**
+ * per-tty「菜单出现之前的屏幕」指纹片段 —— 给 `parseNativeMenu({ scanFloor })` 定**时间下界**用。
+ *
+ * 为什么需要一个非文本的下界：提问行取"最上面的严格头行"是唯一不可伪造的方向，但"最上面"要有个底，
+ * 否则缓冲区里所有旧审批都会被带上；而任何靠文本结构定的底（固定行数窗口 / 编号行哨兵 / 锚点切段）
+ * 都被 security 评审 2026-09-15 用真代码逐一伪造过。唯一伪造不了的是**时间**：攻击者能写的文本都是在
+ * 菜单出现之后打印的，一定在"菜单出现之前的屏幕内容"之下。
+ *
+ * 做法：每个**没有菜单**的 tick，从屏幕底部往上跳过 SNAPSHOT_SLACK 行（TUI 会重绘视口区域，那一段不稳定），
+ * 取连续 3 行作片段。菜单出现时在当前屏幕里找该片段的**第一次**出现，其后一行就是扫描下界。
+ * 取第一次而非最后一次：攻击者可在命令体里照抄这 3 行，最后一次可能是伪造的；第一次必是真实历史
+ * （或更早的重复 → 下界更低 → excerpt 只会更大，安全方向）。找不到 → 下界 0（扫全屏 → 多半撞预算 → fail-closed）。
+ *
+ * ⚠ 两条采集纪律（security 评审 2026-09-15 第四轮 PoC：快照采自"同一次审批渲染到一半"的屏幕 —— 头行已出、
+ * 选项未出、中间已有 >80 行 —— 片段落在真头行之下，下界越过真头行）：
+ *  1. **连续两个无菜单 tick 取到同一片段、且「底部 SLACK 行之外整段屏幕」指纹相同才生效**（`pending` → `frag`）。
+ *     渲染中的中间态在 3s 内一定会变（选项随即出现 → 变成有菜单 tick），采不到"稳定"；只有真正停下来的
+ *     屏幕才会成为快照。为什么是区域指纹而不是片段/行数：见 `Snapshot.pending` 注释（第五、六轮 PoC）。
+ *  2. **片段上方 SNAPSHOT_GUARD_ABOVE 行内（含片段自身位置）不能有严格头行**：有就把片段挪到那个头行之上
+ *     再取（`takeSnapshotFragment(lines, anchor)`）。片段**下方**的头行不用管——下界在片段之后，那段审批
+ *     整个落在下界之下，只会被带进 excerpt（超集 + 标注"以最下面一段为准"）。守卫只往上挪，必然终止。
+ * 残余：渲染中途**停顿 ≥3s**（头行与选项之间）且停顿期间屏幕完全不变、再配诱饵头行。codex 的审批提示
+ * 是模型输出完成后由 TUI 一次性绘制的，不是逐行流式，实际可达性极低；写在这里是为了让它可见。
+ */
+interface Snapshot {
+  /** 已生效的片段（连续两 tick 一致） */
+  frag: string[] | null;
+  /**
+   * 上一个无菜单 tick 取到的候选 + 当时「底部 SLACK 行之外整段屏幕」的 sha256，等下一 tick 确认。
+   * ⚠ 一致性 = 片段字节相同 **且该区域指纹相同**。
+   *  - 只比片段：自我重复的填充（同一句进度提示刷几百行）让"离底部 N 行"处采到的三行永远相同，屏幕在长
+   *    却被判"稳定"（security 第五轮 PoC）。
+   *  - 比行数：tmux `capture-pane -S -3000` 是固定深度滑动窗口，历史一超 3000 行行数就恒定；`\r` 原地重绘
+   *    也不改行数（security 第六轮 PoC，且 CLAUDE.md 早就写过"不要用行数判变化"）。
+   *  - 比区域内容指纹：任何增长 / 滚动 / 覆盖都会改变这段内容；spinner 等原地重绘只发生在视口（底部 SLACK 行内），
+   *    不在指纹范围。残余：整个抓取窗口被**完全均匀**的填充灌满时滚动不改内容——但那时真头行已不在缓冲区里，
+   *    任何只看屏幕的方案都无解（见 CHANGELOG）。
+   */
+  pending: { frag: string[]; regionHash: string } | null;
+}
+const snapshots = new Map<string, Snapshot>();
+/**
+ * 片段离屏幕底部的距离（行），同时也是「稳定性指纹」排除的底部区域。要大于 TUI 一帧重绘覆盖的**视口行数**
+ * （TUI 只能重绘视口，视口之上的 scrollback 不可寻址），又不能大到把上一段审批常态性地带进来。
+ * 本机大屏实测视口 ≈ 60-90 行，取 120；`NATIVE_MENU_SNAPSHOT_SLACK` 可调。
+ */
+const SNAPSHOT_SLACK = envNum('NATIVE_MENU_SNAPSHOT_SLACK', 120);
+/** 3 行片段里至少要有这么多非空白字符，避免拿空行/分隔线当指纹造成过早的假匹配 */
+const SNAPSHOT_MIN_INK = 20;
+/** 片段上方多少行内出现严格头行就把片段挪到它之上（防"渲染到一半、头行已出"的屏幕把片段落在头行之下） */
+const SNAPSHOT_GUARD_ABOVE = 200;
+
+/**
+ * 从无菜单的屏幕取指纹片段；缓冲区太短返回 []（= 下界 0，此时扫全屏本来也便宜且安全）。
+ * 给了 `anchor`（agent 的严格头行）时：片段位置往上跳过 SLACK 后，若 [f - GUARD_ABOVE, f + 3) 里有头行，
+ * 就把 f 挪到其中最上面那个头行之上再试（top ≤ f + 2 → f 严格递减，必然终止）。
+ */
+export function takeSnapshotFragment(lines: readonly string[], anchor?: RegExp): string[] {
+  const ink = (s: string) => s.replace(/\s+/g, '').length;
+  let f = lines.length - SNAPSHOT_SLACK - 3;
+  while (f >= 0) {
+    if (anchor) {
+      let top = -1;
+      for (let i = Math.max(0, f - SNAPSHOT_GUARD_ABOVE); i < Math.min(lines.length, f + 3); i++) {
+        if (anchor.test(lines[i]!.trim())) { top = i; break; }
+      }
+      if (top >= 0) { f = top - 3; continue; }   // 片段必须整体位于该头行之上
+    }
+    const frag = [lines[f]!, lines[f + 1]!, lines[f + 2]!].map((l) => l.trimEnd());
+    if (ink(frag[0]!) + ink(frag[1]!) + ink(frag[2]!) >= SNAPSHOT_MIN_INK) return frag;
+    f--;
+  }
+  return [];
+}
+
+/** 「底部 SLACK 行之外整段屏幕」的内容指纹。 */
+export function regionHashOf(lines: readonly string[]): string {
+  const region = lines.slice(0, Math.max(0, lines.length - SNAPSHOT_SLACK));
+  return createHash('sha256').update(region.join('\n')).digest('hex');
+}
+
+/**
+ * 无菜单 tick 的快照推进：候选与上一 tick **片段相同且区域指纹相同**才生效。返回新的 Snapshot（纯函数，便于测试）。
+ */
+export function advanceSnapshot(prev: Snapshot | undefined, candidate: string[], regionHash: string): Snapshot {
+  // 空候选（缓冲区太短 / 全程墨量不足）不算片段：`[]` 是 truthy、`[].every` 恒 true，不拦会把"啥都没采到"
+  // 升成 frag，下游 floor 虽仍为 0，但 `bootstrap = !snap?.frag` 会误判成"已有基线"（code-reviewer low）
+  const cand = candidate.length === 3 ? candidate : null;
+  const p = prev?.pending;
+  const same = !!cand && !!p && p.regionHash === regionHash && p.frag.every((l, i) => l === cand[i]);
+  return { frag: same ? cand : (prev?.frag ?? null), pending: cand ? { frag: cand, regionHash } : null };
+}
+
+/** 在当前屏幕里定位片段的**第一次**出现，返回其后一行的下标作扫描下界；没有片段 / 找不到 → 0 */
+export function floorFromSnapshot(lines: readonly string[], frag: readonly string[]): number {
+  if (frag.length !== 3) return 0;
+  for (let j = 0; j + 2 < lines.length; j++) {
+    if (lines[j]!.trimEnd() === frag[0] && lines[j + 1]!.trimEnd() === frag[1] && lines[j + 2]!.trimEnd() === frag[2]) {
+      return j + 3;
+    }
+  }
+  return 0;
+}
+
 let timer: NodeJS.Timeout | null = null;
 /** tick 重入守卫：上一次还没跑完就跳过这一拍 */
 let ticking = false;
@@ -93,22 +206,49 @@ function shortTty(tty: string): string {
  */
 export function bodyFromMenu(menu: NativeMenu): string {
   const lines = sanitizeTerminalOutput(menu.excerpt).split('\n');
-  if (lines.length <= BODY_MAX_LINES) return lines.join('\n').trim();
+  // 提问行取的是窗口内**最上面**的严格头行（不可伪造的安全方向），两次审批落在同一窗口时会把上一段也带上。
+  // 不能靠文本规则切掉（可伪造），只能如实标注。
+  if (menu.anchorHits >= 2) {
+    lines.unshift(`⚠️ **屏幕上有 ${menu.anchorHits} 段审批文案，以最下面一段为准**（上面的是更早已处理过的）`, '');
+  }
+  // 不截断：超预算的由 menuFitsCard 拦在前面，走 fail-closed 提示卡
+  return lines.join('\n').trim();
+}
 
-  // ⚠ 超长时**头尾都要留**，只省中间。
-  // 只留尾部的话，攻击面是「在危险命令后面塞 N 行无害输出」把命令挤出可见区；
-  // 只留头部的话，反过来塞在前面即可。头（问句 + 紧随其后的命令块）与尾（选项）都是必须到人眼前的，
-  // 省略处必须**显式可见**，不能是一句容易划过去的小字。
-  const head = lines.slice(0, BODY_HEAD_LINES);
-  const tail = lines.slice(-BODY_TAIL_LINES);
-  const omitted = lines.length - head.length - tail.length;
+/**
+ * 这段审批正文能不能**完整**放进一张卡。放不下 → 调用方发无按钮提示卡 + 不 arm（fail-closed），
+ * 而不是截断后照样给按钮。
+ */
+export function menuFitsCard(menu: NativeMenu): { ok: true } | { ok: false; lines: number; bytes: number } {
+  const body = bodyFromMenu(menu);
+  const lines = body.split('\n').length;
+  const bytes = Buffer.byteLength(body, 'utf8');
+  if (lines <= BODY_MAX_LINES && bytes <= BODY_MAX_BYTES) return { ok: true };
+  return { ok: false, lines, bytes };
+}
+
+/** fail-closed 提示卡的原因：决定第一句怎么写，别把 API 错误也说成"太长" */
+export type NoticeReason =
+  | { kind: 'oversize'; lines: number; bytes: number; bootstrap: boolean }
+  | { kind: 'send-failed'; error: string };
+
+/** fail-closed 时推的提示卡正文：不带任何命令片段（半截命令比没有更误导） */
+export function oversizeNoticeBody(menu: NativeMenu, reason: NoticeReason): string {
+  const head = reason.kind === 'oversize'
+    ? [
+        `⚠️ **终端弹出了一个审批菜单，但内容太长（${reason.lines} 行 / ${Math.round(reason.bytes / 1024)}KB），手机上无法完整展示。**`,
+        ...(reason.bootstrap
+          ? ['（daemon 刚重启，还没有这段审批**之前**的屏幕基线，只能把整屏历史都算进来；这一条请到电脑前处理，下一次审批起会恢复正常。）']
+          : []),
+      ]
+    : [`⚠️ **终端弹出了一个审批菜单，但卡片发送失败（${reason.error.slice(0, 80)}）。**`];
   return [
     ...head,
+    '为避免看不全就批准，这次**不提供远程作答**，请到电脑前处理。',
     '',
-    `⚠️ **中间省略 ${omitted} 行** —— 手机上看不到全部内容，拿不准就别批准（到电脑前看完整屏幕）`,
-    '',
-    ...tail,
-  ].join('\n').trim();
+    `问句：${menu.question}`,
+    `选项：${menu.labels.map((l, i) => `${i + 1}. ${l.slice(0, 40)}`).join(' / ')}`,
+  ].join('\n');
 }
 
 /**
@@ -150,6 +290,7 @@ async function pushMenu(
   cwd: string | undefined,
   menu: NativeMenu,
   alreadyPushed: Set<string>,
+  bootstrap = false,
 ): Promise<{ sent: number; deferred: number; pending: number }> {
   const chats = await listAllChats();
   const targets = chats.filter(
@@ -157,14 +298,28 @@ async function pushMenu(
   );
   if (targets.length === 0) return { sent: 0, deferred: 0, pending: 0 };
 
-  const card = originShellPushCard({
+  const fits = menuFitsCard(menu);
+  const body = bodyFromMenu(menu);
+  // fail-closed 提示卡：无按钮、不 arm。半截正文 + 按钮 = 盲批（评审 2026-09-15）
+  const noticeCard = (reason: NoticeReason) => originShellPushCard({
     tty,
     ...(cwd ? { cwd } : {}),
     home: homedir(),
-    body: bodyFromMenu(menu),
-    question: true,
-    quickAnswerOptions: menu.labels,
+    body: oversizeNoticeBody(menu, reason),
+    question: false,
   });
+  const oversizeCard = fits.ok ? null : noticeCard({ kind: 'oversize', ...fits, bootstrap });
+  const card = fits.ok
+    ? originShellPushCard({
+        tty,
+        ...(cwd ? { cwd } : {}),
+        home: homedir(),
+        body,
+        question: true,
+        quickAnswerOptions: menu.labels,
+      })
+    : oversizeCard!;
+  if (!fits.ok) logger.warn('原生菜单超出展示预算，改发无按钮提示卡（不 arm）', { tty: shortTty(tty), ...fits, bootstrap });
 
   let sent = 0;
   let deferred = 0;
@@ -174,17 +329,30 @@ async function pushMenu(
       deferred++;   // 这个 chat 正等着别的 tab 作答 → 本轮不打扰、也不覆盖
       continue;
     }
+    let armed = false;
     try {
       await sendCardMessage(client, chat.chatId, card);
+      armed = fits.ok;
+    } catch (e) {
+      // 预算内的卡也可能被飞书拒（整卡 JSON 超 30KB / 元素超限等）。不能静默：那样用户什么都收不到，
+      // 而这个 chat 不进 alreadyPushed 又会每 tick 重试刷 warn。降级发小提示卡（不 arm），仍是 fail-closed。
+      logger.warn('原生菜单卡推送失败，降级为无按钮提示卡', { chatId: chat.chatId, tty, err: (e as Error).message });
+      if (!fits.ok) continue;   // 提示卡自己失败，没有更小的可降级了
+      try {
+        await sendCardMessage(client, chat.chatId, noticeCard({ kind: 'send-failed', error: (e as Error).message }));
+      } catch (e2) {
+        logger.warn('原生菜单提示卡也推送失败', { chatId: chat.chatId, tty, err: (e2 as Error).message });
+        continue;
+      }
+    }
+    if (armed) {
       // arm：飞书点选项 / 直接回数字都经这里驱动本地菜单（与 AskUserQuestion 同一条路）
       await mutateChat(chat.chatId, (c) => {
         c.askArm = { tty, options: menu.labels, at: Date.now(), source: 'native-menu' };
       });
-      alreadyPushed.add(chat.chatId);
-      sent++;
-    } catch (e) {
-      logger.warn('原生菜单卡推送失败', { chatId: chat.chatId, tty, err: (e as Error).message });
     }
+    alreadyPushed.add(chat.chatId);
+    sent++;
   }
   return { sent, deferred, pending: targets.length - sent };
 }
@@ -203,7 +371,14 @@ async function tickTab(client: Lark.Client, tab: { tty: string; cwd?: string; pr
   // 这个 tty 里只要**曾经**弹过一次真审批，那两句话就永久留在历史里 → 闸门对该 tty 永久为真，
   // 退化成只剩结构判据，而结构判据挡不住「模型自己写的编号问句」（两个 reviewer 各自用真代码复现过）。
   // 门槛还极低：这两句魔法短语逐字写在本仓库源码注释里，agent 自审 `cat` 一下就会点燃。
-  const candidate = screen && adapter ? parseNativeMenu(screen) : null;
+  const lines = screen ? screen.split('\n') : [];
+  const snap = snapshots.get(tab.tty);
+  const candidate = screen && adapter
+    ? parseNativeMenu(screen, adapter.nativeMenuQuestion
+        // 惰性：只有尾部真有选项块时才做全屏定位（无菜单 tick 不付这笔 O(n)）
+        ? { questionAnchor: adapter.nativeMenuQuestion, scanFloor: () => (snap?.frag ? floorFromSnapshot(lines, snap.frag) : 0) }
+        : {})
+    : null;
   const menu =
     candidate
     && adapter
@@ -214,6 +389,8 @@ async function tickTab(client: Lark.Client, tab: { tty: string; cwd?: string; pr
       : null;
 
   if (!menu) {
+    // 没有菜单的 tick：推进"菜单出现之前的屏幕"指纹（连续两 tick 一致才生效；下一个菜单的扫描下界从这里来）
+    if (screen) snapshots.set(tab.tty, advanceSnapshot(snap, takeSnapshotFragment(lines, adapter?.nativeMenuQuestion), regionHashOf(lines)));
     // 菜单没了：若之前推过卡，说明这一轮已经被答掉（本地按键 or 远程数字）→ 主动 disarm。
     // 不做的话 arm 会悬到 5 分钟 TTL，期间任何一条纯数字消息都会被注进这个已经翻篇的 tty。
     if (prev?.everPushed) {
@@ -234,7 +411,7 @@ async function tickTab(client: Lark.Client, tab: { tty: string; cwd?: string; pr
   if (prev.seen < STABLE_TICKS) return;          // 还不够稳定（可能是半绘制的屏幕）
 
   // 已推过的 chat 会在 pushMenu 里被过滤掉；被 defer 的下个 tick 自然补推（自愈）
-  const { sent, deferred, pending } = await pushMenu(client, tab.tty, tab.cwd, menu, prev.pushedTo);
+  const { sent, deferred, pending } = await pushMenu(client, tab.tty, tab.cwd, menu, prev.pushedTo, !snap?.frag);
   if (sent === 0) {
     if (deferred > 0) {
       logger.info('原生菜单暂缓推送（该会话正等别的 tab 作答）', { tty: shortTty(tab.tty), deferred });
@@ -274,6 +451,9 @@ async function tick(client: Lark.Client): Promise<void> {
   for (const tty of [...states.keys()]) {
     if (!alive.has(tty)) states.delete(tty);
   }
+  for (const tty of [...snapshots.keys()]) {
+    if (!alive.has(tty)) snapshots.delete(tty);
+  }
 }
 
 /**
@@ -305,4 +485,5 @@ export function stopNativeMenuMirror(): void {
   if (timer) clearInterval(timer);
   timer = null;
   states.clear();
+  snapshots.clear();
 }

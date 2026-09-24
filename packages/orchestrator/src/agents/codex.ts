@@ -47,6 +47,10 @@ export const codexAdapter: AgentAdapter = {
     /Would\s+you\s+like\s+to\s+run\s+the\s+following\s+command/i,
     /[Pp]ress\s+enter\s+to\s+confirm/i,
   ],
+  // 提问行锚点 = 头行，**整行严格**（不能是子串：Reason/命令是模型写的，子串会被诱饵行命中，见 native-menu.ts）。
+  // codex 在头行与选项之间还有一行模型自写的 `Reason: …`，中文时常以问号收尾，不给锚点的话
+  // 「最近问号行」规则会把 Reason 当提问行，头行掉出 excerpt → 闸门不放行。
+  nativeMenuQuestion: /^\s*Would\s+you\s+like\s+to\s+run\s+the\s+following\s+command\?\s*$/i,
   waitingPatterns: [
     /Would\s+you\s+like\s+to\s+run\s+the\s+following\s+command/i,
     /\d+\.\s+Yes,\s*proceed/i,

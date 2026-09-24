@@ -99,6 +99,14 @@ export interface AgentAdapter {
    * 所以判据必须落在**只有该 agent 的菜单才会有的成对措辞**上，而不是结构特征。
    */
   nativeMenuPatterns: RegExp[];
+  /**
+   * 原生菜单**提问行**的锚点（可选）。给了就交给 `parseNativeMenu({ questionAnchor })` 定位 excerpt 的起点，
+   * 不再依赖「离选项最近的问号行」—— 后者会被 codex 那行模型自写、常以问号收尾的 `Reason:` 抢走，
+   * 导致真正的头行掉出 excerpt、成对措辞闸门判 false、菜单不镜像（2026-09-15 真机报障）。
+   * ⚠ 必须写成**整行严格**匹配（`/^\s*…\s*$/`），不能是子串 —— 头行与选项之间的 Reason/命令是模型写的，
+   * 子串锚点会被其中一行诱饵命中，把真正的命令挤出 excerpt（security 评审 PoC）。见 `ParseNativeMenuOptions.questionAnchor`。
+   */
+  nativeMenuQuestion?: RegExp;
   /** 启动 / 续接命令（注入 tab 用） */
   launchCommand(opts?: { continueSession?: boolean }): string;
   /** 内建 slash 命令白名单（收到这些不当 mchat 未知命令，静默转发给 tab 里的 agent） */

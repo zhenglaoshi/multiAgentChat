@@ -142,7 +142,11 @@ export async function getHistory(tty: string): Promise<string> {
  * **paneId 只信 pane.ts**。省下的那一次进程 spawn 不值得开这个口子。
  */
 async function captureByPane(pane: string): Promise<string> {
-  return (await runTmuxSoft(['capture-pane', '-p', '-t', pane, '-S', `-${HISTORY_LINES}`])) ?? '';
+  // `-J`：把被终端宽度软换行的长行**拼回一行**，与 macOS `history of tab` 的语义对齐（实测 Terminal.app
+  // 返回的行可长于列数，即不软换行）。不加的话，一条超过 pane 宽度的菜单选项（codex 的
+  // "don't ask again for commands that start with `<整条命令>`"）会被切成多行 → 选项行不相邻 →
+  // `parseNativeMenu` 认不出 → 手机端收不到选择框。
+  return (await runTmuxSoft(['capture-pane', '-p', '-J', '-t', pane, '-S', `-${HISTORY_LINES}`])) ?? '';
 }
 
 /**

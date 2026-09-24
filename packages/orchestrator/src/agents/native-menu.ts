@@ -64,18 +64,21 @@ export interface NativeMenu {
    * 这是"展示内容 ≠ 实际执行内容"，正是这个功能最不能出的错（评审 2026-09-15 指出）。
    */
   fingerprint: string;
+  /**
+   * 扫描范围（下界 `scanFloor` 到选项之间）内命中 `questionAnchor` 的行数（无锚点恒 0）。
+   * ≥2 说明 excerpt 里带上了更早一次（已处理的）审批 —— 因为提问行取的是**最上面**那个命中
+   * （任何"切掉上一段"的文本规则都可在模型可控的命令体里伪造，见 parseNativeMenu 内注释）。
+   * 调用方据此在卡片上标注"以最下面一段为准"。
+   */
+  anchorHits: number;
 }
 
 /** 往回找选项行的窗口。菜单总在最后；放太大会把历史里的编号列表也捞进来。 */
 const TAIL_LINES = 40;
 /**
- * 从第一个选项往上找提问行的最大行数 —— 要能跨过 codex 那段可能很长的命令块。
- * 放得比较宽（200）是有意的：找不到提问行时 `excerpt` 会退化成"只有选项"，
- * 而闸门现在要求措辞出现在 excerpt 里 → 直接**不镜像**。窗口太窄会把正常的长命令审批也挡掉。
+ * **无锚点**的问号规则往上找提问行的最大行数。有锚点的路径不用它（见 `ParseNativeMenuOptions.scanFloor`）。
  */
 const QUESTION_LOOKBACK = 200;
-/** 单个选项文案长度上限 —— 超长多半是把正文当成了选项 */
-const MAX_LABEL_LEN = 200;
 /** 单行长度上限：超长行先截断再喂正则（防御性，屏幕上可能有未换行的超长输出） */
 const MAX_LINE_LEN = 1000;
 
@@ -130,6 +133,44 @@ export function isNativeMenuScreen(text: string, patterns: readonly RegExp[]): b
   return patterns.every((re) => re.test(text));
 }
 
+export interface ParseNativeMenuOptions {
+  /** 往回找选项行的窗口（默认 40 行） */
+  tailLines?: number;
+  /**
+   * 提问行的**agent 专属锚点**（如 codex 的 `Would you like to run the following command`）。
+   *
+   * 不给的话提问行 = 选项上方最近的一句以问号结尾的话。这在 codex 上会踩坑（2026-09-15 真机报障）：
+   *     Would you like to run the following command?
+   *     Reason: 是否允许读取 TAPD 子需求正文用于后端复审？   ← 模型自己写的 Reason，中文常以问号收尾
+   *     $ python3 ...
+   *     › 1. Yes, proceed (y)
+   * 「最近的问号行」抓到的是 Reason 行 → excerpt 从 Reason 起 → 真正的头行不在 excerpt 里 →
+   * `isNativeMenuScreen()` 的成对措辞闸门（要求头行在 excerpt 内）判 false → **不镜像，手机端卡死**。
+   *
+   * 语义（security 评审 2026-09-15 后收紧）：
+   *  - 必须是**整行严格**匹配（`^…$`，对 trim 后的行），不能是子串 —— 子串会被模型写在 Reason/命令里的诱饵命中；
+   *  - 取扫描范围内**最上面**一个命中的行，不是最近的，且**没有任何文本边界哨兵**（哨兵可在命令体里伪造）；下界见 `scanFloor`；
+   *  - 给了锚点却找不到 → `questionFound=false`（**不退回**问号规则）→ 调用方不镜像。
+   */
+  questionAnchor?: RegExp;
+  /**
+   * 锚点扫描的**下界行号**（含）—— 只在有 `questionAnchor` 时生效；不给 = 扫到屏幕顶部（第 0 行）。
+   *
+   * 这是唯一**不可被文本伪造**的边界：调用方用「菜单出现之前那个 tick 的屏幕内容」在当前屏幕里定位得到
+   * （见 im-lark `native-menu-watcher.ts` 的 snapshot/floor）。攻击者能写的文本都是在那之后打印的，
+   * 全在下界之下，只能让 excerpt 变大；下界之上的旧审批则被自然排除。
+   * 早先这里是固定 200 行回看窗口：security 评审 2026-09-15 第三轮 PoC 证明，把真头行与诱饵之间塞 ≥200 行
+   * 就能让真头行掉出窗口、excerpt 只剩诱饵+选项，而窗口外内容不进 excerpt、预算兜底也管不到。
+   * 硬窗口对严格锚点路径已无存在意义（只要能扫到真头行就一定选中它），所以改成扫到下界为止。
+   * 可传函数：只有屏幕尾部真的有选项块时才会被调用（省掉无菜单 tick 的全屏定位开销）。
+   *
+   * ⚠ 没有下界（调用方还没建立快照，典型是 daemon 刚重启时菜单已挂在屏上）时**故意不退回有界窗口**：
+   * 有界窗口 = security 第三轮 PoC（塞 ≥N 行把真头行顶出窗口）原样复活。宁可扫全屏 → 超集 → 撞展示预算 →
+   * 调用方发"缺少基线、请到电脑前"的提示卡；下一次审批起快照就绪、恢复正常。
+   */
+  scanFloor?: number | (() => number);
+}
+
 /**
  * 解析屏幕尾部的原生菜单。认不出返回 null。
  *
@@ -137,8 +178,14 @@ export function isNativeMenuScreen(text: string, patterns: readonly RegExp[]): b
  *
  * @param screen 终端屏幕内容（capture-pane / history 的原样文本）
  */
-export function parseNativeMenu(screen: string, tailLines = TAIL_LINES): NativeMenu | null {
+export function parseNativeMenu(screen: string, opts: ParseNativeMenuOptions = {}): NativeMenu | null {
   if (!screen) return null;
+  const tailLines = opts.tailLines ?? TAIL_LINES;
+  const anchor = opts.questionAnchor;
+  const scanFloorOf = () => {
+    const v = typeof opts.scanFloor === 'function' ? opts.scanFloor() : (opts.scanFloor ?? 0);
+    return Math.max(0, Math.floor(v));
+  };
   const lines = screen.split('\n').map(cleanLine);
   const scanFrom = Math.max(0, lines.length - tailLines);
 
@@ -154,9 +201,12 @@ export function parseNativeMenu(screen: string, tailLines = TAIL_LINES): NativeM
   for (let i = end; i >= 0; i--) {
     const m = OPTION_RE.exec(lines[i]!);
     if (!m) break;                       // 必须连续相邻，中间断开就停
-    const label = m[2]!;
-    if (label.length > MAX_LABEL_LEN) return null;
-    collected.unshift({ index: Number(m[1]), label });
+    // 选项文案**不设长度上限**（曾有 200 字上限、超长整个菜单判 null）。codex 0.154 的审批菜单第 2 项是
+    //   `Yes, and don't ask again for commands that start with \`<整条命令>\` (p)`
+    // 命令本身就能轻松过 200 字（真机样本 237 字）→ 整个菜单被丢弃 → 手机端收不到选择框（2026-09-15 报障）。
+    // "超长多半是正文不是选项"这条启发式挡不住什么真问题（真正的闸门是 `isNativeMenuScreen` 的成对措辞），
+    // 却会把最需要镜像的那种真菜单挡掉。行长本身已被 MAX_LINE_LEN 截断，不会无界。
+    collected.unshift({ index: Number(m[1]), label: m[2]! });
     start = i;
   }
 
@@ -166,14 +216,40 @@ export function parseNativeMenu(screen: string, tailLines = TAIL_LINES): NativeM
     if (collected[i]!.index !== i + 1) return null;
   }
 
-  // 提问行：从第一个选项往上找最近的一句以问号结尾的话（要能跨过命令块）
+  // 提问行：从第一个选项往上找（要能跨过命令块）。
+  //  - 有锚点（agent 声明了整行严格的头行）→ 从选项往上扫到 `scanFloor`，取**最上面**一个命中的行；找不到 → questionFound=false，
+  //    **不退回问号规则**。
+  //  - 无锚点 → 「离选项最近的问号行」（通用兜底，只有结构判据、无 agent 措辞的场景）。
+  //
+  // ⚠ 这里**故意没有任何"菜单边界哨兵"**，也不取"最近的"。security 评审 2026-09-15 用真代码连打两轮：
+  //  1. 取"最近的"：头行与选项之间的 Reason / 命令是**模型写的**（可被注入的外部内容左右），攻击者在命令
+  //     后面放一行诱饵头行（或以问号收尾的句子），excerpt 就从诱饵起、真正危险的命令被挤出去，闸门因
+  //     诱饵含那句措辞照样放行 → 手机上只看到一句无害的话 + 选项 = 盲批。
+  //  2. 取"最上面"但加「撞到编号选项行就停」的哨兵：命令体里一行形似 `1. xxx` 的普通文本（写清单 / 配置 /
+  //     heredoc 都常见）就能让哨兵在真头行之前熄火，"最上面"退化成"诱饵头行"，效果同 1。
+  // 任何基于**文本结构**的边界都能在模型可控的命令体里伪造。唯一结构上不可伪造的事实是：攻击者能写的
+  // 文本全在真头行**之下**。所以取窗口内最上面的严格头行 —— 伪造只可能让 excerpt 变大（多给人看），
+  // 不可能变小。代价：上一次（已答掉的）审批若落在下界之下，excerpt 会把它也带上；
+  // 用 `anchorHits` 报给调用方，卡片上显式标注"以最下面一段为准"，而不是靠可伪造的规则把它切掉。
+  // 锚点路径**没有固定行数窗口**：塞 ≥N 行就能把真头行顶出任何固定窗口（security 第三轮 PoC）。
+  // 扫描下界只认 `scanFloor`（调用方用"菜单出现之前的屏幕"定位的时间下界，文本伪造不了）；
+  // 不给下界就扫到屏幕顶部 —— 会把缓冲区里所有旧审批都带上、excerpt 变大 → 撞展示预算 → fail-closed，
+  // 是安全的失败方向。无锚点的问号规则仍用 QUESTION_LOOKBACK 限窗（它只是通用兜底）。
   let question = '';
   let questionIdx = -1;
-  for (let i = start - 1, seen = 0; i >= 0 && seen < QUESTION_LOOKBACK; i--, seen++) {
+  let anchorHits = 0;
+  const lowest = anchor ? Math.min(scanFloorOf(), start) : Math.max(0, start - QUESTION_LOOKBACK);
+  for (let i = start - 1; i >= lowest; i--) {
     const line = lines[i]!.trim();
     if (!line) continue;
-    if (/[?？]\s*$/.test(line)) { question = line; questionIdx = i; break; }
+    if (anchor) {
+      // ⚠ 锚点须是无 g/y 标志的正则（有状态的 lastIndex 会让逐行 test 漏判）
+      if (anchor.test(line)) { questionIdx = i; anchorHits++; }   // 不 break：继续往上，取最上面的
+      continue;
+    }
+    if (/[?？]\s*$/.test(line)) { questionIdx = i; break; }
   }
+  if (questionIdx >= 0) question = lines[questionIdx]!.trim();
 
   // 原文片段：从提问行（含）到屏幕末尾 —— 中间那段「要批准的命令」必须在内
   const excerptFrom = questionIdx >= 0 ? questionIdx : start;
@@ -191,5 +267,6 @@ export function parseNativeMenu(screen: string, tailLines = TAIL_LINES): NativeM
     // 副作用是 excerpt 里若有每 tick 都在变的元素（计时器/spinner），指纹会一直变 →
     // 永远达不到 STABLE_TICKS → **不推送**。那是安全的失败方向（宁可漏推，不可错推）。
     fingerprint: fingerprintOf([excerpt]),
+    anchorHits,
   };
 }
