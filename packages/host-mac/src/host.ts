@@ -14,6 +14,7 @@ import type {
 
 import { captureScreen } from './terminal/screen.js';
 import { sendCtrlC, sendKeys } from './terminal/keys.js';
+import { pasteText } from './terminal/paste.js';
 import { inferTabStatus } from './terminal/status.js';
 import { probeSystemEvents } from './terminal/probe.js';
 import { isScreenLocked } from './screen-lock.js';
@@ -81,6 +82,7 @@ export const macHost: HostController = {
   sendKeysRaw,
   forceEnter: (tty, opts) => forceEnter(tty, opts),
   sendKeys,
+  pasteText,
   sendCtrlC,
   waitForOutput,
 

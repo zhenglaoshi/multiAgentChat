@@ -68,6 +68,11 @@ export async function sendKeys(tty: string, tokens: string | string[], opts?: Se
   }
 }
 
+/** 往 pane 的输入框填一段文本：send-keys -l 按字面送（含中文），不经剪贴板、锁屏可用。 */
+export async function pasteText(tty: string, text: string): Promise<void> {
+  await sendLiteral(await resolvePaneOrThrow(tty), text);
+}
+
 /**
  * 发一个 Ctrl-C。
  * 与 macOS 宿主的注释差异：这里**不抢焦点、不需要前台**，所以没有"别高频调用"的告诫。

@@ -41,7 +41,8 @@ export interface AgentHookSpec {
   /** 这条 hook 干什么 —— 日志与文档用，不参与逻辑 */
   purpose: string;
   /**
-   * 脚本执行超时（秒）。只有 codex 的 TOML 会落这一项（claude 侧保持历史写法不落，避免改动既有 settings.json）。
+   * 脚本执行超时（秒）。codex 的 TOML 与 claude 的 settings.json 都会落（claude 侧只有显式配了的条目才写 `timeout`，
+   * 没配的保持历史写法不落）。
    * 阻塞型 hook（高危命令审批要等人点飞书卡）必须给足；fire-and-forget 的给小值即可。
    */
   timeoutSec?: number;

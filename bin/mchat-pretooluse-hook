@@ -13,19 +13,42 @@
  * Fire-and-forget：spawn detached，hook 立即 exit 0，不 block 工具 —— 用户在
  * 终端里的 AskUserQuestion 交互体验完全无感。
  *
+ * 例外：**多问题 / 多选**（单问题单选仍走上面这套按钮卡）。见 lib/native-ask.mjs：
+ *   - 人不在（锁屏 / 键鼠闲置 ≥ MCHAT_ASK_AWAY_IDLE_SEC，默认 180s）→ **阻塞**等飞书表单（≤9min），
+ *     答了就用 updatedInput.answers 直接填给 AskUserQuestion，原生菜单不弹；超时 / 失败退回原生菜单
+ *   - 人在 → 立即放行，后台让 daemon 发飞书表单，答了由 daemon 按键驱动原生菜单
+ *   MCHAT_ASK_FORM=0 关掉这条分支（退回只推展开文本）
+ *
  * 设 MCHAT_HOOK_DEBUG=1 打开 /tmp/mchat-pretooluse-hook.log 调试。
  *
  * NOTE: ESM only（package.json 里 "type": "module"，require() 会 crash，见 stop-hook）
  */
-import { spawn } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
 import { appendFileSync } from 'node:fs';
+import { platform } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { answersFromForm, isAway, isMultiAsk, parseHidIdleSec, parseScreenLocked, toFormSpec } from './lib/native-ask.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MAX_TEXT_LEN = 3500;
 const DEBUG = process.env['MCHAT_HOOK_DEBUG'] === '1';
 const DEBUG_LOG = '/tmp/mchat-pretooluse-hook.log';
+
+// ── 多问题 / 多选 → 飞书表单（见 lib/native-ask.mjs 顶部说明）──
+// MCHAT_ASK_FORM=0 关掉，退回「只推展开文本」的老行为
+const ASK_FORM_ENABLED = process.env['MCHAT_ASK_FORM'] !== '0';
+// 键鼠闲置这么久算「人不在」（秒）
+const AWAY_IDLE_SEC = (() => {
+  const n = Number(process.env['MCHAT_ASK_AWAY_IDLE_SEC']);
+  return Number.isFinite(n) && n > 0 ? n : 180;
+})();
+// 人不在时 hook 阻塞等飞书作答的上限；超时退回原生菜单。
+// ⚠ 必须小于这条 hook 的 timeout：新装的是 660s（claude.ts）；daemon 升级前就开着的会话读不到新配置、
+// 按 Claude Code 默认值走（实测 > 75s，文档写 600s）→ 取 9min，两种情况下都是 hook 自己先超时、干净退回原生菜单
+const AWAY_WAIT_MS = 9 * 60 * 1000;
+// 人在时飞书卡的存活时间（答了驱动原生菜单；终端先答了则由 PostToolUse 作废）
+const DRIVE_CARD_TIMEOUT_MS = 30 * 60 * 1000;
 
 function dbg(msg) {
   if (!DEBUG) return;
@@ -75,6 +98,73 @@ function formatAskUserQuestion(toolInput) {
   return { body: lines.join('\n'), quickOptions };
 }
 
+/** 只在 macOS 上能判；拿不到的信号留 undefined（isAway 会按「在」处理）。 */
+function detectPresence() {
+  if (platform() !== 'darwin') return {};
+  const out = {};
+  try {
+    out.locked = parseScreenLocked(execFileSync('/usr/sbin/ioreg', ['-n', 'Root', '-d1', '-a'], { timeout: 1500, maxBuffer: 1024 * 1024 }));
+  } catch {}
+  try {
+    const idle = parseHidIdleSec(execFileSync('/usr/sbin/ioreg', ['-c', 'IOHIDSystem', '-d', '4'], { timeout: 1500, maxBuffer: 4 * 1024 * 1024 }));
+    if (idle !== null) out.idleSec = idle;
+  } catch {}
+  return out;
+}
+
+/**
+ * 多问题 / 多选：返回 true = 已接管（调用方不再走老的文本镜像）。
+ * 人不在 → 阻塞等飞书表单，答了就用 updatedInput.answers 直接填给 AskUserQuestion；
+ * 人在   → 立即放行（原生菜单照弹），后台让 daemon 发飞书表单，答了由 daemon 按键驱动原生菜单。
+ */
+function handleMultiAsk(payload, agentBin) {
+  const toolInput = payload?.tool_input;
+  const spec = toFormSpec(toolInput);
+  if (!spec) return false;
+  const n = spec.questions.length;
+  const presence = detectPresence();
+  const away = isAway(presence, AWAY_IDLE_SEC);
+  // 人不在时原生菜单根本不弹，标题别写「终端里弹出中」
+  const title = `❓ Claude 请你回答${n > 1 ? ` ${n} 个问题` : ''}${away ? '' : '（终端里也弹着，两边都能答）'}`;
+  const args = ['lark', 'ask', 'form', '--title', title, '--spec-json', JSON.stringify(spec), '--origin-pid', String(process.ppid)];
+  if (typeof payload.cwd === 'string' && payload.cwd) args.push('--origin-cwd', payload.cwd);
+  dbg(`multi-ask q=${n} locked=${presence.locked} idle=${presence.idleSec} away=${away}`);
+
+  if (!away) {
+    const proc = spawn(agentBin, [...args, '--drive-native', '--timeout', String(DRIVE_CARD_TIMEOUT_MS)], {
+      stdio: ['ignore', 'ignore', 'ignore'],
+      detached: true,
+    });
+    proc.on('error', (e) => dbg('spawn error: ' + e.message));
+    proc.unref();
+    process.exit(0);
+    return true;
+  }
+
+  // 人不在：阻塞等。任何失败（超时 / 取消 / daemon 不可达 / 答案不全）→ 无输出退出 = 原生菜单照常弹
+  execFile(agentBin, [...args, '--timeout', String(AWAY_WAIT_MS)], { timeout: AWAY_WAIT_MS + 30_000, maxBuffer: 1024 * 1024 }, (err, stdout) => {
+    try {
+      const line = String(stdout ?? '').trim().split('\n').pop() ?? '';
+      const res = line ? JSON.parse(line) : null;
+      const answers = res?.status === 'answered' ? answersFromForm(toolInput, res.answers) : null;
+      dbg(`away result status=${res?.status} answered=${!!answers} err=${err ? err.message : ''}`);
+      if (answers) {
+        process.stdout.write(JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse',
+            permissionDecision: 'allow',
+            updatedInput: { ...toolInput, answers },
+          },
+        }));
+      }
+    } catch (e) {
+      dbg('away parse error: ' + (e && e.message));
+    }
+    process.exit(0);
+  });
+  return true;
+}
+
 let raw = '';
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', (chunk) => {
@@ -88,6 +178,7 @@ process.stdin.on('end', () => {
     const toolName = payload?.tool_name;
     dbg(`tool_name=${toolName} session=${payload?.session_id}`);
     if (toolName !== 'AskUserQuestion') return process.exit(0);
+    if (ASK_FORM_ENABLED && isMultiAsk(payload?.tool_input) && handleMultiAsk(payload, resolve(HERE, 'agent'))) return;
 
     const { body, quickOptions } = formatAskUserQuestion(payload?.tool_input);
     let text = body;

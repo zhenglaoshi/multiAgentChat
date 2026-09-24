@@ -47,10 +47,21 @@ describe('applyClaudeHooks', () => {
     const cfg: Record<string, unknown> = {};
     applyClaudeHooks(cfg, [STOP, GATE]);
     const hooks = (cfg as { hooks: Record<string, unknown[]> }).hooks;
+    // spec 带 timeoutSec 就落成 claude 的 `timeout`（秒）
+    expect(hooks['Stop']).toEqual([
+      { matcher: '.*', hooks: [{ type: 'command', command: '/repo/bin/mchat-stop-hook', timeout: 30 }] },
+    ]);
+    expect(hooks['PreToolUse']).toHaveLength(1);
+  });
+
+  it('spec 没配 timeoutSec → 不落 timeout（既有条目写法不变）', () => {
+    const cfg: Record<string, unknown> = {};
+    const { timeoutSec: _drop, ...noTimeout } = STOP;
+    applyClaudeHooks(cfg, [noTimeout]);
+    const hooks = (cfg as { hooks: Record<string, unknown[]> }).hooks;
     expect(hooks['Stop']).toEqual([
       { matcher: '.*', hooks: [{ type: 'command', command: '/repo/bin/mchat-stop-hook' }] },
     ]);
-    expect(hooks['PreToolUse']).toHaveLength(1);
   });
 
   it('幂等：连跑两次结果一致，不会翻倍', () => {

@@ -27,7 +27,7 @@ import {
   sendKeysRaw,
   waitForOutput,
 } from './tabs.js';
-import { sendCtrlC, sendKeys } from './keys.js';
+import { pasteText, sendCtrlC, sendKeys } from './keys.js';
 import { snapshotTabs } from './snapshot.js';
 import { inferTabStatus } from './status.js';
 import { detectSelfTty } from './procs.js';
@@ -80,6 +80,7 @@ export const tmuxHost: HostController = {
   sendKeysRaw,
   forceEnter: (tty, opts) => forceEnter(tty, opts),
   sendKeys,
+  pasteText,
   sendCtrlC,
   waitForOutput,
 

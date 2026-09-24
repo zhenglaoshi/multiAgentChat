@@ -117,6 +117,11 @@ export interface HostController {
   forceEnter(tty: string, opts?: ForceEnterOptions): Promise<ForceEnterResult>;
   /** 注入按键序列（'ctrl+c' / 'down down enter'）。capabilities.keyInjection=false 时宿主应抛错 */
   sendKeys(tty: string, tokens: string | string[], opts?: SendKeysOptions): Promise<void>;
+  /**
+   * 往 tab 当前的输入框填一段文本（含中文）。与 sendKeys 同一套注入通道、同样受
+   * `keyInjectionBlockedWhenLocked` 约束。macOS = 剪贴板 + ⌘V（会临时占用剪贴板）；tmux = send-keys -l。
+   */
+  pasteText(tty: string, text: string): Promise<void>;
   /** 送一个 Ctrl-C（解卡用；高频调用会抢焦点，别滥用） */
   sendCtrlC(tty: string): Promise<void>;
   /** 送完等输出稳定，返回新增内容 */

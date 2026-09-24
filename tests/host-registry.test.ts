@@ -55,6 +55,7 @@ function makeFakeHost(overrides: Partial<HostController> = {}): HostController {
     sendKeysRaw: async () => true,
     forceEnter: async () => ({ ok: true, blocked: false, via: 'pty' as const }),
     sendKeys: notImpl,
+    pasteText: notImpl,
     sendCtrlC: notImpl,
     waitForOutput: async () => '',
     newTab: async () => TAB.tty,

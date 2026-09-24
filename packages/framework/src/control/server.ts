@@ -10,9 +10,11 @@ import { approvals, asks, knowledgeQueue, listEntries, statsSummary } from 'mult
 import { isHighRiskCommand, isLearnedAllowed, learnedProgress, recordDecision } from 'multiagent-orchestrator';
 import { shouldGate, getPermLevel, PERM_LEVEL_LABELS } from 'multiagent-orchestrator';
 import { listAllChats, loadChat, saveChat } from 'multiagent-im-lark';
+import { NATIVE_ANSWERED_BY, NATIVE_SUPERSEDED_BY } from 'multiagent-im-lark';
+import { driveNativeAsk } from './native-ask-drive.js';
 import { originShellPushCard, sendCardMessage, sendCardReturnId, sendFile, sendImage, sendTextMessage, patchCard, tapdClaimCard, handoffTaskCard } from 'multiagent-im-lark';
 import { loadClaim, saveClaim, TAPD_STAGE_LABEL, type TapdStage } from 'multiagent-orchestrator';
-import { logger } from 'multiagent-orchestrator';
+import { logger, type AskFormQuestion, type AskRequest } from 'multiagent-orchestrator';
 import { pendingTracker } from 'multiagent-im-lark';
 import { captureScreen, sendKeys } from 'multiagent-host-api';
 import { listRecentCwds, recordCwd } from 'multiagent-orchestrator';
@@ -632,6 +634,12 @@ async function handleAskDisarm(
       sock.end();
       return;
     }
+    // 飞书表单正在代答这个 tty 的原生菜单 → 终端里已经答了，作废那张卡（别让人稍后在飞书上再答一遍）
+    const driveId = nativeDriveAsks.get(tty);
+    if (driveId) {
+      nativeDriveAsks.delete(tty);
+      await asks.cancel(driveId, NATIVE_ANSWERED_BY);
+    }
     const chats = await listAllChats();
     let n = 0;
     for (const chat of chats) {
@@ -651,6 +659,21 @@ async function handleAskDisarm(
     sendErr(sock, (e as Error).message);
   }
   sock.end();
+}
+
+async function onNativeDriveAskResolved(tty: string, questions: AskFormQuestion[], final: AskRequest): Promise<void> {
+  if (nativeDriveAsks.get(tty) === final.id) nativeDriveAsks.delete(tty);
+  if (final.status !== 'answered' || final.answer?.kind !== 'form') return;
+  const r = await driveNativeAsk(tty, questions, final.answer);
+  const short = tty.replace('/dev/', '');
+  logger.info('native ask drive', { tty, ok: r.ok, ...(r.ok ? {} : { reason: r.reason, sent: r.sent }) });
+  if (!larkClient) return;
+  const text = r.ok
+    ? `✅ 已在终端 ${short} 按你的回答填好并提交`
+    : `⚠️ 没能替你在终端 ${short} 作答：${r.reason}${r.sent ? '' : '\n菜单还在终端里等着，可以回电脑上直接选'}`;
+  await sendTextMessage(larkClient, final.chatId, text).catch((e) =>
+    logger.warn('native ask drive 回执发送失败', { err: (e as Error).message }),
+  );
 }
 
 /** tty → chatId（复用 resolve-chat 逻辑：pending tty → 该 chat；否则最近活跃 chat）。 */
@@ -1006,12 +1029,23 @@ async function resolveChatIdFallback(tty?: string): Promise<string | null> {
   return top.chatId;
 }
 
+/**
+ * 飞书表单正在代答的原生菜单：源 tty → ask id。终端里先答了（PostToolUse → ask.disarm）就按 tty 把卡作废，
+ * 否则人稍后在飞书上再答，daemon 会往一个已经翻篇的 tab 里按数字。
+ */
+const nativeDriveAsks = new Map<string, string>();
+
 async function handleLarkAsk(
   sock: Socket,
   req: Extract<Request, { op: 'lark.ask' }>,
 ) {
   try {
-    let chatId = req.chatId;
+    // hook 调用：stdin 是管道拿不到 tty，按 Claude Code pid / cwd 反查源 tab（定 chat，也是 drive 的目标）
+    const origin =
+      req.originPid !== undefined || req.originCwd !== undefined
+        ? await resolveOriginTab(req.originPid, req.originCwd)
+        : null;
+    let chatId = req.chatId ?? (origin ? await resolveChatIdForTty(origin.tty) : null) ?? undefined;
     if (!chatId) {
       const guess = await resolveChatIdFallback();
       if (!guess) {
@@ -1029,6 +1063,28 @@ async function handleLarkAsk(
     };
     if (req.type === 'form' && req.questions) createInput.questions = req.questions;
     if (typeof req.timeoutMs === 'number') createInput.timeoutMs = req.timeoutMs;
+
+    if (req.driveNative) {
+      const tty = origin?.tty;
+      const questions = req.questions;
+      if (req.type !== 'form' || !questions || !tty) {
+        sendErr(sock, 'driveNative 需要 form 类型 + 能反查到的源 tab');
+        sock.end();
+        return;
+      }
+      const { request, result } = await asks.create(createInput);
+      // 同一 tty 上一张没答的卡（上一个菜单）直接作废：按键计划只对「当前弹着的这个」成立
+      const stale = nativeDriveAsks.get(tty);
+      if (stale && stale !== request.id) void asks.cancel(stale, NATIVE_SUPERSEDED_BY);
+      nativeDriveAsks.set(tty, request.id);
+      sendOk<LarkAskData>(sock, { request });
+      sock.end();
+      void result
+        .then((final) => onNativeDriveAskResolved(tty, questions, final))
+        .catch((e) => logger.warn('native ask drive failed', { tty, err: (e as Error).message }));
+      return;
+    }
+
     const { result } = await asks.create(createInput);
     const final = await result;
     sendOk<LarkAskData>(sock, { request: final });

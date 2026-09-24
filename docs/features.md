@@ -413,6 +413,24 @@ answer=$(agent lark ask form --title "确认几个选项" --spec-json '{
 > 1. `card.action.trigger` 回调**必须立即 `return {}`**，卡片更新走 fire-and-forget `patchCard`。**绝不能 `return { toast }`**——飞书收到回调 toast 响应后会把卡当"已处理无更新"，盖掉另发的 patch → 标记不刷新。
 > 2. 会被用户点击**多次更新**的交互卡（如 form），`config` 必须带 `update_multi: true`，否则第二次起 patch 视觉不生效。
 > 3. 回调传回的 `value` 里数字字段（q/i/to）用 `Number()` 强转再用，别直接当 number（飞书可能回传字符串，否则 `Set.has` 判断失配）。
+### 14.1 原生 AskUserQuestion 的多问题 / 多选 → 飞书表单（2026-09-24）
+
+单问题单选早就是「原生菜单 + 飞书按钮卡、pty 写数字直选」双通道。多问题 / 多选以前只能往飞书推一段展开文本，手机上没法答。现在由 `bin/mchat-pretooluse-hook`（纯逻辑在 `bin/lib/native-ask.mjs`）按**人在不在电脑前**分两路：
+
+| | 判据 | 行为 |
+|---|---|---|
+| 人不在 | 锁屏，或键鼠闲置 ≥ `MCHAT_ASK_AWAY_IDLE_SEC`（默认 180s） | hook **阻塞**等飞书表单（≤9min），答了用 PreToolUse 的 `updatedInput.answers` 直接填给 AskUserQuestion，**原生菜单不弹**；超时 / 取消 / 失败 → 退回原生菜单 |
+| 人在 | 其余（含非 macOS 拿不到信号） | 立即放行，原生菜单照弹；后台 `agent lark ask form --drive-native` 让 daemon 发表单卡，飞书答完由 daemon **用真按键**按完原生菜单（`framework/control/native-ask-drive.ts`），回执推飞书；终端里先答了则 PostToolUse → `ask.disarm` 把卡作废（显示「已在终端作答」） |
+
+`MCHAT_ASK_FORM=0` 关掉整条分支。这条 hook 在 claude settings.json 里显式配 `timeout: 660`。
+
+**按键规则（伪终端逐字节实测，Claude Code v2.1.280）**：顶部标签页 `← ☐ Q1 ☐ Q2 ✔ Submit →`；单选题数字 k = 选中并翻页；多选题数字 k = 翻转、不翻页，Tab 翻页；数字 n+1 进「Type something」后粘贴文字 + Enter；Review 页数字 1 = 提交。
+
+> **坑（改动勿回退）**：
+> 1. **不能用 `do script` 驱动多问题菜单**：它每次写入尾部都带 `\r`，且同一块里的几个键按「块开始时的状态」处理 —— 单选题上 `2\r` 会先选 2、再被那个 `\r` 按光标项（第 1 项）覆盖并多翻一页。所以「人在」这路只能走 System Events（抢焦点、锁屏不可用 → 锁屏 / 判断不了就不按），这也是「人不在」必须走答案注入而不是按键的原因。
+> 2. 驱动前必须确认屏幕**贴底**就是那个刚弹出的菜单（提示行在最末两行、标签页无 ☒、第 1 题原文对得上）：只看「尾部 N 行里有没有」会被刚关掉的旧菜单残影骗过（单测抓到过）。
+> 3. 中文自由输入走剪贴板 + ⌘V（System Events 打字依赖输入法、中文打不进去）；粘贴前后保存 / 恢复剪贴板，但只能保住纯文本内容。
+> 4. 多选题的自由输入没实测过交互，不驱动，回执让人回终端答。
 
 ---
 

@@ -37,18 +37,19 @@ const GUIDANCE_TAIL = [
   '',
 ];
 
-/** claude 的问答段：原生 AskUserQuestion 优先（有飞书镜像），多选/表单走 `agent lark ask`。 */
+/** claude 的问答段：原生 AskUserQuestion 优先（单选 / 多选 / 多问题都有飞书通道），`agent lark ask` 作补充。 */
 const ASK_SECTION_CLAUDE = [
   '- **要用户选一个（单选）→ 优先用原生 `AskUserQuestion`**：它在 shell 里弹上下键选择菜单（你人在电脑前可直接选），项目会自动把问题+选项**镜像成飞书按钮卡**（手机端点按钮 / 回裸数字即可，会经 pty 写数字直选那个原生菜单，锁屏也能答）。**电脑原生菜单 + 手机飞书卡，两边都能答，谁先答谁生效** —— 这正是"有时候用电脑、有时候用手机"两不误。',
-  '- 多选 / 多问题表单 / 自由长文本 → 用 `agent lark ask`（飞书交互更完整，弹卡手指点选；但**只走飞书、电脑端没有原生菜单**）。确定人在电脑前时也可继续用 AskUserQuestion（原生多选菜单，飞书端仅显示、不便点选）。用户不必手打命令。',
+  '- **多选 / 多问题 → 也直接用原生 `AskUserQuestion`**：项目会自动转成**飞书表单卡**。人不在电脑前（锁屏 / 闲置）时终端不弹菜单、飞书答完答案直接填回给你；人在电脑前时原生菜单照弹，飞书答完会自动替人按完那个菜单。两边都能答。',
+  '- 自由长文本 / 不想弹原生菜单时 → 用 `agent lark ask`（只走飞书、电脑端没有原生菜单）。用户不必手打命令。',
   '    单选：`agent lark ask single --title "选哪个？" --options "选项A,选项B,选项C"`',
   '    多选：`agent lark ask multi  --title "勾选多个" --options "1,2,3"`',
   '    ⚠ 选项文本里**含逗号**时 `--options` 会被拆乱 → 改用 JSON 数组：`--options \'["含,逗号的选项","选项2"]\'`（或 `--options-json`），一个 flag 安全搞定',
   '    输入：`agent lark ask input  --title "输入什么"`  （用户在飞书 chat 里直接回复文本即可）',
-  '    多问题表单：`agent lark ask form --title "标题" --spec-json \'{"questions":[{"title":"Q1","type":"single","options":["A","B"],"allowText":true},{"title":"Q2","type":"multi","options":["X","Y"]}]}\'` —— 一次问多个、每题单/多选、allowText 题可自由输入；stdout 返回 `{"status":"answered","type":"form","answers":[{"q":0,"kind":"single","index":0,"value":"A"},...]}`。**多问题表单场景用它**（AskUserQuestion 也能多问题，但飞书镜像对多选/多问题作答不便，表单走这个更顺）。',
+  '    多问题表单：`agent lark ask form --title "标题" --spec-json \'{"questions":[{"title":"Q1","type":"single","options":["A","B"],"allowText":true},{"title":"Q2","type":"multi","options":["X","Y"]}]}\'` —— 一次问多个、每题单/多选、allowText 题可自由输入；stdout 返回 `{"status":"answered","type":"form","answers":[{"q":0,"kind":"single","index":0,"value":"A"},...]}`。',
   '    stdout 示例：`{"status":"answered","type":"single","index":1,"value":"选项B"}`；status 也可能是 cancelled / timeout',
   '    退出码：0=answered，1=cancelled，2=timeout',
-  '- 单选问题**优先原生 `AskUserQuestion`**（原生菜单自动镜像飞书、两边可答）；多选/表单/自由文本用 `agent lark ask`。别在裸 TUI 里 `read` 等键盘而不给任何飞书通道 —— 人在手机时会收不到。',
+  '- 选择题（单选 / 多选 / 多问题）**优先原生 `AskUserQuestion`**（自动走飞书、两边可答）；自由文本用 `agent lark ask input`。别在裸 TUI 里 `read` 等键盘而不给任何飞书通道 —— 人在手机时会收不到。',
 ];
 
 /**
@@ -80,7 +81,7 @@ export function buildTuiReminder(kind: AgentKind): string {
   const askLine =
     kind === 'codex'
       ? '要用户**回答任何问题**（单选/多选/填文本/多问题表单）→ `agent lark ask single|multi|input|form`（stdout 拿答案 JSON）。别用 codex 原生提问菜单——它到不了飞书。'
-      : '要用户**单选** → 优先原生 `AskUserQuestion`（shell 原生菜单 + 自动镜像飞书按钮卡，电脑/手机两边都能答）；**多选/表单/填文本** → `agent lark ask multi|form|input`（stdout 拿答案 JSON）。';
+      : '要用户**选择**（单选 / 多选 / 多问题）→ 优先原生 `AskUserQuestion`（shell 原生菜单 + 自动转飞书卡 / 表单，电脑/手机两边都能答）；**填文本** → `agent lark ask input`（stdout 拿答案 JSON）。';
   return [
     '',
     '---',

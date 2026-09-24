@@ -2166,11 +2166,20 @@ function formAnswerLabel(req: AskRequest, qi: number): string {
   return chosen.length ? chosen.join('、') : '（未选）';
 }
 
+/** 终端里原生菜单先被答掉、飞书表单卡随之作废时用的 resolvedBy（framework/control 的 ask.disarm 写）。 */
+export const NATIVE_ANSWERED_BY = 'terminal:native-menu';
+/** 同一 tab 弹了新的原生菜单、旧的那张飞书表单卡没人答就被顶掉时用的 resolvedBy。 */
+export const NATIVE_SUPERSEDED_BY = 'terminal:superseded';
+
 /** resolved 状态的表单摘要卡（A/B 共用）。 */
 function askFormResolvedCard(req: AskRequest) {
   const questions = req.questions ?? [];
   const template = req.status === 'answered' ? 'green' : 'grey';
-  const stateLabel = req.status === 'answered' ? '已提交' : req.status === 'cancelled' ? '已取消' : '已超时';
+  const stateLabel = req.status === 'answered' ? '已提交'
+    // 原生菜单被人在终端里先答掉了（ask.disarm 用这个 resolvedBy 作废飞书卡）
+    : req.status === 'cancelled' && req.resolvedBy === NATIVE_ANSWERED_BY ? '已在终端作答'
+    : req.status === 'cancelled' && req.resolvedBy === NATIVE_SUPERSEDED_BY ? '已被新问题取代'
+    : req.status === 'cancelled' ? '已取消' : '已超时';
   const lines: string[] = [];
   if (req.answer?.kind === 'form') {
     req.answer.items.forEach((it) => {

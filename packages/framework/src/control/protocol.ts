@@ -321,6 +321,14 @@ export interface LarkAskOp {
   options?: string[];            // single/multi 用
   questions?: AskFormQuestion[]; // form 用（多问题表单）
   timeoutMs?: number;            // 默认 5min
+  /** hook 传 Claude Code pid / cwd：daemon 反查源 tab（定 chat + drive 的目标 tty） */
+  originPid?: number;
+  originCwd?: string;
+  /**
+   * form 专用：AskUserQuestion 原生菜单**正在终端里弹着**，飞书答完由 daemon 用真按键把它按完。
+   * daemon 建完卡**立即返回**（不等作答）；终端先答了由 ask.disarm 作废这张卡。
+   */
+  driveNative?: boolean;
 }
 
 export interface LarkAskData {

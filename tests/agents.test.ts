@@ -115,9 +115,10 @@ describe('hookInstall 规格', () => {
     ]);
   });
 
-  it('claude 侧不落 timeout（保持既有 settings.json 写法）', () => {
+  it('claude 侧只有阻塞型的 AskUserQuestion PreToolUse 显式配 timeout（要 > hook 内 10min 等待上限），其余保持不落', () => {
     for (const s of claudeAdapter.hookInstall.specs) {
-      expect(s.timeoutSec).toBeUndefined();
+      if (s.event === 'PreToolUse' && s.matcher === 'AskUserQuestion') expect(s.timeoutSec).toBeGreaterThan(600);
+      else expect(s.timeoutSec).toBeUndefined();
     }
   });
 
@@ -169,19 +170,20 @@ describe('claude guidance 防回归（byte-identical 锁）', () => {
   // 这里用长度 + sha256 钉住：不是为了禁止修改，而是**让修改必须是有意的** ——
   // 改文案 = 改所有 claude 会话的行为，顺手"优化"措辞不该悄悄溜过去。
   // 真要改：确认是有意的，然后把下面两个值一起更新，并在 CHANGELOG 里写清改了什么、为什么。
+  // 2026-09-24 有意修改：选择题（含多选 / 多问题）一律引导原生 AskUserQuestion（hook 已能转飞书表单），见 CHANGELOG
   const sha = (s: string) => createHash('sha256').update(s).digest('hex');
 
   it('SYSTEM_GUIDANCE 未被无意改动', () => {
-    expect(claudeAdapter.systemGuidance).toHaveLength(2174);
+    expect(claudeAdapter.systemGuidance).toHaveLength(2180);
     expect(sha(claudeAdapter.systemGuidance)).toBe(
-      '5322032ca570b99c8fa6bcf7f263589ad7f175b8303d4a2c0f1c38c2bb3e4c73',
+      '95cb92b29b6b890b3fdf3a426909711697e3505cb174bf12733a23ba031620a6',
     );
   });
 
   it('短提醒未被无意改动', () => {
-    expect(claudeAdapter.tuiReminder).toHaveLength(242);
+    expect(claudeAdapter.tuiReminder).toHaveLength(241);
     expect(sha(claudeAdapter.tuiReminder)).toBe(
-      '3d876f178c84d2700aec002babadb359e6ebadbf962fe4c2e2c8fb1d52552379',
+      '14d4eb0001502bde267bc0e32a42ed97eec60f4d2436335a196b75e512f163d5',
     );
   });
 });

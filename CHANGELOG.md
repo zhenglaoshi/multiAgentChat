@@ -8,6 +8,11 @@
 
 ### 2026-09-24
 
+**新增**
+- **原生 AskUserQuestion 的多问题 / 多选在飞书上能答了（用户报障：「claude 多级选择在飞书上失效，直接给我展开的文本」）**。根因：hook 只给单问题单选出按钮，多问题只推展开文本；09-18 起 claude 几乎不再用 `agent lark ask form`（09-04 引导改成「原生菜单优先」，还留了「人在电脑前多选也可用 AskUserQuestion」的口子；本地直接开的会话根本收不到引导），日志里表单卡从 40 次降到 0。用户选了「驱动原生菜单」，真机实测发现原样做不到（`do script` 每次写入都带 `\r`，单选题只能选中光标项），落地为按在场切换两路：人不在（锁屏 / 闲置 ≥180s）→ hook 阻塞等飞书表单，用 `updatedInput.answers` 直接把答案填给 AskUserQuestion（原生菜单不弹，真机验证）；人在 → 原生菜单照弹，飞书表单答完由 daemon 用 System Events 真按键按完（锁屏 / 屏幕对不上就不按，回执说明）；终端先答了卡片作废。新增宿主能力 `pasteText`（mac 剪贴板 + ⌘V、tmux send-keys -l）承载中文自由输入。引导文案 / skill 同步改为「选择题一律原生 AskUserQuestion」。见 docs/features.md §14.1。
+  - **评审收紧（security 1 medium + code-reviewer 2 medium，均已修；无 high）**：驱动按键**每一步前**都复查菜单还贴底弹着、开始前确认 tab 跑的是 claude（中途被关 / 崩回裸 shell 时，后面的「粘贴自由文本 + Enter」会落进 shell 当命令执行）；同 tab 新菜单顶掉旧卡时标「已被新问题取代」而非「已在终端作答」；剪贴板粘贴进程内串行（多 tab 同时自由输入会互相踩剪贴板、答案被静默串掉）；人不在时卡片标题不再写「终端里弹出中」。
+  - **真机端到端三轮才走通（两处判据 bug 都是真机测出来的，单测没覆盖到）**：① 按完一个键后复查读屏正赶上 claude 清屏重绘，被当成「菜单没了」停手 → 复查改为 ~2s 内轮询；② Review 页底部**没有** `Enter to select` 提示行，被当成菜单已关、差最后一个提交键 → 判据认 Review 页。最终两条路都真机验证：人在（飞书答完自动按完 3 步提交）、人不在（终端不弹菜单、飞书答完 1.5s 内答案填回）。
+
 **修复**
 - **tccd 常驻 ~15% CPU（用户报障，日志定位到 daemon）**。watcher 每 tick 起 1 个 osascript 列 tab + 每个 busy tab 各 1 个 osascript 读 history；跑 claude 的 tab 因 MCP 子进程恒为 busy → 5 个 tab、2s tick 就是 3 个进程/秒，而每个 osascript 进程 tccd 都要对 node 重验一次签名。新增 `HostController.snapshotTabs`：macOS 上**一个** osascript 同时带回 tab 列表 + busy / 有 pending tab 的 history（随机 boundary 分隔，scrollback 里什么控制字符都可能有，不能用 RS/FS），每 tick 恒为 1 个进程；真机对比新旧取法结果一致，单次耗时 817ms → 231ms。tmux 宿主无 TCC，直接复用 listTabsRaw + getHistory。
   - **评审收紧（code-reviewer 2 high + security 1 medium，均已修）**：① 合并后各 tab 的 history 在脚本里**串行**读、耗时累加，共用 10s 超时一旦超时整轮都丢 history → 快照单独给 30s（watcher 有重入守卫，慢 tick 只跳拍不堆积），>3s 打 warn；② 但 30s 不能套到只列 tab 的 `listTabsRaw`（它是 `send()` 的第一步，授权弹框卡住时要 10s 内报错）→ 按 mode 分开；③ 分隔 history 的随机 boundary 原经 argv 传入，同用户进程 `ps -ww` 可见，tab 里的程序拿到后能伪造「别的 tty 的 history」→ 改为内插进脚本正文经 stdin 送入，解析时再只认本轮真实存在的 tty、每 tty 只认第一帧。`LIST_SCRIPT` 删除，`listTabsRaw` 与快照共用同一段脚本（记录拼装 / 分隔符剥离只维护一份）。

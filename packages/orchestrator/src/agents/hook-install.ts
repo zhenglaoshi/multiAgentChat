@@ -54,7 +54,7 @@ export function resolveHookSpecs(
 
 type ClaudeHookEntry = {
   matcher?: string;
-  hooks?: Array<{ type?: string; command?: string }>;
+  hooks?: Array<{ type?: string; command?: string; timeout?: number }>;
 };
 type ClaudeSettings = {
   hooks?: { [slot: string]: ClaudeHookEntry[] | undefined };
@@ -97,7 +97,7 @@ export function applyClaudeHooks(
   for (const s of specs) {
     hooks[s.event]!.push({
       matcher: s.matcher,
-      hooks: [{ type: 'command', command: s.command }],
+      hooks: [{ type: 'command', command: s.command, ...(s.timeoutSec !== undefined ? { timeout: s.timeoutSec } : {}) }],
     });
   }
   return { removed };

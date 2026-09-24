@@ -117,11 +117,14 @@ agent lark send-card "$(cat /tmp/card.json)"
 - **不要把凭证写进代码** —— 凭证由 multiAgentChat 服务持有，你不需要知道
 - 如果 `agent.sock` 不存在或 `agent` 命令不可用，**直接告诉用户**（"multiAgentChat 服务没在跑"），不要瞎 try 别的飞书发送方式
 
-## ⚠️ 让用户选选项 / 填输入：用 `agent lark ask`（不要 AskUserQuestion）
+## ⚠️ 让用户选选项 / 填输入
 
-**为什么**：AskUserQuestion / TUI 选项框绘制在 alt-screen buffer 里，飞书那边看不见。手机端用户根本无从选。
+**Claude Code 里的选择题（单选 / 多选 / 多问题）→ 直接用原生 `AskUserQuestion`**。项目的 hook 会自动把它接到飞书：
+单选镜像成按钮卡；多选 / 多问题转成飞书表单卡 —— 人不在电脑前时终端不弹菜单、飞书答完答案直接填回，
+人在电脑前时原生菜单照弹、飞书答完自动替人按完。电脑 / 手机两边都能答。
 
-**规则**：需要用户在**多个选项里选**（单选/多选）或**填一段文本**时，直接调 `agent lark ask`，它会弹一张飞书交互卡片，用户手指点选/回复文本，答案 JSON 从 stdout 回给你。用户完全不用手打命令。
+**填一段自由文本、或不想弹原生菜单（codex 等没有这套 hook 的 agent 一律如此）** → 调 `agent lark ask`：
+弹一张飞书交互卡片，用户手指点选 / 回复文本，答案 JSON 从 stdout 回给你。用户完全不用手打命令。
 
 ### 单选（radio）
 

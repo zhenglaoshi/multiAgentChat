@@ -59,7 +59,8 @@ export const claudeAdapter: AgentAdapter = {
     format: 'claude-settings-json',
     specs: [
       { event: 'Stop', matcher: '*', script: 'mchat-stop-hook', purpose: 'turn 结束把 last_assistant_message 推飞书' },
-      { event: 'PreToolUse', matcher: 'AskUserQuestion', script: 'mchat-pretooluse-hook', purpose: '原生选项菜单弹出前先把问题+选项镜像到飞书' },
+      // 660s：多问题菜单在人不在时要阻塞等飞书表单作答（hook 内上限 10min），必须显式放宽，不能赌 Claude Code 的默认值
+      { event: 'PreToolUse', matcher: 'AskUserQuestion', script: 'mchat-pretooluse-hook', purpose: '原生选项菜单弹出前先把问题+选项镜像到飞书；多问题/多选人不在时等飞书表单直接填答案', timeoutSec: 660 },
       { event: 'PostToolUse', matcher: 'AskUserQuestion', script: 'mchat-posttooluse-hook', purpose: '本地作答后关卡（清 chat.askArm）' },
       { event: 'PreToolUse', matcher: 'Bash', script: 'mchat-permission-hook', purpose: '高危命令抢在原生提示前推飞书审批卡' },
       { event: 'PreToolUse', matcher: 'Task', script: 'mchat-task-hook', purpose: 'SOP 阶段自动 --start 打点' },

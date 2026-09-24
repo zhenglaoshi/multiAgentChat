@@ -116,6 +116,7 @@ interface Flags {
   options?: string;       // agent lark ask --options "a,b,c" (逗号分隔简写)
   specJson?: string;      // agent lark ask form --spec-json '{"questions":[...]}'（多问题表单）
   timeoutMs?: number;     // agent lark ask --timeout <ms>
+  driveNative?: boolean;  // agent lark ask form --drive-native：飞书答完由 daemon 按键驱动终端里的原生菜单（hook 用）
   to?: string;            // agent handoff send --to @bob（别名或邮箱）
   summaryFile?: string;   // agent handoff send --summary-file <path>（markdown 正文）
   dir?: string;           // agent handoff pull --dir <path>（附件落盘目录）
@@ -225,6 +226,8 @@ function parseArgs(args: string[]): Flags {
       flags.optionsJson = args[++i] ?? die('--options-json 需要 JSON');
     } else if (a === '--options') {
       flags.options = args[++i] ?? die('--options 需要 csv');
+    } else if (a === '--drive-native') {
+      flags.driveNative = true;
     } else if (a === '--spec-json') {
       flags.specJson = args[++i] ?? die('--spec-json 需要 JSON');
     } else if (a === '--timeout' || a === '--timeout-ms') {
@@ -883,18 +886,28 @@ async function cmdLark(flags: Flags): Promise<void> {
       } catch (e) {
         die(`--spec-json 解析失败: ${(e as Error).message}`);
       }
-      const chatId = await resolveTargetChatId(flags);
-      stderr.write(`⏳ 等待飞书表单答复… (chat=${chatId}, questions=${questions.length})\n`);
+      // hook 调用时 stdin 是管道、`tty` 拿不到 → 带了 --origin-pid 就交给 daemon 按源 tab 反查 chat
+      const byOrigin = !flags.chat && flags.originPid !== undefined;
+      const chatId = byOrigin ? undefined : await resolveTargetChatId(flags);
+      stderr.write(`⏳ 等待飞书表单答复… (chat=${chatId ?? 'by-origin'}, questions=${questions.length})\n`);
       const reqPayload: Request = {
         op: 'lark.ask',
-        chatId,
+        ...(chatId ? { chatId } : {}),
         type: 'form',
         title: flags.title,
         questions,
         ...(flags.timeoutMs ? { timeoutMs: flags.timeoutMs } : {}),
+        ...(flags.originPid !== undefined ? { originPid: flags.originPid } : {}),
+        ...(flags.originCwd ? { originCwd: flags.originCwd } : {}),
+        ...(flags.driveNative ? { driveNative: true } : {}),
       };
       const data = await sendOnce<LarkAskData>(reqPayload);
       const req = data.request;
+      if (flags.driveNative) {
+        // daemon 已接管（卡发出去了，答了它来按键），这里不等
+        stdout.write(JSON.stringify({ status: 'driving', id: req.id }) + '\n');
+        exit(0);
+      }
       if (req.status === 'answered' && req.answer?.kind === 'form') {
         stdout.write(JSON.stringify({ status: 'answered', type: 'form', answers: req.answer.items }) + '\n');
         exit(0);

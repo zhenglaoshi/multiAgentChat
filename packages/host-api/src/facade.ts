@@ -72,6 +72,7 @@ export const sendKeys = (
   tokens: string | string[],
   opts?: SendKeysOptions,
 ): Promise<void> => getHost().sendKeys(tty, tokens, opts);
+export const pasteText = (tty: string, text: string): Promise<void> => getHost().pasteText(tty, text);
 export const sendCtrlC = (tty: string): Promise<void> => getHost().sendCtrlC(tty);
 export const waitForOutput = (
   tty: string,
