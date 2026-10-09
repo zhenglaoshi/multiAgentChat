@@ -130,6 +130,13 @@ export async function getHistory(tty: string): Promise<string> {
   return captureByPane(pane);
 }
 
+/** 只取当前可视屏幕（不带 `-S` scrollback）—— 对齐 host-mac 的 `contents of tab`。paneId 同样只信 resolvePane。 */
+export async function readScreen(tty: string): Promise<string> {
+  const pane = await resolvePane(tty);
+  if (!pane) return '';
+  return (await runTmuxSoft(['capture-pane', '-p', '-J', '-t', pane])) ?? '';
+}
+
 /**
  * 抓屏的底层调用。
  *

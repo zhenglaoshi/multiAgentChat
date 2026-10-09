@@ -8,7 +8,7 @@
 export { tmuxHost, TMUX_HOST_CAPABILITIES } from './host.js';
 export { tmuxAvailable, TmuxError, MCHAT_SESSION, sendLiteral, buildTmuxErrorMessage } from './tmux.js';
 export { parseProcName, parsePsLine, groupProcsByTty, inferBusy, detectSelfTty } from './procs.js';
-export { parsePaneRow, listTabs, listTabsRaw, getHistory, send, sendKeysRaw, forceEnter, newTab, closeTab, buildNewTabArgs, newSessionName } from './tabs.js';
+export { parsePaneRow, listTabs, listTabsRaw, getHistory, readScreen, send, sendKeysRaw, forceEnter, newTab, closeTab, buildNewTabArgs, newSessionName } from './tabs.js';
 export { closeTabGracefully, exitAgentInTab, restartAgentInPlace } from './lifecycle.js';
 export { toTmuxKey, sendKeys, sendCtrlC } from './keys.js';
 export { isWSL, parseAcStandbyTimeout, parsePowerSourceFromSysfs, detectKeepAwake, WSL_KEEP_AWAKE_CMD } from './keep-awake.js';

@@ -254,6 +254,33 @@ export async function getHistory(tty: string): Promise<string> {
   return runScriptOrThrow(HISTORY_SCRIPT, [tty]);
 }
 
+// tab 的 `contents` 属性 = 当前可视屏幕。claude TUI 原地重绘的输入框只在这里是实时的，
+// `history of t` 里那份是旧的（实测 2026-10-09：输入框挂着整段文本，history 尾部仍是空的 ❯）。
+// ⚠ 不能写 `repeat with t in tabs of w` + `contents of t`：循环变量是**引用**，`contents of 引用`
+// 是 AppleScript 的解引用操作，拿回的是 tab 对象本身而不是屏幕文本（实测返回空串）。用下标取 tab。
+const SCREEN_SCRIPT = `
+on run argv
+  set targetTty to item 1 of argv
+  tell application "Terminal"
+    repeat with w in windows
+      try
+        set tCount to count of tabs of w
+        repeat with i from 1 to tCount
+          if (tty of tab i of w) is equal to targetTty then
+            return (contents of tab i of w) as text
+          end if
+        end repeat
+      end try
+    end repeat
+  end tell
+  return ""
+end run
+`;
+
+export async function readScreen(tty: string): Promise<string> {
+  return runScriptOrThrow(SCREEN_SCRIPT, [tty]);
+}
+
 function escapeForAS(text: string): string {
   return text.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }

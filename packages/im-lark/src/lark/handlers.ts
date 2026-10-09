@@ -11,8 +11,10 @@ import { ragRecall, formatRagPrefix } from 'multiagent-orchestrator';
 import { pendingTracker, markRemoteWrite } from '../monitor/pending.js';
 import { healIfWedged } from '../monitor/stuck-shell.js';
 import { recordInbound } from '../monitor/ws-watchdog.js';
-import { captureScreen, closeTabGracefully, detectSelfTty, forceEnter, getHistory, getUserFocus, hostCapabilities, isScreenLocked, launchAgentInTab, launchDefaultAgentInTab, listTabs, newTab, openPermissionPane, send, sendCtrlC, sendKeys, sendKeysRaw } from 'multiagent-host-api';
+import { captureScreen, closeTabGracefully, detectSelfTty, getHistory, getUserFocus, hostCapabilities, isScreenLocked, launchAgentInTab, launchDefaultAgentInTab, listTabs, newTab, openPermissionPane, send, sendCtrlC, sendKeys, sendKeysRaw } from 'multiagent-host-api';
 import { detectAgentFromProcs, listAgentAdapters, looksLikeAgentTask, shouldSubmitPromptAfterSend } from 'multiagent-orchestrator';
+import { submitPrompt } from './submit-prompt.js';
+
 import type { HandoffStatus } from 'multiagent-orchestrator';
 
 // SYSTEM_GUIDANCE 的去重 — per-tab，每 tty 6h 内最多注入一次
@@ -181,6 +183,19 @@ import { buildSopWrapperPrompt } from 'multiagent-orchestrator';
 import { buildTapdPrompt } from 'multiagent-orchestrator';
 import { buildStageProgressCardFromTask } from './task-render.js';
 import { homedir } from 'node:os';
+
+/** 自动开工路径的「提交」：没提交成功（补满回车仍挂着 / 读屏异常）时打 warn 并返回告警文案，调用方拼进回执。 */
+async function submitOrWarnText(tty: string, text: string): Promise<string> {
+  try {
+    const { stuck, enters } = await submitPrompt(tty, text);
+    if (!stuck) return '';
+    logger.warn('auto-dispatch: 文本仍挂在输入框未提交', { tty, enters });
+    return `\n⚠️ 补了 ${enters} 次回车，任务文本**仍挂在 ${tty} 的输入框里没提交** —— 请到终端按一下回车。`;
+  } catch (e) {
+    logger.warn('auto-dispatch: submitPrompt 失败', { tty, err: (e as Error).message });
+    return `\n⚠️ 提交 ${tty} 时出错（${(e as Error).message}），任务可能没开始，请去看一眼。`;
+  }
+}
 
 interface MessageReceiveEvent {
   message: {
@@ -1516,12 +1531,17 @@ async function dispatchSendToTab(
   // 块内 \r 只算换行；要再单独送一个 \r 才算真回车。forceEnter 默认走 pty 直写（空 do script），
   // 不依赖前台焦点——合盖锁屏 / 别的 app 在前台也照常提交（详见 host-mac forceEnter）。
   if (result.ok && shouldSubmitPromptAfterSend(tab.processes)) {
-    // do script 已经把字符送进去，等 0.4s 让 TUI 先消化文本块（两块若被合并读取会整体当粘贴不提交）
-    await new Promise((r) => setTimeout(r, 400));
+    // submitPrompt：等粘贴落定 → 回车 → 读屏校验 → 没提交再补（claude 粘贴后的第一个 \r 会被吞，见 submit-prompt.ts）
     try {
-      const fe = await forceEnter(tab.tty);
-      logger.info('forceEnter sent', { tty: tab.tty, ok: fe.ok, blocked: fe.blocked, frontApp: fe.frontApp, via: fe.via });
-      if (fe.blocked) {
+      const { fe, enters, stuck } = await submitPrompt(tab.tty, finalText);
+      logger.info('forceEnter sent', { tty: tab.tty, ok: fe.ok, blocked: fe.blocked, frontApp: fe.frontApp, via: fe.via, enters, stuck });
+      if (stuck) {
+        void sendText(
+          client,
+          ctx.chatId,
+          `⚠️ 命令已发到 ${tab.tty}，但连补 ${enters} 次回车后文本**仍挂在输入框里**没提交。请到终端按一下回车，或 /shells 看看那个 tab 的状态。`,
+        ).catch(() => {});
+      } else if (fe.blocked) {
         // 系统弹框/锁屏抢了焦点，前台守卫拦住没盲按回车（防误触弹框默认键）。
         // 命令文本已注入 tab 但没提交 → 告警，让用户处理完弹框后重发/补回车。
         const who = fe.frontApp ? `「${fe.frontApp}」` : '锁屏/未知窗口';
@@ -1731,6 +1751,7 @@ async function finalizeTapdClaim(
 
     const tapdPrompt = buildTapdPrompt(claim, results);
     let modeNote: string;
+    let sentPrompt: string;
     if (claim.sop) {
       // 需求（或用户切成 SOP）：跑多 stage SOP（Explore→需求分析→架构→[gate]→编码→测试→回归）
       const taskId = generateTaskId();
@@ -1750,15 +1771,17 @@ async function finalizeTapdClaim(
         const mid = await sendCardReturnId(client, chatId, buildStageProgressCardFromTask(task, homedir()));
         if (mid) await setTaskProgressMessageId(task.taskId, mid);
       } catch { /* 降级：无进度卡 */ }
-      await send(tty, buildSopWrapperPrompt(task, tapdPrompt));
+      sentPrompt = buildSopWrapperPrompt(task, tapdPrompt);
+      await send(tty, sentPrompt);
       modeNote = `🎯 SOP 编排 · task \`${task.taskId}\`（after-architect 有审批 gate）`;
     } else {
       // 缺陷：普通任务，直接修
-      await send(tty, tapdPrompt);
+      sentPrompt = tapdPrompt;
+      await send(tty, sentPrompt);
       modeNote = '🔧 普通任务（直接修）';
     }
-    await new Promise((r) => setTimeout(r, 600));
-    await forceEnter(tty).catch(() => {});
+    const submitWarn = await submitOrWarnText(tty, sentPrompt);
+    if (submitWarn) void sendText(client, chatId, `TAPD 认领 ${claim.title.slice(0, 40)}：${submitWarn.trim()}`).catch(() => {});
     claim.status = 'working'; claim.tty = tty;
     claim.stage = 'fixing'; claim.chatId = chatId; // A 生命周期
     // B：记住该项目的 repo/基准/模式，下次认领自动预选
@@ -1814,7 +1837,7 @@ function buildPerfClaimPrompt(item: PerfItem, tapdUrl?: string): string {
 async function openTaskWorktreeTab(opts: {
   kind: 'fix' | 'feature'; id6: string; localPath?: string; prompt: string;
   chatId: string; title: string; id: string; source: 'perf' | 'tapd'; tapdUrl?: string;
-}): Promise<{ isolated: boolean; tty?: string; taskDir?: string }> {
+}): Promise<{ isolated: boolean; tty?: string; taskDir?: string; submitWarn?: string }> {
   if (!opts.localPath) return { isolated: false };
   const orch = await import('multiagent-orchestrator');
   const name = opts.localPath.split('/').filter(Boolean).pop() || opts.localPath;
@@ -1833,10 +1856,9 @@ async function openTaskWorktreeTab(opts: {
   await launchDefaultAgentInTab(tty, { continueSession: false });
   await new Promise((r) => setTimeout(r, 1500));
   await send(tty, opts.prompt);
-  await new Promise((r) => setTimeout(r, 600));
-  await forceEnter(tty).catch(() => {});
+  const submitWarn = await submitOrWarnText(tty, opts.prompt);
   const chat = await loadChat(opts.chatId); chat.activeTty = tty; chat.lastActiveAt = Date.now(); await saveChat(chat);
-  return { isolated: true, tty, ...(ws.taskDir ? { taskDir: ws.taskDir } : {}) };
+  return { isolated: true, tty, ...(ws.taskDir ? { taskDir: ws.taskDir } : {}), ...(submitWarn ? { submitWarn } : {}) };
 }
 
 
@@ -2013,8 +2035,8 @@ async function openLetterWorkspace(
   }
 
   await send(tty, prompt);
-  await new Promise((r) => setTimeout(r, 600));
-  await forceEnter(tty).catch(() => {});
+  const submitWarn = await submitOrWarnText(tty, prompt);
+  if (submitWarn) void sendText(client, chatId, `公函开工：${submitWarn.trim()}`).catch(() => {});
 
   const chat = await loadChat(chatId);
   chat.activeTty = tty;
@@ -2401,7 +2423,7 @@ async function handleCardAction(
           ...(storyUrl ? { tapdUrl: storyUrl } : {}),
         });
         if (wt.isolated) {
-          void sendText(client, chatId, `📁 已建隔离目录：${wt.taskDir}\n🔧 已在新 tab ${wt.tty} 开修「${item.title.slice(0, 40)}」（含需求链接，fix_${id6} 分支）`);
+          void sendText(client, chatId, `📁 已建隔离目录：${wt.taskDir}\n🔧 已在新 tab ${wt.tty} 开修「${item.title.slice(0, 40)}」（含需求链接，fix_${id6} 分支）${wt.submitWarn ?? ''}`);
         } else {
           await sendToActiveTab(client, ctx, prompt);
           void sendText(client, chatId, `🔧 已认领「${item.title.slice(0, 40)}」（本地无该 repo 源，未建隔离目录）→ 上下文已发 active tab（没设先 /use @xxx）`);

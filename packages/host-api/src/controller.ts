@@ -95,6 +95,11 @@ export interface HostController {
   /** 取 scrollback 全文。⚠ 变化检测一律用字符数不是行数（见 CLAUDE.md） */
   getHistory(tty: string): Promise<string>;
   /**
+   * 取 tab **当前可视屏幕**的文本（不含 scrollback）。用于校验「输入框里还挂没挂着刚发的文本」：
+   * macOS 的 `history of tab` 读不到 claude TUI 当前重绘的输入框（是旧的），只有 `contents of tab` 是实时的。
+   */
+  readScreen(tty: string): Promise<string>;
+  /**
    * 列 tab + 顺带取 busy tab（及 opts.historyTtys）的 history，**一次宿主调用**完成。
    * watcher 每 tick 走这里：macOS 上每起一个 osascript 进程 tccd 都要重验一次签名，
    * 按 tab 逐个 getHistory 会把 tccd 顶到 15%+ CPU（5 个 claude tab、2s tick 实测）。

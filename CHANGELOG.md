@@ -6,6 +6,13 @@
 
 ## [未发布]
 
+### 2026-10-09
+
+**修复**
+- **飞书发到 claude tab 的消息又挂在输入框里不提交（用户报障）**。真机复现 + 读屏定位：Claude Code 2.1.280 新增了粘贴安全确认——`do script` 整块写入的「文本+`\r`」被当粘贴，块尾 `\r` 算不可见字符被剥掉，补的第一个回车只会弹出 `Removed 1 invisible character · review and press Enter to send`，**要再按一次才发出**。实测 143 字、3KB、8.8KB 在原写法（send → 400/600ms → forceEnter 一次）下全部挂住；23 字以下不算粘贴、靠块尾 `\r` 直接提交，所以短命令一直正常，掩盖了问题（昨晚那条带了首次/6h 系统引导 + RAG ≈ 7KB）。新增 `submitPrompt`（im-lark）：等正文末尾出现在屏幕上 → 回车 → 读屏校验 → 没提交再补，最多 3 次，仍挂着推飞书告警；飞书派发 / TAPD 认领 / perf 认领 / 公函开工四处统一改用它，自动开工三处没提交时也会在回执里告警。宿主新增 `readScreen`（mac = tab `contents` 可视屏；`history` 里的输入框是旧的；tmux = 不带 scrollback 的 capture-pane）。真机端到端：23 字 1 次、143 字 / 3KB / 8KB 均 2 次回车实际发出。
+  - **评审收紧（security 1 high + code-reviewer 1 high，均已修）**：① 补回车只在两种情况下发生——屏幕明确出现 claude 的「press Enter to send」，或回车前后屏幕底部毫无变化——且正文仍在输入框；出现选项菜单（`❯ 1. Yes`）/ 空输入框 / 响应输出 / thinking spinner / 读不到屏 → 一律不补，防止提交后已弹权限菜单时多补的 `\r` 替人点了「允许」；② TAPD / perf / 公函三处自动开工原来把「没提交」吞掉、照样回「已开工」→ 现在告警。
+  - 踩坑记录：AppleScript `repeat with t in tabs of w` 里 `contents of t` 是**解引用**，拿回的是 tab 对象不是屏幕文本（返回空串）——`readScreen` 改为按下标取 tab；claude 回车后会整屏重绘清掉顶部 shell 残留，「屏幕没变」只能比底部几行。
+
 ### 2026-09-24
 
 **新增**

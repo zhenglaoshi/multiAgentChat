@@ -53,6 +53,7 @@ export const enrichTabsWithCwd = (tabs: TerminalTab[]): Promise<TerminalTab[]> =
   getHost().enrichTabsWithCwd(tabs);
 export const getCwd = (tty: string): Promise<string | undefined> => getHost().getCwd(tty);
 export const getHistory = (tty: string): Promise<string> => getHost().getHistory(tty);
+export const readScreen = (tty: string): Promise<string> => getHost().readScreen(tty);
 export const snapshotTabs = (opts?: SnapshotTabsOptions): Promise<TabsSnapshot> =>
   getHost().snapshotTabs(opts);
 export const detectSelfTty = (): string | undefined => getHost().detectSelfTty();
