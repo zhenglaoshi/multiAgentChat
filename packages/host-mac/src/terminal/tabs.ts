@@ -60,8 +60,10 @@ on run argv
   -- boundary 由 JS 每次生成后直接写进脚本正文（经 stdin 送给 osascript），**不走 argv**：
   -- argv 对同用户进程 \`ps -ww\` 可见，tab 里的程序拿到它就能在自己的 scrollback 里伪造「别的 tty 的 history」
   set boundary to (character id 29) & "__MCHAT_BOUNDARY__"
-  -- mode: "busy" = busy tab + extraTtys 带回 history；"none" = 只列 tab（listTabsRaw）
-  set wantHist to ((item 1 of argv) is "busy")
+  -- mode: "busy" = busy tab + extraTtys 带回 history；"listed" = 只带 extraTtys；"none" = 只列 tab（listTabsRaw）
+  set histMode to (item 1 of argv)
+  set wantHist to (histMode is "busy" or histMode is "listed")
+  set busyHist to (histMode is "busy")
   set extraTtys to {}
   if (count of argv) > 1 then set extraTtys to items 2 thru -1 of argv
   set metaParts to {}
@@ -109,7 +111,7 @@ on run argv
               set theProcs to my stripSeps(p2)
             end try
             set end of metaParts to (wId as text) & fs & isFront & fs & (tIdx as text) & fs & theTty & fs & theBusy & fs & theTitle & fs & theProcs & rs
-            if wantHist and (theBusy is "true" or extraTtys contains theTty) then
+            if wantHist and ((busyHist and theBusy is "true") or extraTtys contains theTty) then
               try
                 set end of histParts to boundary & theTty & linefeed & ((history of t) as text)
               end try
@@ -167,19 +169,20 @@ export function parseSnapshotOutput(stdout: string, boundary: string): TabsSnaps
 const SNAPSHOT_TIMEOUT_MS = 30_000;
 const SNAPSHOT_SLOW_WARN_MS = 3_000;
 
-async function runSnapshot(mode: 'busy' | 'none', historyTtys: string[]): Promise<TabsSnapshot> {
+async function runSnapshot(mode: 'busy' | 'listed' | 'none', historyTtys: string[]): Promise<TabsSnapshot> {
   // 只含 [A-Za-z0-9-:]，可安全内插进 AppleScript 字符串字面量；GS 前缀在脚本里拼（character id 29）
   const token = `MCHAT-HIST-${randomBytes(12).toString('hex')}:`;
   const boundary = `${String.fromCharCode(29)}${token}`;
   const script = SNAPSHOT_SCRIPT.replace('__MCHAT_BOUNDARY__', token);
   const started = Date.now();
-  // 只有真要串行读 history 的 mode=busy 才放宽到 30s；mode=none（listTabsRaw，send() 的第一步）
+  // 只有真要串行读 history 的 mode=busy/listed 才放宽到 30s；mode=none（listTabsRaw，send() 的第一步）
   // 不读 history，保持全局默认超时 —— 授权弹框卡住时飞书发命令仍是 10s 内报错，而不是 30s
-  const r = await runScript(script, [mode, ...historyTtys], mode === 'busy' ? SNAPSHOT_TIMEOUT_MS : undefined);
+  const readsHist = mode !== 'none';
+  const r = await runScript(script, [mode, ...historyTtys], readsHist ? SNAPSHOT_TIMEOUT_MS : undefined);
   if (r.code !== 0) throw new Error(`osascript exit ${r.code}: ${r.stderr || r.stdout}`);
   const snap = parseSnapshotOutput(r.stdout, boundary);
   const ms = Date.now() - started;
-  if (mode === 'busy' && ms > SNAPSHOT_SLOW_WARN_MS) {
+  if (readsHist && ms > SNAPSHOT_SLOW_WARN_MS) {
     logger.warn('snapshotTabs 偏慢（history 串行读取，逼近超时会让整轮拿不到 history）', {
       ms, timeoutMs: SNAPSHOT_TIMEOUT_MS, tabs: snap.tabs.length, histories: snap.histories.size,
       chars: [...snap.histories.values()].reduce((n, h) => n + h.length, 0),
@@ -189,7 +192,7 @@ async function runSnapshot(mode: 'busy' | 'none', historyTtys: string[]): Promis
 }
 
 export async function snapshotTabs(opts: SnapshotTabsOptions = {}): Promise<TabsSnapshot> {
-  return runSnapshot('busy', opts.historyTtys ?? []);
+  return runSnapshot(opts.includeBusy === false ? 'listed' : 'busy', opts.historyTtys ?? []);
 }
 
 function execCapture(cmd: string, args: string[]): Promise<string> {

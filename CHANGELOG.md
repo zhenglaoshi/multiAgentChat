@@ -6,6 +6,13 @@
 
 ## [未发布]
 
+### 2026-10-23
+
+**修复**
+- **Terminal.app 常驻 50~70% CPU（用户反馈：「重启 multiAgentChat 基本没用」）**。根因不是泄漏而是设计：watcher 每 tick 把**所有 busy tab** 的 `history` 全量读一遍，而 claude/codex tab 永远 busy、scrollback 动辄几百 KB（实测 12 个 tab 共 ~2.6MB），每 tick 都让 Terminal 序列化一遍。改为：有 pending 的 tab、busy 的裸 shell 仍每 tick 读；**无 pending 的 agent tab 降到每 15s 读一次**（`WATCHER_AGENT_HIST_MS`，按「最久没读优先 + 每 tick 份额」摊匀，避免同一拍集中到期）。宿主契约 `snapshotTabs` 新增 `includeBusy: false`（mac 新增 AppleScript mode `listed`，tmux 同步）。实测单次快照 ~500ms → ~270ms（12 个 tab，无 pending 时）。
+  - 原生菜单镜像跟着改：只在 watcher 缓存**真刷新**后才推进判定（同一份旧缓存不再被数成「连续稳定」）；有菜单 / 已 arm 的 tty 通过 `watcher.keepHot` 维持每 tick 读（60s 续期，续期放在早退之前，防一次慢推卡让 disarm 被拖后）；新 agent tab 首次出现预热 60s，尽快建立屏幕基线，避免第一个菜单落进 bootstrap 降级。
+  - 评审：security-reviewer 1 medium（disarm 时延自续链可断）+ code-reviewer 1 medium bug（`histFetchedAt`/`hotUntil` 清理挂在 `stuckLastCheck` 上，agent tab 关掉后不清、tty 复用会继承旧时间戳）均已修；测试 `tests/watcher-history-pick.test.ts`。
+
 ### 2026-10-09
 
 **修复**

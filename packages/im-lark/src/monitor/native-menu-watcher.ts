@@ -126,6 +126,14 @@ interface Snapshot {
   pending: { frag: string[]; regionHash: string } | null;
 }
 const snapshots = new Map<string, Snapshot>();
+/** per-tty 上次处理过的 watcher history 刷新时刻（同一份缓存只处理一次） */
+const lastSeenFetch = new Map<string, number>();
+/** 看到菜单后让 watcher 保持每 tick 读该 tty 的时长；菜单还在就每次续期。
+ *  取 60s：要盖过同一轮 tick 里串行 pushMenu（withRetry 重试 + 退避 + 网络）的最坏耗时，免得续期断档 */
+const HOT_MS = 60_000;
+/** 新 agent tab 首次出现后最多高频读这么久来建立屏幕基线 */
+const WARMUP_MS = 60_000;
+const warmupStart = new Map<string, number>();
 /**
  * 片段离屏幕底部的距离（行），同时也是「稳定性指纹」排除的底部区域。要大于 TUI 一帧重绘覆盖的**视口行数**
  * （TUI 只能重绘视口，视口之上的 scrollback 不可寻址），又不能大到把上一段审批常态性地带进来。
@@ -359,6 +367,23 @@ async function pushMenu(
 
 /** 单个 tab 的处理。抛错由调用方吞掉并继续下一个 tab。 */
 async function tickTab(client: Lark.Client, tab: { tty: string; cwd?: string; processes: string[] }): Promise<void> {
+  // watcher 对无 pending 的 agent tab 是降频读 history 的：缓存没刷新 = 没有新屏幕，什么都别推进 ——
+  // 否则同一份旧缓存会被反复数成「连续稳定 N 次」，菜单消失也要等到下次刷新才看得到
+  // 有菜单状态（含已推卡 arm 着）的 tty 先续 hot 再判新鲜度：续期不能排在「没新数据就早退」之后，
+  // 否则一次慢 tick 让 hot 过期 → 退回降频 → 拿不到新数据 → 又早退，disarm 被一路拖后
+  if (states.has(tab.tty)) watcher.keepHot(tab.tty, HOT_MS);
+  // 新 agent tab 预热：还没建立「菜单出现前」的屏幕基线（frag）时保持高频读，否则降频节奏下
+  // 基线要 ~30s 才建得起来，期间弹出的第一个菜单只能走 bootstrap 降级（扫全屏 → 多半超预算 → 无按钮卡）。
+  // 预热有上限：一直在刷屏的 tab 可能长期建不起基线，不能因此永久每 tick 读。
+  else if (detectAgentFromProcs(tab.processes) && !snapshots.get(tab.tty)?.frag) {
+    const first = warmupStart.get(tab.tty) ?? Date.now();
+    warmupStart.set(tab.tty, first);
+    if (Date.now() - first < WARMUP_MS) watcher.keepHot(tab.tty, POLL_MS * 2);
+  }
+  const fetchedAt = watcher.getHistoryFetchedAt(tab.tty);
+  if (fetchedAt === undefined || lastSeenFetch.get(tab.tty) === fetchedAt) return;
+  lastSeenFetch.set(tab.tty, fetchedAt);
+
   const screen = watcher.getCachedHistory(tab.tty);
   const prev = states.get(tab.tty);
 
@@ -400,6 +425,10 @@ async function tickTab(client: Lark.Client, tab: { tty: string; cwd?: string; pr
     states.delete(tab.tty);
     return;
   }
+
+  // 有菜单在场 → 让 watcher 每 tick 读这个 tty：稳定判定与「菜单消失 → disarm」都要跟上实时，
+  // 不能等降频周期（arm 悬着期间纯数字消息会被注进已经翻篇的 tty）。菜单在就一直续期。
+  watcher.keepHot(tab.tty, HOT_MS);
 
   if (!prev || prev.fingerprint !== menu.fingerprint) {
     // 新菜单（或菜单变了）→ 重新计稳定次数。菜单变了同样要先解掉旧 arm
@@ -454,6 +483,12 @@ async function tick(client: Lark.Client): Promise<void> {
   for (const tty of [...snapshots.keys()]) {
     if (!alive.has(tty)) snapshots.delete(tty);
   }
+  for (const tty of [...lastSeenFetch.keys()]) {
+    if (!alive.has(tty)) lastSeenFetch.delete(tty);
+  }
+  for (const tty of [...warmupStart.keys()]) {
+    if (!alive.has(tty)) warmupStart.delete(tty);
+  }
 }
 
 /**
@@ -486,4 +521,6 @@ export function stopNativeMenuMirror(): void {
   timer = null;
   states.clear();
   snapshots.clear();
+  lastSeenFetch.clear();
+  warmupStart.clear();
 }

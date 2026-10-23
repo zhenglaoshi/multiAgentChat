@@ -47,6 +47,15 @@ const HEAL_CHECK_INTERVAL_MS = 10_000;
 // 只对「本项目最近 5min 内写过」的 tab 自愈——超出这窗口的裸 shell 视为用户自己在用，不碰
 const HEAL_REMOTE_WRITE_WINDOW_MS = 5 * 60 * 1000;
 
+// 没有飞书 pending 的 agent tab（claude/codex 常驻 = 永远 busy）多久读一次 history。
+// 这类 tab 的 history 只喂「本地任务检测」（自带 30s cooldown）和 fleet 卡住哨兵（分钟级），不需要每 tick 读；
+// 而 scrollback 动辄几百 KB，12 个 tab 每 tick 全量读一遍 ≈ 2.3s，让 Terminal.app 常驻 50~70% CPU（实测 2026-10-23）。
+// 有 pending 的 tab、以及跑普通命令的裸 shell（needsInput 要及时）仍每 tick 读。
+const AGENT_IDLE_HIST_MS = (() => {
+  const v = Number(process.env['WATCHER_AGENT_HIST_MS']);
+  return Number.isFinite(v) && v >= 0 ? v : 15_000;
+})();
+
 const PENDING_HARD_TIMEOUT_MS = 60 * 60 * 1000;
 const PARAGRAPH_STABLE_MS = 30 * 1000;
 const STABLE_REMOVE_MS = 3 * 60 * 1000;
@@ -97,6 +106,10 @@ export class TabWatcher {
   private stuckLastLen = new Map<string, number>();
   private stuckHealed = new Set<string>();
   private autoUnwedge = process.env['MCHAT_AUTO_UNWEDGE'] !== '0'; // 默认开，=0 关
+  // 每个 tty 上次在快照里拿到 history 的时刻（agent tab 降频用）
+  private histFetchedAt = new Map<string, number>();
+  // 旁路模块（原生菜单镜像）要求某 tty 在一段时间内每 tick 都读 history：tty → 截止时刻
+  private hotUntil = new Map<string, number>();
 
   constructor(opts: { pollMs?: number; renotifyMs?: number } = {}) {
     // 默认 1s poll —— 让飞书卡片有"接近流式"的更新节奏（原来 3s 太慢）
@@ -128,7 +141,10 @@ export class TabWatcher {
     try {
       // 一次宿主调用拿 tab 列表 + busy/pending tab 的 history（macOS 上 = 1 个 osascript/tick，
       // 原来是 1 + N 个；每个 osascript 进程 tccd 都要重验签名，5 个 claude tab 能把 tccd 顶到 15% CPU）
-      const { tabs, histories } = await snapshotTabs({ historyTtys: pendingTracker.ttys() });
+      const { tabs, histories } = await snapshotTabs({
+        historyTtys: this.pickHistoryTtys(),
+        includeBusy: false,
+      });
       // 异步并发拿 cwd（cache 用，dashboard 看到的 tab 含 cwd）
       const tabsWithCwd = await this.enrichForCache(tabs);
       this.cachedTabs = tabsWithCwd;
@@ -164,6 +180,14 @@ export class TabWatcher {
           forgetRemoteWrite(tty);
         }
       }
+      // 降频状态单独按 seenTtys 清（不能挂在 stuckLastCheck 上：那里只有裸 shell）。
+      // 不清的话 tty 号被新 tab 复用时，新 tab 会继承旧时间戳被当成「刚读过」
+      for (const tty of this.histFetchedAt.keys()) {
+        if (!seenTtys.has(tty)) this.histFetchedAt.delete(tty);
+      }
+      for (const tty of this.hotUntil.keys()) {
+        if (!seenTtys.has(tty)) this.hotUntil.delete(tty);
+      }
       if (this.isFirstTick) {
         this.isFirstTick = false;
         logger.info('watcher first tick baseline established', {
@@ -176,6 +200,39 @@ export class TabWatcher {
     } finally {
       this.running = false;
     }
+  }
+
+  /**
+   * 本 tick 要带回 history 的 tty。按上一 tick 的 tab 列表判断（本 tick 的要等快照回来才知道）：
+   * 新出现的 tab 这一拍拿不到，下一拍补上 —— 与「快照里没有 = 本轮跳过」的既有语义一致。
+   * daemon 冷启动第一拍 cachedTabs 为空，所有已在跑的 busy tab 都算「新出现」，同样晚一拍。
+   *   - 有 pending → 每 tick（进度卡 / 稳定性判定要实时）
+   *   - busy 的非 agent tab（npm test 之类）→ 每 tick（needsInput 要及时）
+   *   - busy 的 agent tab、无 pending → 每 AGENT_IDLE_HIST_MS 一次
+   */
+  private pickHistoryTtys(): string[] {
+    const want = new Set(pendingTracker.ttys());
+    const now = Date.now();
+    for (const [tty, until] of this.hotUntil) {
+      if (until > now) want.add(tty);
+      else this.hotUntil.delete(tty);
+    }
+    const agentTabs: { tty: string; last: number }[] = [];
+    for (const tab of this.cachedTabs) {
+      if (!tab.busy || want.has(tab.tty)) continue;
+      // 按进程名判 agent 只是降频启发式（同用户进程可改名），不是信任边界
+      if (detectAgentFromProcs(tab.processes) === null) want.add(tab.tty);
+      else agentTabs.push({ tty: tab.tty, last: this.histFetchedAt.get(tab.tty) ?? 0 });
+    }
+    // 到期的 agent tab 按「最久没读」优先，每 tick 最多取摊匀后的份额 —— 别让 12 个 tab 同一拍一起到期、
+    // 每 15s 来一次 2s+ 的尖峰
+    const quota = Math.max(1, Math.ceil((agentTabs.length * this.pollMs) / Math.max(AGENT_IDLE_HIST_MS, 1)));
+    agentTabs
+      .filter((t) => now - t.last >= AGENT_IDLE_HIST_MS)
+      .sort((a, b) => a.last - b.last)
+      .slice(0, quota)
+      .forEach((t) => want.add(t.tty));
+    return [...want];
   }
 
   /** @param snapHist 本 tick 快照里带回的 history（busy / 有 pending 的 tab 才有；没有 = 这轮没取到） */
@@ -201,6 +258,7 @@ export class TabWatcher {
       fullHist = snapHist;
       arr = fullHist.split('\n');
       this.cachedHistories.set(tab.tty, fullHist);
+      this.histFetchedAt.set(tab.tty, Date.now()); // 与缓存同时写：旁路模块靠它判断「这是新屏幕」
     }
 
     if (hasPending) {
@@ -595,6 +653,18 @@ export class TabWatcher {
 
   getCachedHistory(tty: string): string | undefined {
     return this.cachedHistories.get(tty);
+  }
+
+  /** 该 tty 的 history 缓存最近一次真正刷新的时刻（ms）；没取过 = undefined。
+   *  agent tab 无 pending 时是降频读的，旁路模块据此区分「新数据」和「同一份旧缓存」。 */
+  getHistoryFetchedAt(tty: string): number | undefined {
+    return this.histFetchedAt.get(tty);
+  }
+
+  /** 让该 tty 在接下来 ms 内每 tick 都读 history（不受 agent tab 降频限制）。 */
+  keepHot(tty: string, ms: number): void {
+    const until = Date.now() + ms;
+    if ((this.hotUntil.get(tty) ?? 0) < until) this.hotUntil.set(tty, until);
   }
 
   /** cache 时戳（ms since epoch），太老的话 caller 可以选择 fallback to osascript */

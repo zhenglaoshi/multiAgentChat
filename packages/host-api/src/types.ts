@@ -33,7 +33,7 @@ export interface TerminalTab {
 
 /**
  * 一次性拿到「tab 列表 + 需要的 history」（watcher 每 tick 用）。
- * histories 覆盖：所有 busy 的 tab + 调用方额外点名的 tty；取失败的 tab 不在 map 里。
+ * histories 覆盖：所有 busy 的 tab（`includeBusy: false` 时不含）+ 调用方额外点名的 tty；取失败的 tab 不在 map 里。
  * 每条 history 的字节语义与单独调 `getHistory(tty)` 一致（含尾部换行），beforeCharLen 偏移才对得上。
  */
 export interface TabsSnapshot {
@@ -44,6 +44,12 @@ export interface TabsSnapshot {
 export interface SnapshotTabsOptions {
   /** 除 busy tab 外，还要带回 history 的 tty（例如有 pending 但此刻不 busy 的 tab） */
   historyTtys?: string[];
+  /**
+   * 默认 true：busy tab 一律带回 history。false = **只**取 historyTtys 点名的 tab ——
+   * 调用方自己决定谁这轮要 history（watcher 用它给「没有 pending 的 agent tab」降频：
+   * claude tab 永远 busy、scrollback 动辄几百 KB，每 tick 全量读会让 Terminal.app 常驻高 CPU）。
+   */
+  includeBusy?: boolean;
 }
 
 export interface TerminalWindow {

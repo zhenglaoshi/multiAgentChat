@@ -12,7 +12,8 @@ import { getHistory, listTabsRaw } from './tabs.js';
 export async function snapshotTabs(opts: SnapshotTabsOptions = {}): Promise<TabsSnapshot> {
   const tabs = await listTabsRaw();
   const extra = new Set(opts.historyTtys ?? []);
-  const targets = tabs.filter((t) => t.busy || extra.has(t.tty));
+  const includeBusy = opts.includeBusy !== false;
+  const targets = tabs.filter((t) => (includeBusy && t.busy) || extra.has(t.tty));
   const histories = new Map<string, string>();
   await Promise.all(
     targets.map(async (t) => {
