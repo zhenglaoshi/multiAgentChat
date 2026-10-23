@@ -13,6 +13,17 @@
   - 原生菜单镜像跟着改：只在 watcher 缓存**真刷新**后才推进判定（同一份旧缓存不再被数成「连续稳定」）；有菜单 / 已 arm 的 tty 通过 `watcher.keepHot` 维持每 tick 读（60s 续期，续期放在早退之前，防一次慢推卡让 disarm 被拖后）；新 agent tab 首次出现预热 60s，尽快建立屏幕基线，避免第一个菜单落进 bootstrap 降级。
   - 评审：security-reviewer 1 medium（disarm 时延自续链可断）+ code-reviewer 1 medium bug（`histFetchedAt`/`hotUntil` 清理挂在 `stuckLastCheck` 上，agent tab 关掉后不清、tty 复用会继承旧时间戳）均已修；测试 `tests/watcher-history-pick.test.ts`。
 
+### 2026-10-19
+
+**新增**
+- **多飞书机器人 + 数字员工 bot（用户需求：「想用另外一个飞书应用，区分本机的消息」）**。同一个 daemon 可同时接多个飞书自建应用：默认 bot 仍读 `LARK_APP_ID/SECRET`（id `local`，chatId 不带前缀，老数据零迁移），附属 bot 读 `LARK_BOT_<ID>_APP_ID/APP_SECRET/ROLE/LABEL`，每个 bot 独立 Client + WS 长连接。新增单一事实源 `im-lark/lark/bots.ts`（profile 解析 / client 注册表 / chatId 命名空间 `<botId>:oc_xxx`），**不变量「chatId 决定走哪个 bot 发」落在发送层**：`api.ts` / `reply.ts` / notifier 广播按前缀选 client 并剥前缀再调飞书 API，上层 server / 十几个 monitor 的调用点一行没动，`agent lark send-text --chat staff:oc_xxx` 与 ask 卡自然回到正确的 bot。本机运维通知（TCC / System Events / TAPD / 公函 / fleet…）只在默认 bot 的 chat 里出现，这就是「区分」的落点。
+  - **role=digital-staff**（`im-lark/lark/digital-staff.ts`）：该 bot **不派 tab**，把飞书消息翻译成 `~/ihealth-work/digital-staff` 的 HTTP 调用（`@员工 内容`→`POST /api/messages?wait=`；`派任务 @员工 标题⏎描述` / `让 X 做 Y`→`POST /api/tasks`；`/answer <id>`→请示答复；`/staff` `/asks` `/whoami` `/help`；裸文本 30min 内沿用上一位员工）。分支键是**发送者**：`DIGITAL_STAFF_OWNER_OPEN_IDS` 白名单内=老板（可信域）；其他人只能建 `untrusted:true` 任务，不能聊天 / 答请示 / 审核；白名单没配 fail-closed 只回 open_id 与配置提示。请示 / 审核卡的回答不经本模块：digital-staff 出站本就是 `agent lark ask … --chat $LARK_CHAT_ID`，把它设成 `staff:oc_xxx` 后卡由数字员工 bot 发出、回答走既有 ask 流程（在进入适配器前已被消费），不会把答复再当聊天转发回去形成回环。员工回复渲染成紫色「👤 员工名」卡；`wait` 超时转轮询（15s × 10min）补推。
+  - 稳健性：附属 bot 的 WS 抖动 / 凭证错**只告警不触发 daemon 自杀**（SDK Client/WSClient 传自定义 logger 按 bot 分流：`createWsLogger`，默认 bot 仍进 `wsState`，附属进 `extraBotWsState`）；health-check 按 profile 各查 token，附属失败只 warn。附属 bot 启动失败不拖累主 bot。
+  - 测试：`tests/lark-bots.test.ts`（profile 解析 / 保留字 / 命名空间 / client 反查）+ `tests/digital-staff.test.ts`（意图解析 / 员工匹配 / 假 fetch + 假 lark client 端到端：白名单未配、非老板 untrusted、老板聊天带 Bearer+X-Requested-With、sticky 过期、整组派单、pending 轮询、后端不可达）。
+  - 文档：`docs/digital-staff-bot.md`（建第二个应用 → 配 env → 拿 open_id → 反向 LARK_CHAT_ID → 常见问题），`.env.example` 新增段。
+  - **真机事故（已修）**：多 bot 改造让 `client.ts` / `health-check.ts` 不再引入 `im-lark/config.ts`，而整个 daemon 的 `.env` 正是靠它顶部的 `import 'dotenv/config'` 加载的 → `/reload` 后启动即报「缺 LARK_APP_ID」、launchd 下崩溃循环（停机约 1 分钟）。bootcheck 没抓到：加载期冒烟不读真实 `.env`、单测都显式传 env。修：`bots.ts` 顶部加载 dotenv 并注释原因；新增子进程回归测试（临时目录放 `.env` → import 包 → 断言 `process.env` 有值，已验证去掉修复时失败）。真机：两个 bot 的 WS 均 `ws client ready`。评审追加（critical，已修）：`dotenv` 从来没声明在 `im-lark/package.json`（旧 config.ts 时代就是），本机能跑只因 Node 一路向上解析到了 `~/node_modules/dotenv`，换机器 / 干净安装即 `ERR_MODULE_NOT_FOUND` → 补为 im-lark 显式依赖并加断言（解析路径必须在仓库内）；删除已无人引用的 `im-lark/src/config.ts`。
+  - **评审收紧（code-reviewer 2 high + security 2 medium 2 low，均已修）**：① notifier 里 6 处 `patchCard` 原来拿模块级默认 client 去 patch 别的 bot 发的卡（进度 / 批量 / 链 / 审批 / ask / SOP 阶段卡），附属 `role=tabs` bot 的卡会发出后再也不刷新且报错被吞 → 全部按 `pending/req/chain/task.chatId` `resolveLarkClient`；② 纯图消息在 role 分流之前就进了「暂存 → 90s 直发 active tab」分支，任何人给数字员工 bot 发一张图就能绕过白名单把内容派进真实终端 → 数字员工 bot 纯图直接拒收；③ 员工回复卡 `lark_md` 未转义 → `sanitizeStaffMd` 掐 `<…>` 标签与 `[文字](url)` 可点链接（保留粗体 / 列表 / 代码），上限 4000；④ 非白名单发送者的失败回显原样带出后端错误文本 → 改通用文案、细节只进日志；⑤ 附属 bot 没起来时 `resolveLarkClient` 静默回退默认 bot 发（换了身份）→ 每 bot 告警一次；⑥ 任务描述本侧先截 4000。
+
 ### 2026-10-09
 
 **修复**

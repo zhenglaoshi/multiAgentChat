@@ -95,6 +95,9 @@ importers:
       '@larksuiteoapi/node-sdk':
         specifier: ^1.40.0
         version: 1.68.0
+      dotenv:
+        specifier: ^16.6.1
+        version: 16.6.1
       multiagent-host-api:
         specifier: workspace:*
         version: link:../host-api

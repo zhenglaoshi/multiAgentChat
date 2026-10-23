@@ -6,6 +6,7 @@ import type { ApprovalRequest, AskRequest } from 'multiagent-orchestrator';
 import { listAllChats, loadChat } from '../chats/store.js';
 import { sendText } from '../lark/reply.js';
 import { patchCard, sendCardMessage, sendCardReturnId } from '../lark/api.js';
+import { resolveLarkClient, toNativeChatId } from '../lark/bots.js';
 import { appendFooterCard } from '../lark/footer-gate.js';
 import { redactCardMaybe } from '../lark/redact-gate.js';
 import {
@@ -114,7 +115,7 @@ async function maybePatchBatchCard(
   const startedAt = Math.min(...items.map((i) => i.startedAt ?? now));
   try {
     await patchCard(
-      client,
+      resolveLarkClient(client, pending.chatId), // 卡属于哪个 bot 由 chatId 决定（bots.ts）
       pending.batchMessageId,
       batchProgressCard({
         batchId,
@@ -180,7 +181,7 @@ async function patchChainCardFor(chain: ChainState): Promise<void> {
   });
   try {
     await patchCard(
-      client,
+      resolveLarkClient(client, chain.chatId),
       chain.messageId,
       chainProgressCard({
         chainId: chain.id,
@@ -288,10 +289,11 @@ async function pushCardToAllChats(card: unknown): Promise<void> {
   const carded = appendFooterCard(redactCardMaybe(card));
   for (const c of chats) {
     try {
-      await client.im.message.create({
+      // chatId 带 bot 前缀 → 用那个 bot 的 client 发（bots.ts）
+      await resolveLarkClient(client, c.chatId).im.message.create({
         params: { receive_id_type: 'chat_id' },
         data: {
-          receive_id: c.chatId,
+          receive_id: toNativeChatId(c.chatId),
           msg_type: 'interactive',
           content: JSON.stringify(carded),
         },
@@ -444,7 +446,7 @@ export function attachWatcherToLark(larkClient: Lark.Client): void {
         });
         try {
           if (pending.progressMessageId) {
-            await patchCard(client, pending.progressMessageId, card);
+            await patchCard(resolveLarkClient(client, pending.chatId), pending.progressMessageId, card);
           } else {
             await sendCardMessage(client, pending.chatId, card);
           }
@@ -623,7 +625,7 @@ export function attachWatcherToLark(larkClient: Lark.Client): void {
       return;
     }
     try {
-      await patchCard(client, req.cardMessageId, buildApprovalCard(req));
+      await patchCard(resolveLarkClient(client, req.chatId ?? ''), req.cardMessageId, buildApprovalCard(req));
       logger.info('approval card patched (resolved)', {
         id: req.id,
         status: req.status,
@@ -660,7 +662,7 @@ export function attachWatcherToLark(larkClient: Lark.Client): void {
     if (req.chatId.startsWith('wecom:')) return;
     if (!req.cardMessageId) return;
     try {
-      await patchCard(client, req.cardMessageId, askCard(req));
+      await patchCard(resolveLarkClient(client, req.chatId), req.cardMessageId, askCard(req));
     } catch (e) {
       logger.warn('ask card patch (resolved) failed', {
         id: req.id,
@@ -678,7 +680,7 @@ export function attachWatcherToLark(larkClient: Lark.Client): void {
     }
     try {
       await patchCard(
-        client,
+        resolveLarkClient(client, task.chatId),
         task.progressMessageId,
         buildStageProgressCardFromTask(task, homedir()),
       );

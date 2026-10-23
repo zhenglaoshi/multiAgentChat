@@ -26,6 +26,8 @@ const systemGuidanceShownAt = new Map<string, number>();
 // claude 与 codex 的问答能力不同（claude 有原生 AskUserQuestion + 飞书镜像，codex 没有），
 // 必须按 tab 实际跑的 agent 分流，否则会教 codex 调一个不存在的工具、用户在手机端收不到选项。
 import { patchCard, sendCardReturnId, sendImage, sendCardMessage } from './api.js';
+import { DEFAULT_LARK_BOT_ID, namespaceChatId, type LarkBotProfile } from './bots.js';
+import { handleDigitalStaffMessage } from './digital-staff.js';
 import { ackCard, askCard, bareShellNoAgentCard, batchProgressCard, browseCard, careyclawKeyCard, careyclawKeyFormCard, chainProgressCard, closeIdleConfirmCard, closeTabConfirmCard, connectConfirmCard, connectFormCard, connectStatusCard, escapeLarkMd, permLevelCard, planCard, progressCard, receiptCard, tapdClaimCard, type BatchTaskItem, type ChainStepItem } from './cards.js';
 import { getCareyclawKeyStatus, setCareyclawKey } from 'multiagent-orchestrator';
 import { generatePlan, getPlan } from 'multiagent-orchestrator';
@@ -3686,11 +3688,26 @@ async function handleCardAction(
   return undefined;
 }
 
-export function buildEventDispatcher(client: Lark.Client): Lark.EventDispatcher {
+/** 没传 bot 时按默认 bot（local / 派 tab）处理 —— 兼容旧调用与测试 */
+const DEFAULT_BOT: LarkBotProfile = { id: DEFAULT_LARK_BOT_ID, appId: '', appSecret: '', role: 'tabs', label: '本机' };
+
+/**
+ * 卡片回调事件里的 chat id 也要套 bot 命名空间（见 bots.ts）。handleCardAction 内部多处用 getChatId(data)
+ * 取 chat，这里在入口把事件对象里的 open_chat_id 就地改写成带前缀的，比往十几个调用点穿参数更稳。
+ */
+function namespaceCardEvent(data: CardActionEvent, bot: LarkBotProfile): void {
+  if (bot.id === DEFAULT_LARK_BOT_ID) return;
+  if (data.context?.open_chat_id) data.context.open_chat_id = namespaceChatId(bot.id, data.context.open_chat_id);
+  if (data.open_chat_id) data.open_chat_id = namespaceChatId(bot.id, data.open_chat_id);
+}
+
+export function buildEventDispatcher(client: Lark.Client, bot: LarkBotProfile = DEFAULT_BOT): Lark.EventDispatcher {
   return new Lark.EventDispatcher({}).register({
     'im.message.receive_v1': async (data: MessageReceiveEvent) => {
       recordInbound();
-      const { message_id, chat_id, message_type, content } = data.message;
+      const { message_id, message_type, content } = data.message;
+      // 非默认 bot 的 chat 带 `<botId>:` 前缀：chat 状态 / pending / memory 按它存，发送层按它选 client（bots.ts）
+      const chat_id = namespaceChatId(bot.id, data.message.chat_id);
       // 幂等：飞书 3-5s 未 ack 会重投同 message_id → 直接丢弃重复投递，避免同条消息触发两次派发。
       if (message_id && dedupeSeen(`msg:${message_id}`)) {
         logger.info('duplicate message dropped', { message_id });
@@ -3726,6 +3743,14 @@ export function buildEventDispatcher(client: Lark.Client): Lark.EventDispatcher 
       logger.debug('message received full', { message_id, text });
 
       const ctx = { messageId: message_id, chatId: chat_id };
+
+      // 数字员工 bot 不收纯图：下面的「纯图暂存 → 90s 后直发 active tab」分支对 bot.role 一无所知，
+      // 不拦会让任何人发一张图就绕过白名单把内容派进真实终端（评审 2026-10-19 指出）。带文字的图照常走下面：
+      // 文字进适配器、图在正文里注明略去。
+      if (bot.role === 'digital-staff' && !text.trim() && inlineImageKeys.length > 0) {
+        void sendText(client, chat_id, '🖼 数字员工暂不收图片，请用文字描述（可以在文字后面附图，图会被略去）。');
+        return;
+      }
 
       // 下载本条消息内联的图片（image / 富文本带图）
       let nowImagePaths: string[] = [];
@@ -3812,6 +3837,20 @@ export function buildEventDispatcher(client: Lark.Client): Lark.EventDispatcher 
             return;
           }
         }
+      }
+
+      // ── 数字员工 bot：不派 tab，翻译成 digital-staff 的 HTTP 调用（见 digital-staff.ts）。
+      // 放在 ask 消费之后：请示 / 审核卡的回答已被上面的 ask 流程吃掉，不会被当成聊天再转发回去。
+      if (bot.role === 'digital-staff') {
+        // 纯图在上面已被拒收，所以这个 chat 不会有 addPendingImage 的存件；只带本条消息的图
+        void handleDigitalStaffMessage(client, bot, {
+          chatId: chat_id,
+          messageId: message_id,
+          senderOpenId: data.sender?.sender_id?.open_id ?? '',
+          text,
+          ...(nowImagePaths.length ? { imagePaths: nowImagePaths } : {}),
+        }).catch((e) => logger.error('digital-staff handler failed', e));
+        return;
       }
 
       // 图文配对：本条文字将发往 tab 时，把「之前暂存的图(B)」+「本条内联图」作为前缀一并注入。
@@ -4046,6 +4085,7 @@ export function buildEventDispatcher(client: Lark.Client): Lark.EventDispatcher 
 
     'card.action.trigger': async (data: CardActionEvent) => {
       recordInbound();
+      namespaceCardEvent(data, bot);
       const chatId = getChatId(data);
 
       // ── ask.* 类卡片：同步处理 + 回调响应里同时返回 toast + 更新后的卡片 ──

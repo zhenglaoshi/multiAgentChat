@@ -1,7 +1,7 @@
 import { utimesSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import * as Lark from '@larksuiteoapi/node-sdk';
-import { config } from '../config.js';
+import { DEFAULT_LARK_BOT_ID, getLarkBotProfiles, type LarkBotProfile } from '../lark/bots.js';
 import { logger } from 'multiagent-orchestrator';
 import { isWsLikelyDead, wsState } from './ws-watchdog.js';
 
@@ -20,7 +20,7 @@ const RELOAD_TRIGGER = fileURLToPath(import.meta.url);
  * 这避免 dev "假活" — WS 断了 SDK 不一定恢复，但 health-check 失败会让 tsx 重启整个进程，
  * 新进程会重新建立 WS 长连接。
  */
-async function pingLark(): Promise<void> {
+async function pingLark(bot: LarkBotProfile): Promise<void> {
   // 用 token endpoint 测网络 + 凭证（最轻量，飞书侧免费且不需要 access token 预热）
   const resp = await fetch(
     'https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal/',
@@ -28,8 +28,8 @@ async function pingLark(): Promise<void> {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        app_id: config.lark.appId,
-        app_secret: config.lark.appSecret,
+        app_id: bot.appId,
+        app_secret: bot.appSecret,
       }),
       signal: AbortSignal.timeout(10_000),
     },
@@ -39,8 +39,31 @@ async function pingLark(): Promise<void> {
   if (data.code !== 0) throw new Error(`lark code ${data.code} msg=${data.msg}`);
 }
 
+/**
+ * 附属 bot（数字员工等）的凭证检查：只告警不自杀。凭证错是配置问题，重启不会好，
+ * 反而会把主 bot 一起拖进重启循环。连续失败只在阈值处与之后每 20 次提醒一次。
+ */
+const extraFails = new Map<string, number>();
+async function pingExtraBots(): Promise<void> {
+  for (const bot of getLarkBotProfiles()) {
+    if (bot.id === DEFAULT_LARK_BOT_ID) continue;
+    try {
+      await pingLark(bot);
+      if ((extraFails.get(bot.id) ?? 0) > 0) logger.info(`health check[${bot.id}] recovered`);
+      extraFails.set(bot.id, 0);
+    } catch (e) {
+      const n = (extraFails.get(bot.id) ?? 0) + 1;
+      extraFails.set(bot.id, n);
+      if (n === FAIL_THRESHOLD || (n > FAIL_THRESHOLD && n % 20 === 0)) {
+        logger.warn(`health check[${bot.id}] 持续失败（附属 bot，不触发重启）`, { fails: n, err: (e as Error).message?.slice(0, 200) });
+      }
+    }
+  }
+}
+
 export function startHealthCheck(_client: Lark.Client): void {
   let consecutiveFails = 0;
+  const primary = getLarkBotProfiles().find((b) => b.id === DEFAULT_LARK_BOT_ID);
 
   const triggerReload = (reason: string): void => {
     logger.error(`triggering tsx reload + exit(1): ${reason}`);
@@ -68,9 +91,13 @@ export function startHealthCheck(_client: Lark.Client): void {
       return;
     }
 
-    // 第二道：HTTP 健康检查
+    // 附属 bot：只记不杀
+    void pingExtraBots();
+
+    // 第二道：HTTP 健康检查（默认 bot）
+    if (!primary) return;
     try {
-      await pingLark();
+      await pingLark(primary);
       if (consecutiveFails > 0) {
         logger.info('health check recovered', { previousFails: consecutiveFails });
       }

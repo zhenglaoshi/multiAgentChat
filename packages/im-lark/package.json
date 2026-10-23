@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.40.0",
+    "dotenv": "^16.6.1",
     "multiagent-host-api": "workspace:*",
     "multiagent-orchestrator": "workspace:*"
   }

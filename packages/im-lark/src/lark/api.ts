@@ -4,6 +4,7 @@ import * as Lark from '@larksuiteoapi/node-sdk';
 import { logger } from 'multiagent-orchestrator';
 import { redactMaybe, redactCardMaybe } from './redact-gate.js';
 import { appendFooterText, appendFooterCard } from './footer-gate.js';
+import { resolveLarkClient, toNativeChatId } from './bots.js';
 
 /**
  * 网络/瞬时错误自动重试：ENOTFOUND / ETIMEDOUT / ECONNRESET / 5xx / 429
@@ -83,6 +84,7 @@ export async function sendMarkdownMessage(
   md: string,
   cwd?: string,
 ): Promise<void> {
+  // chatId 带 bot 前缀时改走那个 bot 发（见 bots.ts）；sendCardMessage 内部会再 resolve 一次，这里不必
   const card = {
     config: { wide_screen_mode: true },
     header: {
@@ -109,6 +111,7 @@ export async function sendTextMessage(
   text: string,
   options: { plain?: boolean; cwd?: string } = {},
 ): Promise<void> {
+  client = resolveLarkClient(client, chatId);
   // 回显脱敏：出站前把明文凭证脱掉（除非 /raw 明文模式）。见 redact-gate.ts。
   text = redactMaybe(text);
   if (!options.plain && looksLikeMarkdown(text)) {
@@ -121,7 +124,7 @@ export async function sendTextMessage(
     client.im.message.create({
       params: { receive_id_type: 'chat_id' },
       data: {
-        receive_id: chatId,
+        receive_id: toNativeChatId(chatId),
         msg_type: 'text',
         content: JSON.stringify({ text }),
       },
@@ -135,12 +138,13 @@ export async function sendCardMessage(
   card: unknown,
   options: { cwd?: string } = {},
 ): Promise<void> {
+  client = resolveLarkClient(client, chatId);
   card = appendFooterCard(redactCardMaybe(card), options.cwd);
   await withRetry('sendCard', () =>
     client.im.message.create({
       params: { receive_id_type: 'chat_id' },
       data: {
-        receive_id: chatId,
+        receive_id: toNativeChatId(chatId),
         msg_type: 'interactive',
         content: JSON.stringify(card),
       },
@@ -157,12 +161,13 @@ export async function sendCardReturnId(
   card: unknown,
   options: { cwd?: string } = {},
 ): Promise<string> {
+  client = resolveLarkClient(client, chatId);
   card = appendFooterCard(redactCardMaybe(card), options.cwd);
   const resp = await withRetry('sendCardReturnId', () =>
     client.im.message.create({
       params: { receive_id_type: 'chat_id' },
       data: {
-        receive_id: chatId,
+        receive_id: toNativeChatId(chatId),
         msg_type: 'interactive',
         content: JSON.stringify(card),
       },
@@ -209,6 +214,7 @@ export async function sendFile(
   filePath: string,
   options: { name?: string } = {},
 ): Promise<SendFileResult> {
+  client = resolveLarkClient(client, chatId);
   const abs = resolvePath(filePath);
   if (!existsSync(abs)) throw new Error(`文件不存在: ${abs}`);
   const st = statSync(abs);
@@ -235,7 +241,7 @@ export async function sendFile(
     client.im.message.create({
       params: { receive_id_type: 'chat_id' },
       data: {
-        receive_id: chatId,
+        receive_id: toNativeChatId(chatId),
         msg_type: 'file',
         content: JSON.stringify({ file_key: fileKey }),
       },
@@ -255,6 +261,7 @@ export async function sendImage(
   chatId: string,
   imagePath: string,
 ): Promise<SendImageResult> {
+  client = resolveLarkClient(client, chatId);
   const abs = resolvePath(imagePath);
   if (!existsSync(abs)) throw new Error(`文件不存在: ${abs}`);
   const st = statSync(abs);
@@ -278,7 +285,7 @@ export async function sendImage(
     client.im.message.create({
       params: { receive_id_type: 'chat_id' },
       data: {
-        receive_id: chatId,
+        receive_id: toNativeChatId(chatId),
         msg_type: 'image',
         content: JSON.stringify({ image_key: imageKey }),
       },

@@ -3622,3 +3622,36 @@ export function letterAuthCard(detail: string) {
     ],
   };
 }
+
+// ---------------- 数字员工 bot ----------------
+
+/**
+ * 数字员工的聊天回复卡：header 写员工名（紫色，与「💬 Claude」青绿 / 系统进度卡蓝绿区分开）。
+ * body 是 digital-staff 返回的员工原话（lark_md 渲染）；发送层会统一脱敏 + 页脚。
+ */
+export function staffReplyCard(data: { employeeName: string; body: string }) {
+  return {
+    config: { wide_screen_mode: true },
+    header: {
+      template: 'purple',
+      title: { tag: 'plain_text', content: `👤 ${data.employeeName.slice(0, 40)}` },
+    },
+    elements: [{ tag: 'div', text: { tag: 'lark_md', content: sanitizeStaffMd(data.body) || '（空回复）' } }],
+  };
+}
+
+/**
+ * 员工回复是**另一个 agent 的产出**，且可能转述过外部网页 / 工单里的文本（间接注入面）。
+ * 与本文件对 TAPD / 公函文本的做法同源（见上方 escapeLarkMd 注释），但这里要保留粗体 / 列表 / 代码块
+ * 的排版，所以只掐两类真正能被利用的语法：
+ *  - `<…>` 标签（`<at id=all>` 全员提及 / `<font>` 等）→ `&lt;`
+ *  - `[文字](url)` 可点链接 → `文字 (url)` 纯文本，钓鱼链接不再可点、url 仍可见便于人判断
+ * 另：长度上限 4000（digital-staff 侧本就按 4000 截，这里再兜一层防卡片超限）。
+ * 裸 URL（没有 `[]()` 包裹）**故意不动**：它以明文可见，钓鱼意图对人眼反而更明显；要防的是「锚文本藏链接」。
+ */
+export function sanitizeStaffMd(md: string): string {
+  return (md ?? '')
+    .slice(0, 4000)
+    .replace(/</g, '&lt;')
+    .replace(/\[([^\]\n]*)\]\(([^)\n]*)\)/g, '$1 ($2)');
+}

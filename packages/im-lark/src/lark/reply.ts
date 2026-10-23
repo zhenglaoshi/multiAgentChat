@@ -1,6 +1,7 @@
 import * as Lark from '@larksuiteoapi/node-sdk';
 import { appendFooterText } from './footer-gate.js';
 import { redactMaybe } from './redact-gate.js';
+import { resolveLarkClient, toNativeChatId } from './bots.js';
 
 const MAX_CHUNK = 3000;
 
@@ -56,7 +57,7 @@ export async function replyText(
     await client.im.message.create({
       params: { receive_id_type: 'chat_id' },
       data: {
-        receive_id: ctx.chatId,
+        receive_id: toNativeChatId(ctx.chatId),
         msg_type: 'text',
         content: JSON.stringify({ text: chunk }),
       },
@@ -69,12 +70,13 @@ export async function sendText(
   chatId: string,
   text: string,
 ): Promise<void> {
+  client = resolveLarkClient(client, chatId); // chatId 带 bot 前缀 → 改走那个 bot（bots.ts）
   const chunks = withFooterOnLast(splitText(redactMaybe(text)));
   for (const chunk of chunks) {
     await client.im.message.create({
       params: { receive_id_type: 'chat_id' },
       data: {
-        receive_id: chatId,
+        receive_id: toNativeChatId(chatId),
         msg_type: 'text',
         content: JSON.stringify({ text: chunk }),
       },

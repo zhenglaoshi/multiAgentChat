@@ -89,7 +89,11 @@ packages/
 ├─ im-lark/                 飞书 transport + tab 观测通知（monitor 与 lark cards/api 强耦合，暂同包）
 │   └─ src/
 │       ├─ lark/
-│       │   ├─ client.ts    startLarkBot：建 SDK Client + WSClient 长连接
+│       │   ├─ client.ts    startLarkBot：按 bots.ts 的 profile 列表逐个建 SDK Client + WSClient 长连接（多 bot）
+│       │   ├─ bots.ts      多飞书 bot 单一事实源：profile 解析(LARK_BOT_<ID>_*) / client 注册表 / chatId 命名空间
+│       │   │              `<botId>:oc_xxx`（默认 bot `local` 不带前缀）。不变量「chatId 决定走哪个 bot 发」落在 api.ts/reply.ts
+│       │   ├─ digital-staff.ts role=digital-staff 的入站适配器：不派 tab，翻译成 ../digital-staff HTTP 调用；按发送者分支
+│       │   │              （老板白名单=可信域聊天/派任务/答请示；其他人只能建 untrusted 任务）。见 docs/digital-staff-bot.md
 │       │   ├─ handlers.ts  事件入口（im.message.receive_v1 / card.action.trigger）→ dispatch/command/cardAction
 │       │   ├─ commands.ts  斜杠命令路由（/dashboard /shells /history /new /use /preset /recall /approvals /watch /connect /perm-level /perm-reset /raw /reload /selfaudit /tapd /plan /worktasks ...）
 │       │   ├─ cards.ts     所有交互卡片 schema（progress / batch / dashboard / approval / chooseDir / ack ...）

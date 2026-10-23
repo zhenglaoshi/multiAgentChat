@@ -101,6 +101,9 @@ daemon 支持飞书 + 企微两个 IM transport 并行。**至少配一个**，�
 
 **只装飞书？直接跳到 [第 3 步](#第-3-步克隆--装依赖)。**
 
+> 想再接**第二个飞书机器人**（比如数字员工用独立的 bot，与本机消息分开）：按同样步骤再建一个应用，
+> 凭证写进 `LARK_BOT_<ID>_APP_ID / _APP_SECRET`，见 [docs/digital-staff-bot.md](digital-staff-bot.md)。
+
 ---
 
 ## 第 2B 步：申请企业微信自建应用（可选）
