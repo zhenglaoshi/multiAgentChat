@@ -72,6 +72,10 @@ describe('loadDigitalStaffConfig', () => {
     expect(c.baseUrl).toBe('http://127.0.0.1:3900');
     expect(c.ownerOpenIds).toEqual(['ou_a', 'ou_b']);
     expect(c.waitSec).toBe(120);
+    expect(c.defaultEmployee).toBe('');
+  });
+  it('defaultEmployee 读环境变量并去空白', () => {
+    expect(loadDigitalStaffConfig({ DIGITAL_STAFF_DEFAULT_EMPLOYEE: ' 总管 ' }).defaultEmployee).toBe('总管');
   });
   it('wait 上限 300，去掉尾斜杠', () => {
     const c = loadDigitalStaffConfig({ DIGITAL_STAFF_WAIT_SEC: '999', DIGITAL_STAFF_URL: 'http://x:1/' });
@@ -172,7 +176,7 @@ describe('handleDigitalStaffMessage', () => {
     expect(textOf(sent[0]!)).toMatch(/👤 苏芮[\s\S]*进度\*\* 80%/);
   });
 
-  it('裸文本沿用 sticky 员工；超时则提示 @谁', async () => {
+  it('裸文本沿用 sticky 员工；超时且没配默认联系人则提示 @谁', async () => {
     const { client, sent } = fakeLark();
     const { fetch, calls } = fakeFetch({
       '/api/state': () => ({ body: STATE }),
@@ -187,6 +191,51 @@ describe('handleDigitalStaffMessage', () => {
     expect(calls.filter((c) => c.url.startsWith('/api/messages')).map((c) => (c.body as { toId: string }).toId)).toEqual(['e2', 'e2']);
     t += 2 * 60_000; // 超过 1 分钟 sticky
     await handleDigitalStaffMessage(client, BOT, { chatId: 'oc_t', messageId: 'm3', senderOpenId: 'ou_boss', text: '还在吗' }, { cfg, api, now });
+    expect(textOf(sent[sent.length - 1]!)).toMatch(/先告诉我找谁/);
+  });
+
+  it('裸文本、没有 sticky：配了默认联系人（总管）就转给他，且之后沿用他', async () => {
+    const { client, sent } = fakeLark();
+    const { fetch, calls } = fakeFetch({
+      '/api/state': () => ({ body: STATE }),
+      '/api/messages*': () => ({ status: 201, body: { message: { id: 'msg1', fromId: 'manager', toId: 'e1', content: 'x' }, reply: { id: 'r', employeeId: 'e1', employeeName: '苏芮', content: '收到，我去问问' }, pending: false } }),
+    });
+    const cfg = loadDigitalStaffConfig({ DIGITAL_STAFF_OWNER_OPEN_IDS: 'ou_boss', DIGITAL_STAFF_DEFAULT_EMPLOYEE: '苏芮' });
+    const api = new DigitalStaffClient(cfg, fetch);
+    await handleDigitalStaffMessage(client, BOT, { chatId: 'oc_t2', messageId: 'm1', senderOpenId: 'ou_boss', text: '后端那边进展怎么样' }, { cfg, api });
+    expect(calls.filter((c) => c.url.startsWith('/api/messages')).map((c) => (c.body as { toId: string }).toId)).toEqual(['e1']);
+    // 没点名却被转发，必须先明确提示转给谁了，不能悄悄转发（焊死 sticky 最长到 stickyMs，老板要知情）
+    expect(textOf(sent[0]!)).toMatch(/没点名，先转给默认联系人 苏芮/);
+    expect(textOf(sent[1]!)).toMatch(/👤 苏芮/);
+    // 沿用：下一句裸文本不用再配置，sticky 已经指向默认联系人，也不用再提示一遍
+    await handleDigitalStaffMessage(client, BOT, { chatId: 'oc_t2', messageId: 'm2', senderOpenId: 'ou_boss', text: '那前端呢' }, { cfg, api });
+    expect(calls.filter((c) => c.url.startsWith('/api/messages')).map((c) => (c.body as { toId: string }).toId)).toEqual(['e1', 'e1']);
+    expect(sent.length).toBe(3); // 没有多出一条「没点名…」提示
+  });
+
+  it('默认联系人只做精确姓名匹配：不会被无关员工 role 里的子串撞中', async () => {
+    const { client, sent } = fakeLark();
+    const localState = {
+      teams: [],
+      employees: [
+        { id: 'e9', name: '产品甲', role: '总管助理', teamId: null, status: 'idle' }, // role 含“总管”二字，但没人精确叫这个名字
+        { id: 'e10', name: '产品乙', role: '产品', teamId: null, status: 'idle' }, // 陪衬：避免命中「只有一名员工」的兜底分支
+      ],
+      inbox: { asks: [] },
+    };
+    const { fetch } = fakeFetch({ '/api/state': () => ({ body: localState }) });
+    const cfg = loadDigitalStaffConfig({ DIGITAL_STAFF_OWNER_OPEN_IDS: 'ou_boss', DIGITAL_STAFF_DEFAULT_EMPLOYEE: '总管' });
+    const api = new DigitalStaffClient(cfg, fetch);
+    await handleDigitalStaffMessage(client, BOT, { chatId: 'oc_t5', messageId: 'm1', senderOpenId: 'ou_boss', text: '进展如何' }, { cfg, api });
+    expect(textOf(sent[sent.length - 1]!)).toMatch(/先告诉我找谁/);
+  });
+
+  it('配了默认联系人但名字对不上（改名 / 离职）：按原行为提示 @谁，不报错', async () => {
+    const { client, sent } = fakeLark();
+    const { fetch } = fakeFetch({ '/api/state': () => ({ body: STATE }) });
+    const cfg = loadDigitalStaffConfig({ DIGITAL_STAFF_OWNER_OPEN_IDS: 'ou_boss', DIGITAL_STAFF_DEFAULT_EMPLOYEE: '不存在的人' });
+    const api = new DigitalStaffClient(cfg, fetch);
+    await handleDigitalStaffMessage(client, BOT, { chatId: 'oc_t3', messageId: 'm1', senderOpenId: 'ou_boss', text: '进展如何' }, { cfg, api });
     expect(textOf(sent[sent.length - 1]!)).toMatch(/先告诉我找谁/);
   });
 

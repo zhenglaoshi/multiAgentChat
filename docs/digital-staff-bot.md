@@ -33,6 +33,7 @@ LARK_BOT_STAFF_LABEL=数字员工
 DIGITAL_STAFF_URL=http://127.0.0.1:3900   # digital-staff 默认地址
 DIGITAL_STAFF_TOKEN=                       # digital-staff 开了 AUTH_REQUIRED 才填（= 它的 AUTH_API_TOKEN）
 DIGITAL_STAFF_OWNER_OPEN_IDS=              # 先留空，下一步拿
+DIGITAL_STAFF_DEFAULT_EMPLOYEE=            # 可选：裸文本且没有 sticky 时的默认联系人姓名（如「总管」，必须精确全名，不做模糊匹配），不配=老行为提示 @谁
 ```
 
 重启 daemon（`/reload` 或 `launchctl kickstart`），日志应出现 `多飞书 bot 已就绪 { bots: ['local(tabs)', 'staff(digital-staff)'] }`。
@@ -46,8 +47,8 @@ DIGITAL_STAFF_OWNER_OPEN_IDS=              # 先留空，下一步拿
 | 你发 | 发生什么 |
 |---|---|
 | `@苏芮 这周进度如何` | `POST /api/messages?wait=120`，员工回复渲染成紫色「👤 苏芮」卡；超时则先回「还在想」，之后 15s 轮询、到了补推（最长 10 分钟） |
-| `继续说`（裸文本） | 30 分钟内沿用上一位聊过的员工；没有则提示 @谁，并附员工列表 |
-| `派任务 @苏芮 整理周报⏎要含 TIR` | `POST /api/tasks`，首行标题、其余描述；不写 @ 按职责自动匹配；`@整组 测试组` 派给整个团队 |
+| `继续说`（裸文本） | 30 分钟内沿用上一位聊过的员工；没有就看有没有配 `DIGITAL_STAFF_DEFAULT_EMPLOYEE`——配了（精确全名命中）就转给他、先提示老板「没点名，先转给默认联系人 X 处理」再转发，并把他设为新的 sticky 对象；没配 / 没命中才提示 @谁，并附员工列表 |
+| `派任务 @苏芮 整理周报⏎要含 TIR` | `POST /api/tasks`，首行标题、其余描述；不写 @ 按职责自动匹配（和裸聊的默认联系人是两套机制：派活找系统按职责分配，闲聊没点名找总管转达）；`@整组 测试组` 派给整个团队 |
 | `让苏芮做一版竞品分析` | 同上的口语写法 |
 | `/staff` | 员工列表（岗位 / 团队 / 忙闲） |
 | `/asks` · `/answer <id> 内容` | 待回答的请示 / 答复（请示卡过期后的兜底，正常直接在卡片上答） |

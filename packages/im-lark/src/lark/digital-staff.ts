@@ -14,10 +14,12 @@ import { staffReplyCard } from './cards.js';
  * 分支键 = 发送者：
  *  - 老板（`DIGITAL_STAFF_OWNER_OPEN_IDS` 白名单，open_id **按应用隔离**，要用该 bot 会话里 `/whoami` 拿）
  *      · `@员工 内容`                → POST /api/messages（聊天，可信域：员工能当场问同事 / 派活 / 操作 MCP）
- *      · `派任务 [@员工] 标题⏎描述` / `让 X 做 Y` / `/task …` → POST /api/tasks
+ *      · `派任务 [@员工] 标题⏎描述` / `让 X 做 Y` / `/task …` → POST /api/tasks（不写 @员工时按职责自动匹配，和下面裸聊的默认联系人是两套机制，刻意不同：
+ *        派活交给系统按职责找人，闲聊没点名就先找「总管」帮你问/转达）
  *      · `/answer <askId> 内容`      → POST /api/inbox/asks/:id/answer（请示卡过期后的兜底）
  *      · `/staff` `/asks` `/whoami` `/help`
- *      · 裸文本 → 30min 内上一次聊过的员工（sticky）；没有则提示 @谁
+ *      · 裸文本 → 30min 内上一次聊过的员工（sticky）；没有则转给 DIGITAL_STAFF_DEFAULT_EMPLOYEE（精确全名匹配，配了的话通常是总管类岗位；
+ *        转发前会先提示老板转给谁了，不悄悄转发）；都没有才提示 @谁
  *  - 其他人 → 只允许 POST /api/tasks 且 `untrusted:true`（外部文本：不进 Codex、不带工作区、不能装工具 / 推飞书）；
  *    不能回答请示、不能审核、不能直接和员工聊天 —— digital-staff 把老板聊天当可信域，全群都走聊天等于把可信域开给全群。
  *  - 白名单没配 → 只回 open_id 与配置提示，什么都不做（fail-closed）。
@@ -38,6 +40,8 @@ export interface DigitalStaffConfig {
   waitSec: number;
   /** 裸文本沿用上一位员工的时限 */
   stickyMs: number;
+  /** 裸文本、没有 sticky 时的默认联系人（姓名，通常是总管类岗位）；空 = 老行为，提示老板 @谁 */
+  defaultEmployee: string;
 }
 
 export function loadDigitalStaffConfig(env: NodeJS.ProcessEnv = process.env): DigitalStaffConfig {
@@ -52,6 +56,7 @@ export function loadDigitalStaffConfig(env: NodeJS.ProcessEnv = process.env): Di
       .filter(Boolean),
     waitSec: Number.isFinite(wait) ? Math.min(300, Math.max(0, wait)) : 120,
     stickyMs: (Number.isFinite(stickyMin) ? Math.max(0, stickyMin) : 30) * 60_000,
+    defaultEmployee: env['DIGITAL_STAFF_DEFAULT_EMPLOYEE']?.trim() ?? '',
   };
 }
 
@@ -402,6 +407,7 @@ export async function handleDigitalStaffMessage(
 
     // chat
     let target: StaffEmployee | undefined;
+    let viaDefault = false; // 本次 target 是靠 defaultEmployee 兜底出来的，而不是老板点名 / 沿用 sticky
     if (intent.employee) {
       const { match, candidates } = matchEmployee(intent.employee, snapshot.employees);
       if (!match) {
@@ -419,6 +425,24 @@ export async function handleDigitalStaffMessage(
         target = snapshot.employees.find((e) => e.id === st.employeeId);
       }
       if (!target && snapshot.employees.length === 1) target = snapshot.employees[0];
+      // 没点名、也没有沿用对象：配了默认联系人（总管类岗位）就转给他，由他知会 / 转述，而不是让老板先去翻员工名单
+      // 这一步会把 sticky 焊死在默认联系人身上最长到 stickyMs，所以必须明确告诉老板转给谁了，不能悄悄转发
+      // 只做精确姓名匹配，不走 matchEmployee 的子串 / role 模糊匹配：这是写死在部署环境里的配置值，不是老板现场敲的 @名字，
+      // 模糊匹配一旦撞上某个无关员工姓名或 role 的子串，会悄悄把所有裸文本转给错的人，还看起来"工作正常"
+      if (!target && cfg.defaultEmployee) {
+        const exact = snapshot.employees.filter((e) => e.name.toLowerCase() === cfg.defaultEmployee.toLowerCase());
+        if (exact.length === 1) {
+          target = exact[0];
+          viaDefault = true;
+        } else {
+          logger.warn(
+            exact.length > 1
+              ? 'digital-staff: DIGITAL_STAFF_DEFAULT_EMPLOYEE 命中多个同名员工，放弃默认路由，退回提示老板 @谁'
+              : 'digital-staff: DIGITAL_STAFF_DEFAULT_EMPLOYEE 没有精确命中任何在职员工（配错名字 / 该员工改名或离职？），退回提示老板 @谁',
+            { configured: cfg.defaultEmployee, matches: exact.map((e) => e.name) },
+          );
+        }
+      }
       if (!target) {
         await say(`先告诉我找谁：@员工名 内容。\n${renderEmployeeList(snapshot)}`);
         return;
@@ -429,6 +453,7 @@ export async function handleDigitalStaffMessage(
       await say(`好，接下来的话都发给 ${target.name}。`);
       return;
     }
+    if (viaDefault) await say(`（没点名，先转给默认联系人 ${target.name} 处理；接下来 ${Math.round(cfg.stickyMs / 60_000)} 分钟内的话也会发给他，想找别人请 @姓名）`);
     const content = ev.imagePaths?.length
       ? `${intent.content}\n（注：飞书里还附了 ${ev.imagePaths.length} 张图，数字员工聊天暂不收图，已略去）`
       : intent.content;
