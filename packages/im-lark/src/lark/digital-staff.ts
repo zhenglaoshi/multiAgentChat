@@ -3,6 +3,7 @@ import { logger } from 'multiagent-orchestrator';
 import type { LarkBotProfile } from './bots.js';
 import { sendTextMessage, sendCardMessage } from './api.js';
 import { staffReplyCard } from './cards.js';
+import { requestDaemonRestart } from './daemon-restart.js';
 
 /**
  * 数字员工 bot（role = digital-staff）的入站适配器。
@@ -67,6 +68,7 @@ export type StaffIntent =
   | { kind: 'list' }
   | { kind: 'asks' }
   | { kind: 'whoami' }
+  | { kind: 'reload' }
   | { kind: 'answer'; askId: string; text: string }
   | { kind: 'task'; title: string; description: string; assignee?: string }
   | { kind: 'chat'; employee?: string; content: string };
@@ -87,6 +89,7 @@ export function parseStaffIntent(raw: string): StaffIntent {
   if (/^(\/staff|\/员工|\/list|员工列表|谁在|有谁)$/i.test(lower)) return { kind: 'list' };
   if (/^(\/asks|\/请示|待办请示|请示列表)$/i.test(lower)) return { kind: 'asks' };
   if (/^(\/whoami|我是谁)$/i.test(lower)) return { kind: 'whoami' };
+  if (/^(\/reload|\/restart|重启)$/i.test(lower)) return { kind: 'reload' };
 
   let m = /^(?:\/answer|回复请示|答复)\s+(\S+)\s+([\s\S]+)$/i.exec(text);
   if (m) return { kind: 'answer', askId: m[1]!, text: m[2]!.trim() };
@@ -279,6 +282,7 @@ const HELP = [
   '3. 派任务 @员工 标题⏎描述 —— 建任务（不写 @ 则按职责自动匹配；@整组 X 派给整个团队）',
   '4. 让 X 做 Y —— 同上的口语写法',
   '5. /staff 员工列表 · /asks 待回答的请示 · /answer <id> 内容 回答请示 · /whoami 看自己的 open_id',
+  '6. /reload 重启 daemon（会断开所有 bot 的连接，约 5 秒后自动恢复）',
   '请示 / 审核卡由员工主动推过来，直接在卡片上答即可。',
 ].join('\n');
 
@@ -358,6 +362,11 @@ export async function handleDigitalStaffMessage(
 
   // ── 老板 ──
   try {
+    if (intent.kind === 'reload') {
+      // 重启整个 daemon：主 bot / 所有附属 bot 的 WS 都会断开重连，不只是数字员工这一路，所以严格老板白名单限定
+      await say(requestDaemonRestart().text);
+      return;
+    }
     if (intent.kind === 'list') {
       await say(renderEmployeeList(await api.state()));
       return;

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   __resetDigitalStaffForTest,
   DigitalStaffClient,
@@ -9,6 +9,12 @@ import {
   type FetchLike,
 } from '../packages/im-lark/src/lark/digital-staff.js';
 import type { LarkBotProfile } from '../packages/im-lark/src/lark/bots.js';
+import { requestDaemonRestart } from '../packages/im-lark/src/lark/daemon-restart.js';
+
+// /reload 真实实现会 setTimeout 后 spawn launchctl：单测全程 mock 掉，既不拉起真进程，也不用管定时器
+vi.mock('../packages/im-lark/src/lark/daemon-restart.js', () => ({
+  requestDaemonRestart: vi.fn(() => ({ text: '🔄 正在重启 daemon…（mock）' })),
+}));
 
 // tests/tsconfig 解析不到飞书 SDK 的类型包 → 从被测函数签名推导 client 类型
 type LarkClient = Parameters<typeof handleDigitalStaffMessage>[0];
@@ -21,6 +27,9 @@ describe('parseStaffIntent', () => {
     expect(parseStaffIntent('/whoami')).toEqual({ kind: 'whoami' });
     expect(parseStaffIntent('帮助')).toEqual({ kind: 'help' });
     expect(parseStaffIntent('/answer ask_1 可以，按方案 B')).toEqual({ kind: 'answer', askId: 'ask_1', text: '可以，按方案 B' });
+    expect(parseStaffIntent('/reload')).toEqual({ kind: 'reload' });
+    expect(parseStaffIntent('/restart')).toEqual({ kind: 'reload' });
+    expect(parseStaffIntent('重启')).toEqual({ kind: 'reload' });
   });
 
   it('@员工 聊天（支持冒号 / 全角）', () => {
@@ -133,7 +142,10 @@ const STATE = {
   inbox: { asks: [] },
 };
 
-beforeEach(() => __resetDigitalStaffForTest());
+beforeEach(() => {
+  __resetDigitalStaffForTest();
+  vi.mocked(requestDaemonRestart).mockClear(); // 跨用例共享同一个 mock 计数器，不清会让后面插入的新用例把计数算错
+});
 
 describe('handleDigitalStaffMessage', () => {
   it('白名单未配 → 只回 open_id 提示，不打任何后端接口', async () => {
@@ -154,6 +166,29 @@ describe('handleDigitalStaffMessage', () => {
     expect(calls[0]!.url).toBe('/api/tasks');
     expect(calls[0]!.body).toMatchObject({ untrusted: true, assigneeId: 'auto' });
     expect(textOf(sent[0]!)).toMatch(/外部来源登记任务 #T1/);
+  });
+
+  it('非老板发 /reload：不会触发重启，只是把它当文本建一条 untrusted 任务', async () => {
+    const { client, sent } = fakeLark();
+    const { fetch, calls } = fakeFetch({ '/api/tasks': () => ({ status: 201, body: { id: 'T2', title: '/reload' } }) });
+    const cfg = loadDigitalStaffConfig({ DIGITAL_STAFF_OWNER_OPEN_IDS: 'ou_boss' });
+    await handleDigitalStaffMessage(client, BOT, { chatId: 'oc_t', messageId: 'm', senderOpenId: 'ou_other', text: '/reload' }, { cfg, api: new DigitalStaffClient(cfg, fetch) });
+    expect(requestDaemonRestart).not.toHaveBeenCalled();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toBe('/api/tasks');
+  });
+
+  it('老板发 /reload（或 /restart、重启）→ 调用重启、把提示文案发回飞书，不碰 digital-staff 后端', async () => {
+    const { client, sent } = fakeLark();
+    const { fetch, calls } = fakeFetch({ '/api/state': () => ({ body: STATE }) });
+    const cfg = loadDigitalStaffConfig({ DIGITAL_STAFF_OWNER_OPEN_IDS: 'ou_boss' });
+    const api = new DigitalStaffClient(cfg, fetch);
+    for (const text of ['/reload', '/restart', '重启']) {
+      await handleDigitalStaffMessage(client, BOT, { chatId: 'oc_t', messageId: 'm', senderOpenId: 'ou_boss', text }, { cfg, api });
+    }
+    expect(requestDaemonRestart).toHaveBeenCalledTimes(3);
+    expect(calls).toEqual([]); // 没有打 /api/state 或任何 digital-staff 接口
+    expect(sent.every((s) => textOf(s).includes('正在重启 daemon'))).toBe(true);
   });
 
   it('老板 @员工 聊天 → POST /api/messages?wait，回复渲染成员工卡；带 Bearer + X-Requested-With', async () => {

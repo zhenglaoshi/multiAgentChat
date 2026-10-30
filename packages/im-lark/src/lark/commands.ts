@@ -1,5 +1,4 @@
 import { existsSync } from 'node:fs';
-import { spawn } from 'node:child_process';
 import { readdir, readFile } from 'node:fs/promises';
 import { homedir, hostname, networkInterfaces } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -18,6 +17,7 @@ import {
 import { chainManager } from '../monitor/chains.js';
 import { pendingTracker } from '../monitor/pending.js';
 import { watcher } from '../monitor/watcher.js';
+import { requestDaemonRestart } from './daemon-restart.js';
 import {
   deletePreset,
   expandPrompt,
@@ -1642,24 +1642,8 @@ export async function handleCommand(
   }
 
   if (name === 'reload' || name === 'restart') {
-    // 从飞书一键重启 daemon（launchd 会立刻拉起新进程，加载最新代码 + 重装 hooks）。
-    // 延迟 1.5s kickstart：让本条"重启中"回复先由 caller 发出去，再杀进程。
-    // dev(tsx watch)/未托管 launchd 时无此 label → kickstart 失败静默忽略（dev 改文件本就自动 reload）。
-    const uid = typeof process.getuid === 'function' ? process.getuid() : 0;
-    setTimeout(() => {
-      try {
-        spawn('launchctl', ['kickstart', '-k', `gui/${uid}/com.multiagent-chat.daemon`], {
-          stdio: 'ignore',
-          detached: true,
-        }).unref();
-      } catch {
-        /* dev / 非 launchd 托管 → 忽略 */
-      }
-    }, 1500);
-    return {
-      kind: 'text',
-      text: '🔄 正在重启 daemon…（约 5 秒，launchd 自动拉起新进程、加载最新代码 + 重装 hooks）。\n若长时间无响应，可能是 dev 模式（tsx watch 改文件即自动 reload，无需本命令）。',
-    };
+    // 共享实现见 daemon-restart.ts：主 bot 和数字员工 bot 的 /reload 都走这一份，别各写一份
+    return { kind: 'text', ...requestDaemonRestart() };
   }
 
   if (name === 'perm-reset') {

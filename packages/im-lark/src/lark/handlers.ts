@@ -28,13 +28,13 @@ const systemGuidanceShownAt = new Map<string, number>();
 import { patchCard, sendCardReturnId, sendImage, sendCardMessage } from './api.js';
 import { DEFAULT_LARK_BOT_ID, namespaceChatId, type LarkBotProfile } from './bots.js';
 import { handleDigitalStaffMessage } from './digital-staff.js';
+import { requestDaemonRestart } from './daemon-restart.js';
 import { ackCard, askCard, bareShellNoAgentCard, batchProgressCard, browseCard, careyclawKeyCard, careyclawKeyFormCard, chainProgressCard, closeIdleConfirmCard, closeTabConfirmCard, connectConfirmCard, connectFormCard, connectStatusCard, escapeLarkMd, permLevelCard, planCard, progressCard, receiptCard, tapdClaimCard, type BatchTaskItem, type ChainStepItem } from './cards.js';
 import { getCareyclawKeyStatus, setCareyclawKey } from 'multiagent-orchestrator';
 import { generatePlan, getPlan } from 'multiagent-orchestrator';
 import { getPerfItem, savePerfItem, markPerfSnoozed, markPerfIgnoredForever, createPerfStory } from 'multiagent-orchestrator';
 import type { PerfItem } from 'multiagent-orchestrator';
 import { integrationStatuses, getIntegration, upsertEnvKeys, setIntegrationDisabled, installIntegrationSkills, installClaudeMdBlock, removeClaudeMdBlock } from 'multiagent-orchestrator';
-import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { utimesSync } from 'node:fs';
 
@@ -2584,14 +2584,8 @@ async function handleCardAction(
   if (action === 'perm-recheck') {
     void (async () => {
       await sendText(client, chatId, '🔄 正在重启 daemon 复检授权…（约 5 秒；补齐会推 ✅，仍缺会再报）').catch(() => {});
-      // kickstart 自己（launchd 会立刻拉起新进程，新进程启动 10s 后自动复检并推结果）。
-      // 放 sendText 之后，避免消息还没发出去进程就被杀。dev 模式无此 label，kickstart 失败即忽略。
-      try {
-        const uid = typeof process.getuid === 'function' ? process.getuid() : 0;
-        spawn('launchctl', ['kickstart', '-k', `gui/${uid}/com.multiagent-chat.daemon`], {
-          stdio: 'ignore', detached: true,
-        }).unref();
-      } catch { /* ignore */ }
+      // 共享实现见 daemon-restart.ts；这里已经手动 await 过 sendText，不需要它自带的 1.5s 延迟
+      requestDaemonRestart({ delayMs: 0 });
     })();
     return {};
   }

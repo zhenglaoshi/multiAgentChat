@@ -53,6 +53,7 @@ DIGITAL_STAFF_DEFAULT_EMPLOYEE=            # 可选：裸文本且没有 sticky 
 | `/staff` | 员工列表（岗位 / 团队 / 忙闲） |
 | `/asks` · `/answer <id> 内容` | 待回答的请示 / 答复（请示卡过期后的兜底，正常直接在卡片上答） |
 | `/whoami` · `/help` | 看自己的 open_id 与身份 / 用法 |
+| `/reload` · `/restart` · `重启` | 重启 daemon（`launchctl kickstart`，本机托管 launchd 才有效；dev/tsx watch 下改文件本来就会自动 reload）。会断开所有 bot 的 WS 连接，约 5 秒后自动恢复；严格限老板白名单，非老板发这几个词只会被当成文本建一条 untrusted 任务 |
 
 **分支键是发送者**，不是消息内容：
 
