@@ -8,3 +8,4 @@ export * from './codex-status.js';
 export * from './tab-status.js';
 export * from './native-menu.js';
 export * from './prompt-submit.js';
+export * from './trust-prompt.js';

@@ -1,7 +1,7 @@
 /**
  * agent 生命周期（退出 / 关 pane / 原地重启 / 启动）—— 与 host-mac 的 restart.ts 同构。
  *
- * 判定与时序**刻意与 macOS 宿主保持一致**（连发两个 Ctrl-C 退 TUI、启动后错开两次回车过 trust 提示），
+ * 判定与时序**刻意与 macOS 宿主保持一致**（连发两个 Ctrl-C 退 TUI、启动后读屏按光标位置过 trust 提示），
  * 这样"同一条 /new 或重启命令在两个宿主上行为不同"这类问题不会出现。
  * 差异只在最后一跳怎么发按键：这里是 tmux send-keys（不抢焦点、锁屏可用）。
  */
@@ -19,12 +19,14 @@ import type {
   TerminalTab,
 } from 'multiagent-host-api';
 import {
+  acceptTrustPrompt,
   detectAgentFromProcs,
   getAgentAdapter,
+  logger,
   resolveDefaultAgentKind,
   type AgentKind,
 } from 'multiagent-orchestrator';
-import { closeTab, forceEnter, listTabs, send } from './tabs.js';
+import { closeTab, forceEnter, listTabs, readScreen, send } from './tabs.js';
 import { sendKeys } from './keys.js';
 import { detectSelfTty } from './procs.js';
 
@@ -91,11 +93,10 @@ export async function closeTabGracefully(tty: string, opts: CloseTabOptions = {}
 }
 
 /**
- * 在已停在 shell prompt 的 pane 里启动指定 agent，并过掉首次的
- * "Do you trust the files in this folder?" 提示。
+ * 在已停在 shell prompt 的 pane 里启动指定 agent，并过掉首次的「信任此目录吗？」提示。
  *
- * 进 alt-screen 后读不到屏幕，只能按时序补两次回车（覆盖启动快/慢两种情况）；
- * 目录已信任时回车落到 agent 空 prompt，无副作用。时序与 macOS 宿主一致。
+ * ⚠ 不按时序盲按回车：Claude Code 2.1.280 起该提示默认高亮「No, exit」，盲按 = 退出。
+ * 读屏看光标：在 Yes → Enter；在 No → Down Enter。判定见 orchestrator/agents/trust-prompt.ts，与 macOS 宿主一致。
  */
 export async function launchAgentInTab(
   tty: string,
@@ -113,10 +114,20 @@ export async function launchAgentInTab(
   if (!res.ok) return { ok: false, reason: res.reason ?? '未知' };
 
   if (acceptTrust) {
-    await delay(2000);
-    await forceEnter(tty).catch(() => {});
-    await delay(1800);
-    await forceEnter(tty).catch(() => {});
+    const outcome = await acceptTrustPrompt({
+      readScreen: () => readScreen(tty),
+      pressEnter: async () => { await forceEnter(tty); },
+      pressDownEnter: () => sendKeys(tty, 'down enter'),
+    });
+    logger.info('launchAgentInTab trust prompt', { tty, kind, outcome });
+    if (outcome === 'stuck') {
+      return { ok: false, command, reason: `${adapter.displayName} 卡在「信任此目录」提示，自动选择没生效 —— 去 ${tty} 手动选 Yes` };
+    }
+    // 读不到屏 = 不知道是不是停在信任提示上；按成功放行的话，调用方只按进程名判就绪，
+    // 会把任务 prompt 发进提示框里静默丢失（评审 2026-11-05）。与 stuck 同样如实报失败。
+    if (outcome === 'unreadable') {
+      return { ok: false, command, reason: `读不到 ${tty} 的屏幕，没法确认 ${adapter.displayName} 是否卡在「信任此目录」提示 —— 去那个 tab 看一眼` };
+    }
   }
   return { ok: true, command };
 }

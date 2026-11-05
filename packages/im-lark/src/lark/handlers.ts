@@ -106,6 +106,7 @@ import { readdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname, basename, resolve } from 'node:path';
 import { parseMessage, resolveTarget } from './target.js';
+import { launchDefaultAgentAndWait } from './agent-launch.js';
 import { buildImageOnlyPrompt, buildImagePromptPrefix, downloadInboundImages, parseImageKey, parsePost } from './resource.js';
 import { chainManager } from '../monitor/chains.js';
 
@@ -874,7 +875,7 @@ async function dispatchSopExecute(
 
       await new Promise((r) => setTimeout(r, 1500));
       try {
-        // 用 launchDefaultAgentInTab（会双 forceEnter 过"信任此文件夹?"trust 弹窗）——
+        // 用 launchDefaultAgentInTab（会读屏按光标过"信任此文件夹?"trust 提示，见 orchestrator/agents/trust-prompt.ts）——
         // 原来的 raw send('claude') 不过 trust：新目录首启时 trust 弹窗会吃掉随后发的 SOP wrapper，
         // agent 只收到空回车 → 回"收到一条空消息"。对齐 TAPD 认领的开工流程。
         const r = await launchDefaultAgentInTab(newTty, { continueSession: false });
@@ -886,7 +887,7 @@ async function dispatchSopExecute(
 
       // 轮询等 agent 进程真的起来（确认 launch 成功，不是盲等固定秒数），最多 ~18s。
       // 注：hasTUI 只认 vim/htop，claude/codex 都不在其列，不能用它判就绪 → 用进程名判（走 adapter）。
-      // launchDefaultAgentInTab 已在轮询前双 forceEnter 过 trust。agent 进程在 = 已启动。
+      // launchDefaultAgentInTab 已在轮询前过了 trust 提示（过不去会返回 ok:false）。agent 进程在 = 已启动。
       const isAgentProc = (t: Awaited<ReturnType<typeof listTabs>>[number]) =>
         detectAgentFromProcs(t.processes) !== null;
       let found: Awaited<ReturnType<typeof listTabs>>[number] | undefined;
@@ -1748,8 +1749,14 @@ async function finalizeTapdClaim(
     const primaryCwd = okRepos[0]!.cwd;
     const tty = await newTab({ cwd: primaryCwd });
     await new Promise((r) => setTimeout(r, 1500));
-    await launchDefaultAgentInTab(tty, { continueSession: false });
-    await new Promise((r) => setTimeout(r, 1500));
+    const launched = await launchDefaultAgentAndWait(tty);
+    if (!launched.ok) {
+      await sendCardMessage(client, chatId, ackCard({
+        title: `⚠️ ${claim.branch} 未开工`,
+        body: `新 tab ${tty} 起 ${launched.kind} 失败：${launched.reason}`,
+      }));
+      return;
+    }
 
     const tapdPrompt = buildTapdPrompt(claim, results);
     let modeNote: string;
@@ -1855,8 +1862,8 @@ async function openTaskWorktreeTab(opts: {
   }).catch((e) => logger.warn('saveWorkTask (perf) failed', { err: (e as Error).message }));
   const tty = await newTab({ cwd: ok.cwd });
   await new Promise((r) => setTimeout(r, 1500));
-  await launchDefaultAgentInTab(tty, { continueSession: false });
-  await new Promise((r) => setTimeout(r, 1500));
+  const launched = await launchDefaultAgentAndWait(tty);
+  if (!launched.ok) throw new Error(`新 tab ${tty} 起 ${launched.kind} 失败：${launched.reason}`);
   await send(tty, opts.prompt);
   const submitWarn = await submitOrWarnText(tty, opts.prompt);
   const chat = await loadChat(opts.chatId); chat.activeTty = tty; chat.lastActiveAt = Date.now(); await saveChat(chat);
@@ -2666,9 +2673,19 @@ async function handleCardAction(
   }
 
   if (action === 'choose-dir') {
-    return {
-      toast: { type: 'info', content: '请发送 /new 看选目录卡片' },
-    };
+    // /shells、/dashboard 卡上的「🆕 新 tab」按钮：等价于发 /new，另发一张选目录卡（不覆盖原卡）。
+    // 以前这里只回了个 toast「请发送 /new」—— 飞书上点了像没反应。扫目录可能慢，fire-and-forget 防超 ack 窗口。
+    void (async () => {
+      try {
+        const reply = await handleCommand(chatId, '/new');
+        if (reply.kind === 'card') await sendCard(client, chatId, reply.card);
+        else if (reply.kind === 'text') await sendText(client, chatId, reply.text);
+      } catch (e) {
+        logger.error('choose-dir: 发选目录卡失败', { err: (e as Error).message });
+        void sendText(client, chatId, `❌ 打开选目录卡失败：${(e as Error).message}`).catch(() => {});
+      }
+    })();
+    return {};
   }
 
   if (action === 'browse-dir' || action === 'browse-dir-select') {

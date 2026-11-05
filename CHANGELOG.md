@@ -6,6 +6,13 @@
 
 ## [未发布]
 
+### 2026-11-05
+
+**修复**
+- **飞书 `/new` 开新 tab 后发 `claude` 起不来（用户反馈：「飞书打开新 tab 好像不好用了」）**。根因：Claude Code 2.1.280 的「信任此目录」提示改成 `❯ No, exit` / `Yes, I trust this folder`，**默认高亮 No 且选项不带编号**；`launchAgentInTab` 一直按「第一项=信任」在 2s / 3.8s 盲按两次回车 → 选中 No → claude 立刻退出，tab 退回裸 shell，后续任务被裸 shell 拦截、「起 claude 并执行」也报「还没起来」。只在没信任过的目录（如 `~`）复现，已信任目录不出提示所以「时好时坏」。改为读屏按光标作答（新增纯逻辑 `orchestrator/agents/trust-prompt.ts`，两个宿主共用）：光标在 Yes → 回车；在 No → macOS `do script "\x1b[B"`（pty 收到 `ESC[B\r`，claude 解析成「下 + 回车」，**不经 System Events、锁屏可用**，实测）/ tmux `send-keys Down Enter`；没出提示一个键都不按（老逻辑会往已就绪的输入框里多按两次回车）。守卫：提示必须是屏幕上最后一个光标行（`contents` 带旧提示残影，防往输入框里按「下+回车」）、早退「就绪」前至少等 3s（`❯` 主题的 zsh 提示符会被误认）。作答两次仍不生效或读不到屏 → `launchAgentInTab` 返回 `ok:false` 如实告知去手动看。pty 写数字 `2` 选不中（实测数字被忽略、块尾 `\r` 照样确认 No）。真机：未信任目录 `accepted` 3.3s 进主界面、已信任目录 `none` 不按键；测试 `tests/trust-prompt.test.ts`。
+  - **评审收紧（code-reviewer 1 high + security 2 medium，均已修）**：① TAPD 认领（飞书 / 企微）与 perf/TAPD worktree 开工三处 `launchDefaultAgentInTab` 后**不看返回值、固定等 1.5s 就发 prompt**——全新 worktree 正是必弹 trust 的场景，起不来时 prompt+回车会落进裸 shell 当命令执行 → 抽出 `im-lark/lark/agent-launch.ts launchDefaultAgentAndWait`（看 ok + 轮询进程名确认就绪，与公函开工同一道闸），三处改用；② 信任提示判定从单词级（`yes`/`no` + 附近任意 `trust`）收紧为**已知文案** + 必须同时有另一个已知选项 + 正文在光标行上方 12 行内，防把「Do you want to proceed? ❯ 1. Yes」这类高危命令审批菜单误认成信任提示、替人批准。真机核对 codex 0.163：未信任的非 git 目录不弹信任提示（→ `none` 不按键）。
+- **`/shells`、`/dashboard` 卡上的「🆕 开新 tab」按钮点了没反应**：`choose-dir` 回调只回了个 toast「请发送 /new」（飞书上基本看不到）。改为等价执行 `/new`、另发一张选目录卡（fire-and-forget，不覆盖原卡、不占 ack 窗口）。
+
 ### 2026-10-23
 
 **修复**

@@ -5,7 +5,7 @@ import { homedir, platform } from 'node:os';
 import { delimiter, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startControlServer, initRelay, loadRelayConfig, startRelayPoller, sendHandoffStatus, ensureHostRegistered } from 'multiagent-framework';
-import { startLarkBot, listAllChats, sendCardReturnId, patchCard, handoffTaskCard, setHandoffStatusSender } from 'multiagent-im-lark';
+import { startLarkBot, listAllChats, sendCardReturnId, patchCard, handoffTaskCard, setHandoffStatusSender, launchDefaultAgentAndWait } from 'multiagent-im-lark';
 import { updateHandoffTask, type ApplyResult, type HandoffEnvelope } from 'multiagent-orchestrator';
 import { loadWeComConfig, WeComTransport, renderWeComCard } from 'multiagent-im-wecom';
 import { loadWebDashboardConfig } from './web-dashboard/config.js';
@@ -49,7 +49,6 @@ import {
   sendKeys,
   forceEnter,
   newTab,
-  launchDefaultAgentInTab,
 } from 'multiagent-host-api';
 // 工作目录/git 这几项与宿主无关，已下沉到 orchestrator（见 orchestrator/workspace）。
 import {
@@ -1117,8 +1116,12 @@ async function runWeComTapdClaim(wecom: WeComTransport, chatId: string, claim: T
   }
   const tty = await newTab({ cwd: outcome.cwd });
   await new Promise((r) => setTimeout(r, 1500));
-  await launchDefaultAgentInTab(tty, { continueSession: false });
-  await new Promise((r) => setTimeout(r, 1500));
+  // 必须确认 agent 真起来了才发 prompt，否则 prompt+回车会落进裸 shell 当命令执行（见 agent-launch.ts）
+  const launched = await launchDefaultAgentAndWait(tty);
+  if (!launched.ok) {
+    await wecom.sendText(chatId, `❌ 新 tab ${tty} 起 ${launched.kind} 失败：${launched.reason}`);
+    return;
+  }
   await terminalSend(tty, buildTapdPrompt(claim, [outcome], 'wecom'));
   await new Promise((r) => setTimeout(r, 600));
   await forceEnter(tty).catch(() => {});

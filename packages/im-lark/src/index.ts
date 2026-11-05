@@ -1,5 +1,6 @@
 // Lark side
 export * from './lark/api.js';
+export * from './lark/agent-launch.js';
 export * from './lark/cards.js';
 export * from './lark/client.js';
 export * from './lark/bots.js';

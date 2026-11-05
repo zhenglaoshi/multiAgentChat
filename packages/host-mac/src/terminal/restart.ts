@@ -1,8 +1,8 @@
 import { spawnSync } from 'node:child_process';
-import { closeTab, forceEnter, listTabs, send } from './tabs.js';
+import { closeTab, forceEnter, listTabs, readScreen, send, sendKeysRaw } from './tabs.js';
 import { sendKeys } from './keys.js';
 import type { TerminalTab } from './types.js';
-import { detectAgentFromProcs, getAgentAdapter, resolveDefaultAgentKind, type AgentKind } from 'multiagent-orchestrator';
+import { acceptTrustPrompt, detectAgentFromProcs, getAgentAdapter, logger, resolveDefaultAgentKind, type AgentKind } from 'multiagent-orchestrator';
 
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -193,15 +193,13 @@ export type { LaunchAgentOptions as LaunchClaudeOptions } from 'multiagent-host-
 import type { LaunchAgentOptions as LaunchClaudeOptions } from 'multiagent-host-api';
 
 /**
- * 在一个已停在 shell prompt 的 tab 里启动指定 agent（claude/codex），并自动过掉首次的
- * "Do you trust the files in this folder?" 弹窗。
+ * 在一个已停在 shell prompt 的 tab 里启动指定 agent（claude/codex），并过掉首次的
+ * 「信任此目录吗？」提示。
  *
- * 该弹窗默认高亮"信任本目录"，一次回车即接受——走 forceEnter（默认 pty 直写：空 do script 送单独一个 \r；
- * `MCHAT_ENTER_MODE=keystroke` 时为 key code 36 键盘事件）。⚠ pty 路径过 trust 弹窗尚未真机验证，
- * 若发现 trust 弹窗过不去，先试 keystroke 模式定位。agent 进 alt-screen 后
- * 我们读不到屏幕内容，只能按时序补 Return —— 发两次、错开时序，覆盖启动快/慢两种情况；
- * 目录已信任（无弹窗）时 Return 落到 agent 空 prompt，无副作用。codex 首跑同样有信任提示，
- * 复用同一套时序。
+ * ⚠ 不能再按时序盲按回车：Claude Code 2.1.280 起该提示**默认高亮「No, exit」**，盲按 = 退出
+ * （飞书 `/new` 开到没信任过的目录里起 claude 必失败）。改为读屏（`contents of tab` 在提示阶段可读）
+ * 看光标在哪：在 Yes → 回车；在 No → `do script "\x1b[B"`（pty 收到 `ESC[B\r` = 下 + 回车）。
+ * 两条都是 pty 直写，锁屏可用。判定见 orchestrator/agents/trust-prompt.ts。
  */
 export async function launchAgentInTab(
   tty: string,
@@ -218,10 +216,20 @@ export async function launchAgentInTab(
   if (!res.ok) return { ok: false, reason: res.reason ?? '未知' };
 
   if (acceptTrust) {
-    await delay(2000);
-    await forceEnter(tty).catch(() => {});
-    await delay(1800);
-    await forceEnter(tty).catch(() => {});
+    const outcome = await acceptTrustPrompt({
+      readScreen: () => readScreen(tty),
+      pressEnter: async () => { await forceEnter(tty); },
+      pressDownEnter: async () => { await sendKeysRaw(tty, '\x1b[B'); },
+    });
+    logger.info('launchAgentInTab trust prompt', { tty, kind, outcome });
+    if (outcome === 'stuck') {
+      return { ok: false, command, reason: `${adapter.displayName} 卡在「信任此目录」提示，自动选择没生效 —— 去 ${tty} 手动选 Yes` };
+    }
+    // 读不到屏 = 不知道是不是停在信任提示上；按成功放行的话，调用方只按进程名判就绪，
+    // 会把任务 prompt 发进提示框里静默丢失（评审 2026-11-05）。与 stuck 同样如实报失败。
+    if (outcome === 'unreadable') {
+      return { ok: false, command, reason: `读不到 ${tty} 的屏幕，没法确认 ${adapter.displayName} 是否卡在「信任此目录」提示 —— 去那个 tab 看一眼` };
+    }
   }
   return { ok: true, command };
 }
