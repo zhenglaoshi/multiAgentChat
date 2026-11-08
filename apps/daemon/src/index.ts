@@ -1049,7 +1049,7 @@ function attachWeComAskListener(wecom: WeComTransport): void {
         if (req.answer.kind === 'single') {
           msg = `✅ 已选：${req.answer.index + 1}. ${req.answer.value}`;
         } else if (req.answer.kind === 'input') {
-          msg = `✅ 已回复：${req.answer.text.slice(0, 200)}`;
+          msg = req.sensitive ? '✅ 已回复（敏感内容不回显）' : `✅ 已回复：${req.answer.text.slice(0, 200)}`;
         } else if (req.answer.kind === 'multi') {
           msg = `✅ 已选（${req.answer.indices.length}项）：${req.answer.values.join(' / ')}`;
         }

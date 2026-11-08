@@ -33,6 +33,8 @@ export class AskManager {
   private awaitingInputByChat = new Map<string, string>();
   /** chatId → {askId,q}：form 向导里"武装"了自由输入，下一条文本记为该题答案 */
   private awaitingFormInputByChat = new Map<string, { askId: string; q: number }>();
+  /** chatId → 截止时间：刚结束过一个敏感 input 问答。窗口内「整条就是一个令牌样子」的消息按迟到的敏感答案处理 */
+  private recentSensitiveByChat = new Map<string, number>();
 
   async create(input: {
     chatId: string;
@@ -41,6 +43,8 @@ export class AskManager {
     options?: string[];
     questions?: AskFormQuestion[];
     timeoutMs?: number;
+    /** 答案是凭证：渲染 / 日志不回显原文（见 AskRequest.sensitive） */
+    sensitive?: boolean;
   }): Promise<{ request: AskRequest; result: Promise<AskRequest> }> {
     const id = nextId();
     const req: AskRequest = {
@@ -53,6 +57,7 @@ export class AskManager {
       status: 'pending',
       selection: [],
     };
+    if (input.sensitive) req.sensitive = true;
     if (input.type === 'form') {
       req.questions = input.questions ?? [];
       req.formSelection = req.questions.map(() => []);
@@ -93,6 +98,31 @@ export class AskManager {
 
   getAwaitingInputAskId(chatId: string): string | undefined {
     return this.awaitingInputByChat.get(chatId);
+  }
+
+  /**
+   * 敏感问答已经结束（答过 / 超时 / 取消）后不久，又来了一条整条只有 6 位数字的消息 —— 多半是用户重发的令牌
+   * （第一次没认出来、问答已收尾）。这种消息不能当普通消息：会明文进日志、被派发进 tab、回显进进度卡、落 memory。
+   */
+  isLateSensitiveReply(chatId: string, text: string, now = Date.now()): boolean {
+    const until = this.recentSensitiveByChat.get(chatId);
+    if (until === undefined) return false;
+    if (now > until) {
+      this.recentSensitiveByChat.delete(chatId);
+      return false;
+    }
+    // 整条消息去掉「一段 6 位数字」和常见修饰词后什么都不剩，才算令牌（「令牌 123456」「验证码是123456」）；
+    // 普通句子里碰巧有 6 位数字（「帮我看下 123456 这个单号」）不误拦。⚠ 只是兜底，带别的字的迟到令牌仍按普通消息处理
+    const rest = text
+      .replace(/(?<!\d)\d{3}\s?\d{3}(?!\d)/, '')
+      .replace(/令牌|验证码|动态码|口令|token|otp|code|是|为|：|:|，|,|。|\.|谢谢|好的|给你/gi, '');
+    return rest.trim() === '' && /(?<!\d)\d{3}\s?\d{3}(?!\d)/.test(text);
+  }
+
+  /** 这个 chat 的下一条文本会被当成一个**敏感** input 问答的答案（入站日志据此打码） */
+  isAwaitingSensitiveInput(chatId: string): boolean {
+    const id = this.awaitingInputByChat.get(chatId);
+    return id !== undefined && this.active.get(id)?.sensitive === true;
   }
 
   /** multi 类型：toggle 某项。返回更新后的 request（用于 card patch）。 */
@@ -255,6 +285,7 @@ export class AskManager {
   }
 
   private finalize(req: AskRequest): void {
+    if (req.sensitive && req.type === 'input') this.recentSensitiveByChat.set(req.chatId, Date.now() + 2 * 60 * 1000);
     const r = this.resolvers.get(req.id);
     if (r) {
       clearTimeout(r.timer);

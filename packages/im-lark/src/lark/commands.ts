@@ -335,6 +335,7 @@ const HELP_TEXT = [
   '  **/note** <一句话>            补记非编码/未提交/线下工作（开账号、对接沟通…），日报会纳入',
   '  **/r**  /recall [关键词]      搜任务历史；不带关键词 = 最近 10 条',
   '  **/wt** /worktasks [关键词]   列/搜任务工作目录（目录↔分支↔干啥；TAPD/perf 认领时自动落记录）',
+  '  /vpn [dev|prod|off]          本机 VPN 正式/测试环境（锁屏也能连；回 6 位令牌；/vpn 看状态）',
   '       /watch on/off            本地任务监听（你在 Mac 直接发的命令也推送到飞书）',
   '  **/wd** 或 /web /webdash        web dashboard 访问 URL（公网/LAN/mDNS/localhost 多路径）',
   '  **/quiet on/off**              静默模式：长任务只发首次+完成，中间不刷进度卡',
@@ -1347,6 +1348,79 @@ async function handleTaskCmd(rest: string, chatId: string): Promise<ReplyAction>
   return buildStageProgressCard(id);
 }
 
+/**
+ * /vpn [dev|prod|off [dev|prod]|status]：本机 VPN（正式 / 测试），锁屏也能连。
+ * 连接流程要等用户回令牌，fire-and-forget 跑（命令本身立刻返回，结果另发一条）。见 lark/vpn.ts、orchestrator/vpn。
+ */
+async function handleVpnCommand(chatId: string, rest: string): Promise<ReplyAction> {
+  const usage = '用法：/vpn（看状态）· /vpn dev · /vpn prod · /vpn off dev|prod|all';
+  if (process.platform !== 'darwin') return { kind: 'text', text: '/vpn 只支持 macOS（root 小程序 + Tunnelblick 配置）' };
+  // 只认飞书：企微 chatId 不落在 bot 身份体系里（botIdForChat 会回退成默认 bot），上面那道 digital-staff 拦截管不到它
+  if (chatId.startsWith('wecom:')) return { kind: 'text', text: '/vpn 只能在飞书里用' };
+  const { getLarkBotProfile, botIdForChat } = await import('./bots.js');
+  if (getLarkBotProfile(botIdForChat(chatId))?.role === 'digital-staff') {
+    return { kind: 'text', text: '数字员工 bot 不支持 /vpn' };
+  }
+  const orch = await import('multiagent-orchestrator');
+  const vpn = await import('./vpn.js');
+  const mgr = vpn.getVpnManager();
+  const args = rest.trim().split(/\s+/).filter(Boolean);
+  const sub = (args[0] ?? 'status').toLowerCase();
+
+  if (sub === 'status' || sub === 'st') {
+    const st = await mgr.status();
+    const lines = await Promise.all(st.map(async (x) => {
+      const label = orch.VPN_ENV_LABEL[x.env];
+      const tbName = vpn.tunnelblickName(x.env);
+      const tb = tbName ? await vpn.tunnelblickState(tbName) : null;
+      const mine = x.running
+        ? `🟢 /vpn 已连${x.localIp ? `（${x.localIp}）` : ''}${x.phase && x.phase !== 'connected' ? `（${x.phase === 'auth' ? '认证中' : '启动中'}）` : ''}`
+        : '⚪ /vpn 未连';
+      const tbText = tb === 'CONNECTED' ? ' · Tunnelblick 已连' : '';
+      return `${label}（${x.env}）：${mine}${tbText}${tbName ? '' : ' · 未配置'}`;
+    }));
+    return { kind: 'text', text: ['🔐 VPN 状态', ...lines, '', usage].join('\n') };
+  }
+
+  if (sub === 'off' || sub === 'down' || sub === 'stop') {
+    const target = (args[1] ?? '').toLowerCase();
+    const envs = target === '' || target === 'all' ? orch.VPN_ENVS : [orch.parseVpnEnv(target)].filter((e): e is NonNullable<typeof e> => e !== null);
+    if (envs.length === 0) return { kind: 'text', text: usage };
+    const out = await Promise.all(envs.map(async (env) => (await mgr.disconnect(env)).message));
+    return { kind: 'text', text: out.join('\n') };
+  }
+
+  const env = orch.parseVpnEnv(sub);
+  if (!env) return { kind: 'text', text: usage };
+  const label = orch.VPN_ENV_LABEL[env];
+  const tbName = vpn.tunnelblickName(env);
+  if (!tbName) {
+    return { kind: 'text', text: `${label}未配置：.env 里加 ${env === 'prod' ? 'VPN_PROD_TUNNELBLICK' : 'VPN_DEV_TUNNELBLICK'}=<Tunnelblick 里的配置名>，再 /reload` };
+  }
+  // 命令本身立刻回；Tunnelblick 冲突检查（osascript，Tunnelblick 没开时会把它拉起来、要几秒）也放进后台
+  void (async () => {
+    try {
+      if ((await vpn.tunnelblickState(tbName)) === 'CONNECTED') {
+        await vpn.vpnNotify(chatId, `${label}现在由 Tunnelblick 连着 —— 同一账号连两个会话会互相踢，先在 Tunnelblick 断开再 /vpn ${env}`);
+        return;
+      }
+      if (env === 'prod' && !(await vpn.askConfirm(chatId, '⚠️ 确认连接正式环境 VPN？', '✅ 确认连接正式环境'))) {
+        await vpn.vpnNotify(chatId, '已取消连接正式环境');
+        return;
+      }
+      const r = await mgr.connect(env, chatId);
+      await vpn.vpnNotify(chatId, r.message);
+    } catch (e) {
+      orch.logger.error('vpn connect flow failed', { env, err: (e as Error).message });
+      await vpn.vpnNotify(chatId, `❌ ${label}连接出错：${(e as Error).message.slice(0, 200)}`).catch(() => {});
+    }
+  })();
+  return {
+    kind: 'text',
+    text: env === 'prod' ? `🔐 准备连接${label}：先确认，再回复 6 位令牌` : `🔐 正在连接${label}…稍后弹卡片要 6 位令牌`,
+  };
+}
+
 export async function handleCommand(
   chatId: string,
   text: string,
@@ -1639,6 +1713,10 @@ export async function handleCommand(
       return { kind: 'text', text: '🔒 已恢复脱敏：出站凭证重新脱成 [REDACTED-X]。' };
     }
     return { kind: 'text', text: `未知参数：${arg}\n用法：/raw on  /raw off  /raw status` };
+  }
+
+  if (name === 'vpn') {
+    return await handleVpnCommand(chatId, rest);
   }
 
   if (name === 'reload' || name === 'restart') {

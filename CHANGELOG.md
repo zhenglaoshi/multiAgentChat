@@ -6,7 +6,19 @@
 
 ## [未发布]
 
+### 2026-11-08
+
+**修复**
+- **`/vpn` 连上后掉线重连永远卡住，并把公司域名解析全拖挂（用户发现：数字员工 token 没进 ai-tokens）**。openvpn 以 `--management-hold` 起，**掉线软重启（ping-restart）后会再次停在 hold 等放行**，`VpnManager` 只处理首次放行、对之后的 `>HOLD:` 不响应 → 卡在 RECONNECTING；期间 utun 接口 / 路由 / `/etc/resolver/ihealthcn.com → 10.8.0.1` 都还在，所有 `*.ihealthcn.com` 解析发往死隧道（实测 11-06 19:25 起卡了 37 小时：ai-tokens 采集器上报 600+ 次 ENOTFOUND、careyclaw/TAPD MCP 全连不上）。改为收到 `>HOLD:` 就自动 hold release（重连仍要过原有凭证 / 6 位令牌流程；主动断开后不放行）。测试 +2；code + security 双审无 high。
+  - 已知未修：daemon 重启后不会重新接管仍在跑的 openvpn（管理口无人连着）——这次 dev 就是 11-05 daemon 重启后成了孤儿，再遇掉线照样卡。
+
 ### 2026-11-05
+
+**新增**
+- **飞书 `/vpn`：本机 VPN 正式 / 测试环境，锁屏也能连（用户需求：「连接正式环境 vpn 和测试环境 vpn，两个都需要二次认证」）**。`/vpn` 看状态、`/vpn dev`、`/vpn prod`（先确认卡）、`/vpn off dev|prod|all`。流程：root 小程序 `mchat-vpn up` 起 openvpn（管理口挂起）→ 管理口 hold release → 服务器要凭证时账号密码取钥匙串里 Tunnelblick 保存的那份、6 位令牌弹飞书 input 卡要 → SCRV1 提交 → 等 CONNECTED；连上后继续盯管理口，掉线 / 重新认证 / 会话过期 / 出错都通知发起的 chat（重新认证也有超时兜底）。同环境 Tunnelblick 已连着就不重复连；10 分钟内失败 3 次冷却 10 分钟；只认飞书（企微不放行）；令牌卡串行（同一 chat 只能等一个 input 答案）。真机：测试环境 2 秒连上（10.8.0.109）。核心逻辑 `orchestrator/vpn`（mgmt 协议解析 / 转义拒换行 / SCRV1 / 令牌提取 + VpnManager 依赖注入），宿主接线 `im-lark/lark/vpn.ts`；测试 `tests/vpn-manager.test.ts` 19 条。
+  - **评审（security 2 high + code 1 critical，均已修）**：① 令牌走通用 ask 机制被**回显进聊天记录**（卡片「输入：xxxxxx」/ 企微「已回复：xxxxxx」）且**写进入站日志 textPreview** → AskRequest 新增 `sensitive` 标记，卡片 / 企微 / 入站日志遇到它一律不出原文（`asks.isAwaitingSensitiveInput` 在记日志前判）；② 连上之后的失败（FATAL / 重新认证失败 / 读钥匙串失败）原来走已消费的 settle 通道被**静默吞掉**，重新认证还没有超时 → `fail()` 无人等待时直接通知 chat，超时定时器不再依赖 settle、CONNECTED 时清掉。
+  - 钥匙串需要人在 Mac 前对 4 个条目点一次「始终允许」（锁屏时点不了）；代价：本人身份下的程序都能静默读到 VPN 密码（令牌仍只在手机上）。
+- **VPN 一次性安装脚本（方案 B 第一步）**：`scripts/vpn-setup.sh`（sudo 跑一次）+ root 小程序 `scripts/vpn/mchat-vpn`（装到 `/usr/local/libexec/mchat-vpn`，sudoers 只免密放行 `up|down prod|dev` / `status` 5 种调用）。用 Tunnelblick 自带 openvpn 以 root 起连接、管理接口交给本人，让 daemon 在锁屏时也能交账号/密码/6 位令牌（实测 Tunnelblick 的令牌框锁屏时辅助功能接口看不到，方案 A 填框只能在解锁时用）。四轮 security-reviewer 修掉 4 个 critical：① `--script-security` 管不住 `plugin`（Tunnelblick 配置常带 down-root plugin 指向 admin 可写的 /Applications）；② OpenVPN 接受 `--plugin` 等价写法，黑名单正则整体失效 → 改**白名单**（awk CONFIG-CHECK 段，两脚本逐字相同，`tests/vpn-scripts.test.ts` 校验 + 绕过用例）；③ 先验签再从 /Applications 复制存在调包窗口 → 先复制进 root-only 目录再对复制品验签 + 核团队 ID；④（medium 级）锁 TOCTOU → perl flock。所有 root 文件放 `/usr/local/libexec/mchat-vpn.d`（`/usr/local/etc` 本机 777、`/var/run` daemon 组可写都不能用），运行前逐级校验 root 持有。安装是「全部在 root-only 暂存目录准备 + 校验 → 才断开旧连接 → 切换」，切换阶段先装好尽力回滚（备份原子落位、只恢复真被换过的文件、全局 `visudo -c` 通过才提交），回滚 6 个场景有测试（code-reviewer 三轮 high：全局校验放在不可逆操作之后 / 回滚 trap 挂晚 + trap 内 set -e 中断 / 半截备份覆盖完好文件）。
 
 **修复**
 - **飞书 `/new` 开新 tab 后发 `claude` 起不来（用户反馈：「飞书打开新 tab 好像不好用了」）**。根因：Claude Code 2.1.280 的「信任此目录」提示改成 `❯ No, exit` / `Yes, I trust this folder`，**默认高亮 No 且选项不带编号**；`launchAgentInTab` 一直按「第一项=信任」在 2s / 3.8s 盲按两次回车 → 选中 No → claude 立刻退出，tab 退回裸 shell，后续任务被裸 shell 拦截、「起 claude 并执行」也报「还没起来」。只在没信任过的目录（如 `~`）复现，已信任目录不出提示所以「时好时坏」。改为读屏按光标作答（新增纯逻辑 `orchestrator/agents/trust-prompt.ts`，两个宿主共用）：光标在 Yes → 回车；在 No → macOS `do script "\x1b[B"`（pty 收到 `ESC[B\r`，claude 解析成「下 + 回车」，**不经 System Events、锁屏可用**，实测）/ tmux `send-keys Down Enter`；没出提示一个键都不按（老逻辑会往已就绪的输入框里多按两次回车）。守卫：提示必须是屏幕上最后一个光标行（`contents` 带旧提示残影，防往输入框里按「下+回车」）、早退「就绪」前至少等 3s（`❯` 主题的 zsh 提示符会被误认）。作答两次仍不生效或读不到屏 → `launchAgentInTab` 返回 `ok:false` 如实告知去手动看。pty 写数字 `2` 选不中（实测数字被忽略、块尾 `\r` 照样确认 No）。真机：未信任目录 `accepted` 3.3s 进主界面、已信任目录 `none` 不按键；测试 `tests/trust-prompt.test.ts`。

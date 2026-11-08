@@ -2499,7 +2499,7 @@ export function askCard(req: AskRequest) {
         ansLine = `**选中**（${req.answer.indices.length}项）：\n- ${parts.join('\n- ')}`;
       }
     } else if (req.answer?.kind === 'input') {
-      ansLine = `**输入**：${truncate(req.answer.text, 200)}`;
+      ansLine = req.sensitive ? `**输入**：（已提交；敏感内容不回显）` : `**输入**：${truncate(req.answer.text, 200)}`;
     } else if (req.status === 'cancelled') {
       ansLine = `_已取消_`;
     } else if (req.status === 'timeout') {

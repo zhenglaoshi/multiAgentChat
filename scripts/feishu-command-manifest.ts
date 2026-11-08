@@ -201,6 +201,19 @@ export const COMMAND_MANIFEST: CommandMeta[] = [
 
   // ── 其它 ────────────────────────────────────────
   {
+    name: 'vpn',
+    description: '本机 VPN 正式/测试环境（锁屏也能连）',
+    example: 'vpn dev',
+    group: 'other',
+    usage: [
+      '/vpn                                  # 看正式 / 测试环境连接状态',
+      '/vpn dev                              # 连测试环境（弹卡要 6 位令牌）',
+      '/vpn prod                             # 连正式环境（先确认，再要令牌）',
+      '/vpn off dev|prod|all                 # 断开',
+    ],
+    note: '需先 sudo bash scripts/vpn-setup.sh 装 root 小程序，.env 配 VPN_PROD_TUNNELBLICK / VPN_DEV_TUNNELBLICK',
+  },
+  {
     name: 'help',
     aliases: ['?'],
     description: '完整命令帮助',

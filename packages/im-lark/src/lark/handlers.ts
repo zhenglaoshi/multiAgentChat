@@ -3744,16 +3744,26 @@ export function buildEventDispatcher(client: Lark.Client, bot: LarkBotProfile = 
         });
         return;
       }
+      // 这条要被当成敏感问答（VPN 令牌等）的答案，或是问答结束后迟到的令牌 → 日志里不留原文
+      const lateSensitive = !asks.isAwaitingSensitiveInput(chat_id) && asks.isLateSensitiveReply(chat_id, text);
+      const sensitiveInbound = lateSensitive || asks.isAwaitingSensitiveInput(chat_id);
       logger.info('message received', {
         chat_id,
         message_type,
         textLen: text.length,
         images: inlineImageKeys.length,
-        textPreview: text.length > 40 ? text.slice(0, 40) + '…' : text,
+        textPreview: sensitiveInbound ? '[敏感输入，不记录]' : text.length > 40 ? text.slice(0, 40) + '…' : text,
       });
-      logger.debug('message received full', { message_id, text });
+      if (!sensitiveInbound) logger.debug('message received full', { message_id, text });
 
       const ctx = { messageId: message_id, chatId: chat_id };
+
+      // 迟到的令牌：拦下，不派发进任何 tab（否则会回显进进度卡、落 memory），只提示
+      if (lateSensitive) {
+        logger.info('late sensitive reply intercepted', { chat_id });
+        await sendText(client, chat_id, '🔐 这条看起来是令牌，但令牌问答已经结束了 —— 已忽略、没转发给任何 tab。要连 VPN 请重新发 /vpn dev 或 /vpn prod').catch(() => {});
+        return;
+      }
 
       // 数字员工 bot 不收纯图：下面的「纯图暂存 → 90s 后直发 active tab」分支对 bot.role 一无所知，
       // 不拦会让任何人发一张图就绕过白名单把内容派进真实终端（评审 2026-10-19 指出）。带文字的图照常走下面：

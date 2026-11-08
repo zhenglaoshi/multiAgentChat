@@ -1,0 +1,257 @@
+#!/bin/bash
+# mchat-vpn —— multiAgentChat 的 VPN root 小程序（由 scripts/vpn-setup.sh 安装到 /usr/local/libexec/mchat-vpn）
+#
+# 用法（daemon 经 sudo 免密调用；sudoers 只放行安装后这份 root 持有副本的 5 种调用）：
+#   mchat-vpn up   prod|dev   起 openvpn（--management-hold 挂起，等 daemon 经管理接口交账号/密码/令牌）
+#   mchat-vpn down prod|dev   断开
+#   mchat-vpn status          每个环境一行：<env> running|stopped
+#
+# 安全边界（以 root 跑；把任何以用户身份运行的进程都当潜在攻击者）：
+#   - 参数白名单：只认上面三种形式（sudoers 层也只放行这 5 种）
+#   - 不读/不执行任何用户可写的东西：openvpn 副本、配置、owner、运行目录全在 /usr/local/libexec/mchat-vpn.d，
+#     运行前逐级校验 root 持有且组/其他人不可写。
+#     ⚠ 不能跑 /Applications/Tunnelblick.app 里的 openvpn（/Applications admin 可写）；
+#       /usr/local/etc（本机用户持有 777）、/var/run（root:daemon 775）也都不行。
+#   - 配置走**白名单**（CONFIG-CHECK 段）：每行去掉可选的 `--` 前缀取指令名，只放行已知安全的客户端指令；
+#     名字里带引号 / 反斜杠 / 其他字符一律不认。⚠ 别退回黑名单：OpenVPN 接受 `--plugin` 等价于 `plugin`
+#     （黑名单正则曾被这样整体绕过，安全评审 2026-11-05）；--script-security 也管不住 plugin（dlopen 进 root）。
+#   - up/down 串行化用 flock（经 /usr/bin/perl 拿内核锁，进程退出自动释放，不存在「过期锁回收」竞态）
+#   - 管理 socket 只给 owner 读写（chown + 0600 + --management-client-user）
+set -euo pipefail
+umask 077
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+CONF_DIR=/usr/local/libexec/mchat-vpn.d
+OPENVPN="$CONF_DIR/openvpn"
+RUN_DIR="$CONF_DIR/run"
+LOG_DIR="$CONF_DIR/log"
+ENVS="prod dev"
+
+die() { echo "mchat-vpn: $*" >&2; exit 2; }
+
+[ "$(id -u)" = 0 ] || die "必须以 root 运行（sudo）"
+
+# 路径上每一级都必须 root 持有、组/其他人不可写（含末端本身）。stat 不带 -L：符号链接按链接本身判
+assert_root_path() {
+  local p="$1"
+  while [ "$p" != "/" ] && [ -n "$p" ]; do
+    [ -e "$p" ] || [ -L "$p" ] || die "不存在：$p"
+    [ "$(stat -f %u "$p")" = 0 ] || die "不是 root 持有：$p"
+    local mode; mode="$(stat -f %Lp "$p")"
+    (( (8#$mode & 8#022) == 0 )) || die "可被组/其他人写：$p"
+    p="$(dirname "$p")"
+  done
+}
+
+valid_env() {
+  case "$1" in prod|dev) return 0 ;; *) return 1 ;; esac
+}
+
+cmd="${1:-}"
+case "$cmd" in
+  up|down) [ $# -eq 2 ] && valid_env "$2" || die "用法：mchat-vpn $cmd prod|dev" ;;
+  status)  [ $# -eq 1 ] || die "用法：mchat-vpn status" ;;
+  *)       die "用法：mchat-vpn up|down prod|dev / mchat-vpn status" ;;
+esac
+
+assert_root_path "$CONF_DIR"
+owner_file="$CONF_DIR/owner"
+[ -f "$owner_file" ] && [ ! -L "$owner_file" ] || die "未安装：缺 ${owner_file}（先跑 scripts/vpn-setup.sh）"
+assert_root_path "$owner_file"
+OWNER="$(head -n1 "$owner_file")"
+[[ "$OWNER" =~ ^[a-z_][a-z0-9_.-]*$ ]] || die "owner 非法"
+id -u "$OWNER" >/dev/null 2>&1 || die "owner 用户不存在"
+
+ensure_dir() {
+  local d="$1" mode="$2"
+  if [ -L "$d" ] || { [ -e "$d" ] && [ ! -d "$d" ]; }; then die "$d 不是目录"; fi
+  mkdir -p "$d"
+  chown root:wheel "$d"; chmod "$mode" "$d"
+  assert_root_path "$d"
+}
+ensure_dir "$RUN_DIR" 755   # owner 要能进去连 socket（socket 本身 0600 只给 owner）
+ensure_dir "$LOG_DIR" 700
+
+# up/down 全局串行：经 perl 拿 flock 后 re-exec 自己。锁 fd 号经环境变量带回（sudo env_reset，调用方伪造不了）。
+if [ "$cmd" != status ] && [ -z "${MCHAT_VPN_LOCKFD:-}" ]; then
+  lockfile="$RUN_DIR/lock"
+  [ ! -L "$lockfile" ] || die "$lockfile 是符号链接"
+  exec /usr/bin/perl -MFcntl=:flock,F_SETFD -e '
+    my $path = shift;
+    open(my $f, ">>", $path) or die "mchat-vpn: 打不开锁文件: $!\n";
+    flock($f, LOCK_EX | LOCK_NB) or do { print STDERR "mchat-vpn: 另一个 mchat-vpn 操作正在进行\n"; exit 75 };
+    fcntl($f, F_SETFD, 0);
+    $ENV{MCHAT_VPN_LOCKFD} = fileno($f);
+    exec { $ARGV[0] } @ARGV or die "mchat-vpn: exec 失败: $!\n";
+  ' "$lockfile" /bin/bash "$0" "$@"
+fi
+LOCKFD="${MCHAT_VPN_LOCKFD:-}"
+[ -z "$LOCKFD" ] || [[ "$LOCKFD" =~ ^[0-9]+$ ]] || die "锁 fd 非法"
+
+# 这个 pid 真是本工具起的 openvpn 吗：uid 必须是 0（普通用户造不出 root 进程），且内核记录的可执行文件
+# （lsof 的 txt 第一项）必须正是 ${OPENVPN}。⚠ 不能只按命令行特征认：argv 任何普通用户都能伪造
+# （exec -a '... --daemon mchat-vpn-prod'），按它杀进程就会被诱导去杀别的进程（外部评审 2026-11-05）。
+# ⚠ uid==0 单独不够：ps 报的是有效 uid，任何 setuid-root 程序（sudo/top）都满足；真正把关的是 exe 路径精确等于
+#   root 持有、别人不可写的 ${OPENVPN}。「txt 第一项 = 主程序」是 lsof/XNU 的实现行为（实测稳定），不是文档契约。
+is_our_openvpn() {
+  local pid="$1" uid exe
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  uid="$(ps -o uid= -p "$pid" 2>/dev/null | tr -d ' ' || true)"
+  [ "$uid" = 0 ] || return 1
+  exe="$(/usr/sbin/lsof -a -p "$pid" -d txt -Fn 2>/dev/null | sed -n 's/^n//p' | head -n1 || true)"
+  [ "$exe" = "$OPENVPN" ]
+}
+
+# 发信号前**再确认一次**身份：从查到 pid 到发信号之间原进程可能已退出、pid 被别的进程复用 —— 对不上就跳过
+signal_ours() {
+  if is_our_openvpn "$2"; then kill "-$1" "$2" 2>/dev/null || true; fi
+}
+
+# pid 文件（root 专属目录里）记录的进程，且确实是本工具的 openvpn、跑的是这个 env
+our_pid() {
+  local env="$1" pidf="$RUN_DIR/$1.pid" pid
+  [ -f "$pidf" ] && [ ! -L "$pidf" ] || return 1
+  pid="$(head -n1 "$pidf")"
+  is_our_openvpn "$pid" || return 1
+  ps -o args= -p "$pid" 2>/dev/null | grep -q -- "--daemon mchat-vpn-$env" || return 1
+  echo "$pid"
+}
+
+# pid 文件丢了时的兜底：先按命令行特征粗筛，再逐个过 is_our_openvpn（uid 0 + 真实可执行文件）
+stray_pids() {
+  local pid
+  for pid in $(ps -axo pid=,args= | awk -v tag="--daemon mchat-vpn-$1" 'index($0, tag) && !/awk/ { print $1 }'); do
+    if is_our_openvpn "$pid"; then echo "$pid"; fi
+  done
+}
+
+# >>> CONFIG-CHECK（scripts/vpn-setup.sh 与 scripts/vpn/mchat-vpn 两处逐字相同；tests/vpn-scripts.test.ts 校验）
+# 输出：mode=check → 每个问题一行「DROP <指令>」（已知危险、安装时剥离）或「BAD <指令>」（不认识 / 写法可疑，中止）；
+#       mode=strip → 去掉 DROP 行后的配置正文。
+CONFIG_CHECK_AWK='
+BEGIN {
+  n = split("client tls-client pull dev dev-type proto remote port rport lport nobind float remote-random " \
+    "resolv-retry connect-retry connect-retry-max connect-timeout server-poll-timeout " \
+    "persist-key persist-tun persist-remote-ip persist-local-ip ca cert key pkcs12 dh tls-auth tls-crypt " \
+    "tls-crypt-v2 key-direction extra-certs crl-verify cipher data-ciphers data-ciphers-fallback ncp-ciphers " \
+    "ncp-disable auth tls-cipher tls-ciphersuites tls-groups tls-version-min tls-version-max remote-cert-tls " \
+    "remote-cert-ku remote-cert-eku ns-cert-type verify-x509-name auth-user-pass auth-nocache static-challenge " \
+    "reneg-sec reneg-bytes reneg-pkts tran-window hand-window tls-timeout key-method comp-lzo compress " \
+    "allow-compression comp-noadapt verb mute mute-replay-warnings replay-window keepalive ping ping-restart " \
+    "ping-exit ping-timer-rem inactive explicit-exit-notify sndbuf rcvbuf tun-mtu tun-mtu-extra link-mtu " \
+    "mssfix fragment txqueuelen redirect-gateway redirect-private route route-ipv6 route-gateway route-metric " \
+    "route-delay route-nopull pull-filter dhcp-option block-ipv6 topology ifconfig-nowarn push-peer-info " \
+    "allow-pull-fqdn tun-ipv6 block-outside-dns peer-fingerprint route-ipv6-gateway", a, " ")
+  for (i = 1; i <= n; i++) ALLOW[a[i]] = 1
+  n = split("plugin up down down-pre up-delay up-restart route-up route-pre-down ipchange client-connect " \
+    "client-disconnect learn-address tls-verify auth-user-pass-verify tls-crypt-v2-verify iproute " \
+    "script-security config cd chroot daemon log log-append status writepid tmp-dir setenv setenv-safe " \
+    "ignore-unknown-option tls-export-cert auth-gen-token-secret user group pkcs11-providers engine providers " \
+    "dns-updown", a, " ")
+  for (i = 1; i <= n; i++) DROP[a[i]] = 1
+  n = split("ca cert key pkcs12 dh tls-auth tls-crypt tls-crypt-v2 extra-certs", a, " ")
+  for (i = 1; i <= n; i++) BLOCK[a[i]] = 1
+  # 这些指令的参数是文件：只许同目录下的简单文件名或 [inline]，不许绝对路径 / ..（防 root 读任意文件）
+  n = split("ca cert key pkcs12 dh tls-auth tls-crypt tls-crypt-v2 extra-certs crl-verify", a, " ")
+  for (i = 1; i <= n; i++) FILEARG[a[i]] = 1
+  inblk = ""
+}
+function emit(line) { if (mode == "strip") print line }
+function bad(what) { if (mode == "check") print "BAD " what }
+{
+  line = $0
+  sub(/\r$/, "", line)
+  if (inblk != "") {
+    t = line; gsub(/^[ \t]+|[ \t]+$/, "", t)
+    if (t == "</" inblk ">") inblk = ""
+    emit(line); next
+  }
+  t = line; sub(/^[ \t]+/, "", t)
+  if (t == "" || t ~ /^[#;]/) { emit(line); next }
+  if (t ~ /^</) {
+    tag = t; gsub(/[ \t]+$/, "", tag)
+    if (tag ~ /^<[a-z0-9-]+>$/) {
+      name = substr(tag, 2, length(tag) - 2)
+      if (name in BLOCK) { inblk = name; emit(line); next }
+    }
+    bad("<" substr(tag, 2, 40)); emit(line); next
+  }
+  split(t, f, /[ \t]+/)
+  name = f[1]
+  sub(/^--/, "", name)
+  if (name !~ /^[a-z0-9-]+$/) { bad(substr(f[1], 1, 40)); emit(line); next }
+  if (name ~ /^management/ || (name in DROP)) { if (mode == "check") print "DROP " name; next }
+  if (!(name in ALLOW)) { bad(name); emit(line); next }
+  if ((name in FILEARG) && f[2] != "" && f[2] != "[inline]" && f[2] !~ /^[A-Za-z0-9_][A-Za-z0-9._-]*$/) { bad(name " <非本目录文件>"); emit(line); next }
+  if (name == "auth-user-pass" && f[2] != "") { bad("auth-user-pass <带文件参数>"); emit(line); next }
+  emit(line)
+}
+END { if (inblk != "" && mode == "check") print "BAD <" inblk "> 未闭合" }
+'
+# <<< CONFIG-CHECK
+
+case "$cmd" in
+  up)
+    env="$2"
+    cfg_dir="$CONF_DIR/$env"
+    cfg="$cfg_dir/config.ovpn"
+    assert_root_path "$OPENVPN"
+    assert_root_path "$cfg"
+    problems="$(awk -v mode=check "$CONFIG_CHECK_AWK" "$cfg" | sort -u | tr '\n' ' ')"
+    [ -z "$problems" ] || die "$cfg 没通过白名单检查（${problems}）—— 重跑 scripts/vpn-setup.sh"
+    if our_pid "$env" >/dev/null || [ -n "$(stray_pids "$env")" ]; then die "$env 已在运行"; fi
+    sock="$RUN_DIR/$env.sock"
+    rm -f "$sock" "$RUN_DIR/$env.pid"
+    # --cd 在 --config 前（配置里的相对文件名按它解析）；--script-security 在 --config 后（第二道，覆盖配置）。
+    # 子 shell 里先关掉锁 fd：openvpn daemonize 后会一直活着，继承了锁就再也没人能 down
+    # 同步失败（参数值不认 / 打不开 tun）也别让 set -e 直接截断：统一交给下面「没起来 → 清理 + 指向日志」
+    (
+      [ -z "$LOCKFD" ] || eval "exec $LOCKFD>&-"
+      exec "$OPENVPN" \
+        --cd "$cfg_dir" \
+        --config "$cfg" \
+        --script-security 1 \
+        --auth-nocache \
+        --auth-retry none \
+        --management "$sock" unix \
+        --management-client-user "$OWNER" \
+        --management-query-passwords \
+        --management-hold \
+        --writepid "$RUN_DIR/$env.pid" \
+        --log "$LOG_DIR/$env.log" \
+        --daemon "mchat-vpn-$env"
+    ) || true
+    # socket 和 pid 文件 openvpn 各写各的、顺序不保证；down/status 靠 pid 文件，两样都在才算起来
+    for _ in $(seq 1 50); do
+      [ -S "$sock" ] && [ -s "$RUN_DIR/$env.pid" ] && break
+      sleep 0.1
+    done
+    if ! { [ -S "$sock" ] && [ -s "$RUN_DIR/$env.pid" ]; }; then
+      for p in $(stray_pids "$env"); do signal_ours TERM "$p"; done
+      rm -f "$sock" "$RUN_DIR/$env.pid"
+      die "管理 socket / pid 文件没出现，已清理，见 $LOG_DIR/$env.log"
+    fi
+    chown "$OWNER" "$sock"
+    chmod 600 "$sock"
+    echo "$sock"
+    ;;
+  down)
+    env="$2"
+    pids="$( { our_pid "$env" || true; stray_pids "$env"; } | sort -u)"
+    stopped=""
+    for pid in $pids; do
+      signal_ours TERM "$pid"
+      for _ in $(seq 1 50); do is_our_openvpn "$pid" || break; sleep 0.1; done
+      if is_our_openvpn "$pid"; then signal_ours KILL "$pid"; sleep 0.2; fi
+      is_our_openvpn "$pid" && die "pid $pid 停不掉"
+      stopped=1
+    done
+    rm -f "$RUN_DIR/$env.sock" "$RUN_DIR/$env.pid"
+    if [ -n "$stopped" ]; then echo "$env stopped"; else echo "$env not-running"; fi
+    ;;
+  status)
+    for env in $ENVS; do
+      if our_pid "$env" >/dev/null || [ -n "$(stray_pids "$env")" ]; then echo "$env running"; else echo "$env stopped"; fi
+    done
+    ;;
+esac

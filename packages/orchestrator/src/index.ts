@@ -22,3 +22,4 @@ export * from './shell-safety/index.js';
 export * from './handoff/index.js';
 export * from './bootcheck/index.js';
 export * from './workspace/index.js';
+export * from './vpn/index.js';

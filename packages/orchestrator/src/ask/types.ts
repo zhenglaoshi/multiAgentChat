@@ -58,6 +58,8 @@ export interface AskRequest {
   resolvedAt?: number;
   resolvedBy?: string;
   cardMessageId?: string;
+  /** 答案是凭证（如 VPN 6 位令牌）：卡片 / 企微回显 / 入站日志一律不出现原文 */
+  sensitive?: boolean;
   /** multi 选中的 index 集合（临时状态，供卡片 patch 用） */
   selection: number[];
   /** form 类型：问题列表 */
